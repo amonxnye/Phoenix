@@ -14,7 +14,11 @@ pip install -r requirements.txt
 python3 gov/verify.py          # → 16/16 checks passed
 python3 gov/console.py --seed  # → live operator console at http://127.0.0.1:8787
 python3 gov/verify_sim.py      # → 15/15 — the Age of Empires MVP
+python3 gov/sim_console.py --seed  # → live AoE console at http://127.0.0.1:8788
 ```
+
+Deploying the console (Railway): see [`DEPLOY.md`](DEPLOY.md). The console reads `$PORT`
+and binds `0.0.0.0`, and a `Procfile` is included, so it runs on Railway as-is.
 
 ### MVP: the Governor over an Age of Empires economy
 
@@ -42,6 +46,7 @@ alert, and a working approve/reject queue, no fixtures.
 | `gov/sim.py` | **MVP** — Age of Empires economy: villagers gather (reversible), advancing the Age is the irreversible gated action, the World is the oracle |
 | `gov/brain.py` | The agent brain: rule-based by default, DeepSeek when `DEEPSEEK_API_KEY` is set |
 | `gov/verify_sim.py` | 15 acceptance checks for the MVP, reusing `governor.py` unchanged |
+| `gov/sim_console.py` | Live AoE operator console: World meters, Age, idle alert, command queue, gated Age-up |
 | `SRS-Project-Phoenix-v2.md` | The specification — requirements, 12 acceptance criteria, open questions, roadmap |
 | `GOVERNOR.md` | Build doc: the architectural bet, results, and rationale (narrative) |
 | `PROJECT-RECORD.md` | Session record: the eight insights and decisions behind the design |

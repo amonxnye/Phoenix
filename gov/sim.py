@@ -27,7 +27,10 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aoe.sqlite")
+# Defaults next to this file; set GOV_DATA_DIR (e.g. a Railway volume mount like /data)
+# to persist game state across redeploys.
+DB = os.path.join(os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__))),
+                  "aoe.sqlite")
 
 RESOURCES = ("food", "wood", "gold")
 YIELD = {"food": 20, "wood": 15, "gold": 8}          # gathered per round
