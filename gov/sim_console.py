@@ -506,6 +506,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(_chats_snapshot()))
         if self.path == "/api/rules":
             return self._send(200, json.dumps(_rules_data()))
+        if self.path == "/api/braincheck":
+            # Diagnostic: one raw model call, error surfaced verbatim (not swallowed).
+            if not brain.available():
+                return self._send(200, json.dumps({"ok": False, "why": "no DEEPSEEK_API_KEY in env"}))
+            try:
+                client = brain._deepseek_client()
+                out = client.chat.completions.create(
+                    model=brain._model(),
+                    messages=[{"role": "user", "content": "Reply with the single word: alive"}],
+                    max_tokens=4,
+                ).choices[0].message.content.strip()
+                return self._send(200, json.dumps({"ok": True, "model": brain._model(), "reply": out}))
+            except Exception as e:
+                return self._send(200, json.dumps({"ok": False, "model": brain._model(),
+                                                   "error": str(e)[:600]}))
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
