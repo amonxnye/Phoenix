@@ -19,14 +19,19 @@ undo.** Everything below is that law, applied.
    scored, it cannot be pursued — restate it until it can.
 > Enforced by `vision.py`; consulted every turn by `director.py`.
 
-## Article II — Agents are born when needed and retired when not
+## Article II — Agents are born when needed, promoted on merit, retired when not
 
 1. An agent (a unit) is spawned only when the Vision needs the work and the world
-   limits allow it (Article III).
-2. An agent that has served its purpose is **reaped**, not left parked burning budget.
+   limits allow it (Article III), and only with the **Board's** approval (Article VIII).
+2. **Status is earned by measured contribution.** An agent that produces value climbs a
+   capability tier (villager → foreman → delegate), earning a bigger budget and more
+   capabilities. Promotion grants *reach*, never *escape* — the cap and the gate bind
+   every tier.
+3. An agent that has served its purpose is **reaped**, not left parked burning budget.
    Idle-past-usefulness is retired; idle-still-useful is re-tasked.
-3. No immortal agents. Every unit has a birth condition and an end condition.
-> Enforced by `director.py` (staffing, re-task, reap); surfaced by `governor.idle`.
+4. No immortal agents. Every unit has a birth condition and an end condition.
+> Enforced by `economy.py` (tiers, ledger, promotion) and `director.py` (staffing,
+> re-task, reap); surfaced by `governor.idle`.
 
 ## Article III — World limits are known and applied
 
@@ -75,6 +80,17 @@ undo.** Everything below is that law, applied.
 > Enforced by `governor.py`, `anchor.py`; tracing via `LANGCHAIN_*` env vars.
 
 ---
+
+## Article VIII — Token-maxing powers go to the Board, not one decider
+
+1. The powers that can run away — chiefly **creating agents** — are not granted to a
+   single Governor. They are put to a **Board of Governors** (Prudence, Growth, Ledger),
+   each judging from a different stance, and pass only on a **quorum**.
+2. The Board supervises the main Governor. A power that could max out tokens is routed
+   here by default; a single approver is reserved for reversible, bounded actions.
+3. The human gate (Article IV) still stands above the Board for irreversible world
+   actions. The Board governs *spawning*; the human governs the *irreversible*.
+> Enforced by `board.py`; consulted by `director.py` / `sim_console.py` before spawning.
 
 ## Amending this constitution
 

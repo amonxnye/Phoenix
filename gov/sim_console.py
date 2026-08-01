@@ -21,8 +21,10 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import anchor
+import board
 import brain
 import director as D
+import economy
 import governor as G
 import sim
 import vision as V
@@ -35,7 +37,9 @@ _LOCK = threading.Lock()
 _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
-_S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "goal_met": False}
+economy.init()
+_S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0,
+      "goal_met": False, "last_vote": None}
 
 
 def _by_uid():
@@ -51,20 +55,27 @@ def _one_turn():
     t = _S["turn"]
     w = sim.world()
 
+    # agent creation is a token-maxing power — routed to the BOARD, not one decider
     views = list(_by_uid().values())
-    ok, reason = G.may_spawn(views)
-    while len(_S["villagers"]) < min(TARGET_VILLAGERS, w["pop_cap"]) and ok:
-        res = anchor.best_known_yield() or brain.choose_resource(len(_S["villagers"]), w)
+    sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"])
+    while len(_S["villagers"]) < min(TARGET_VILLAGERS, w["pop_cap"]):
+        ok, reason = G.may_spawn(views)
         uid = f"vil-{len(_S['villagers']) + 1:02d}"
+        ctx = {"aligned": True, "affordable": ok, "within_budget": sc_now["within_budget"],
+               "spent": G.spent(views), "cap": G.TOKEN_CAP}
+        bv = board.vote(f"create {uid}", ctx)
+        _S["last_vote"] = bv
+        if not bv["approved"]:
+            _S["side_effects"] += 1
+            anchor.record(t, "board", f"[{bv['tally']}] BLOCKED {uid} — {reason if not ok else 'no quorum'}")
+            break
+        res = anchor.best_known_yield() or brain.choose_resource(len(_S["villagers"]), w)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
+        economy.enlist(uid)
         _S["villagers"].append(uid)
         anchor.observe_yield(res, sim.effective_yield(res))
-        anchor.record(t, "spawn", f"{uid} -> gather {res}")
+        anchor.record(t, "board", f"[{bv['tally']}] approved -> {uid} gather {res}")
         views = list(_by_uid().values())
-        ok, reason = G.may_spawn(views)
-    if not ok:
-        _S["side_effects"] += 1
-        anchor.record(t, "cap", reason)
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -72,8 +83,12 @@ def _one_turn():
         if u and u.status in ("awaiting_approval", "idle"):
             res = D._scarcest(sim.world())
             sim.resume(_GRAPH, uid, f"gather:{res}")
+            economy.credit(uid, sim.QUOTA * sim.effective_yield(res))   # measured contribution
             anchor.observe_yield(res, sim.effective_yield(res))
             anchor.record(t, "retask", f"{uid} idle -> gather {res}")
+            promo = economy.evaluate(uid)                                # status earned by results
+            if promo:
+                anchor.record(t, "promote", f"{uid} promoted -> {promo}")
 
     kind = D._next_build(sim.world(), len(_S["villagers"]))
     if kind:
@@ -97,6 +112,7 @@ def _one_turn():
             u = status.get(uid)
             if u and u.status in ("awaiting_approval", "idle"):
                 sim.resume(_GRAPH, uid, "dismiss")
+                economy.retire(uid)
                 _S["villagers"].remove(uid)
                 anchor.record(t, "reap", f"{uid} retired — vision met")
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
@@ -127,6 +143,9 @@ def _snapshot() -> dict:
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
             "events": anchor.recent(14),
             "knowledge": anchor.summary(),
+            "roster": economy.roster(),
+            "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
+                      "last": _S["last_vote"]},
             "turn": _S["turn"], "goal_met": _S["goal_met"],
         }
 
@@ -208,8 +227,13 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
 .log{margin:0;padding:10px 14px;max-height:260px;overflow:auto;font-size:12px;line-height:1.7}
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
+.log .k-board{color:#8ab4ff}.log .k-promote{color:#a8e086}.log .k-cap,.log .k-waste,.log .k-error{color:#fca5a5}
 .kv{padding:10px 14px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
 .kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:14px}
+.badge{padding:1px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
+.badge.t0{color:var(--dim)}.badge.t1{color:#8ab4ff;border-color:#2a3a5a}.badge.t2{color:var(--gold);border-color:#5a4a1a;background:#241a05}
+.mini{display:inline-block;width:70px;height:7px;background:#0e0a05;border:1px solid var(--line);border-radius:5px;overflow:hidden;vertical-align:middle;margin-right:6px}
+.minifill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e)}
 </style>
 <header>
   <div class=top>
@@ -231,6 +255,10 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <table><tbody id=queue></tbody></table><div class=empty id=queueEmpty>Nothing awaiting a human.</div></div>
   <div class=card><h2>Development</h2><div class=tech id=tech></div></div>
   <div class=card><h2>Knowledge (the anchor)</h2><div class=kv id=know></div></div>
+  <div class="card wide"><h2>Roster &mdash; status earned by measured contribution</h2>
+    <table><thead><tr><th>Agent</th><th>Role</th><th class=num>Contribution</th><th>Progress to promotion</th><th class=num>Budget</th></tr></thead>
+      <tbody id=roster></tbody></table></div>
+  <div class=card><h2>Board of Governors &mdash; quorum for agent creation</h2><div class=kv id=boardp></div></div>
   <div class="card wide"><h2>Event log</h2><div class=log id=log></div></div>
   <p class=foot>director auto-plays &middot; live over the checkpointer + World + anchor &middot; the game state is the oracle</p>
 </main>
@@ -268,6 +296,17 @@ async function tick(){
   know.innerHTML=`<div><span>facts learned</span><b>${kn.facts}</b></div>
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
     ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}`;
+  roster.innerHTML=(d.roster||[]).map(a=>{const pct=a.next_at?Math.min(100,Math.round(100*a.contribution/a.next_at)):100;
+    return `<tr><td>${esc(a.agent)}</td><td><span class="badge t${a.tier}">${esc(a.role)}</span></td>
+      <td class=num>${a.contribution.toLocaleString()}</td>
+      <td><span class=mini><span class=minifill style="width:${pct}%"></span></span>${a.next_at?pct+'%':'max tier'}</td>
+      <td class=num>${a.budget.toLocaleString()}</td></tr>`}).join('')
+    || '<tr><td class=empty colspan=5>no agents enlisted yet</td></tr>';
+  const bd=d.board, lv=bd.last;
+  boardp.innerHTML=`<div><span>governors</span><b>${bd.governors.join(', ')}</b></div>
+    <div><span>quorum</span><b>${bd.quorum} of ${bd.governors.length}</b></div>`
+    +(lv?`<div><span>last: ${esc(lv.proposal)}</span><b>${lv.approved?'APPROVED':'BLOCKED'} ${lv.tally}</b></div>
+      <div><span>ballots</span><b>${Object.entries(lv.ballots).map(([g,v])=>g+(v?' ✓':' ✗')).join('  ')}</b></div>`:'');
   log.innerHTML=d.events.map(e=>{const m=e.match(/\\[(\\w+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
 }
 async function decide(unit_id,decision){

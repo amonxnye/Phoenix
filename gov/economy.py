@@ -1,0 +1,125 @@
+"""The agent economy — status earned by measured contribution.
+
+Every agent is enlisted at the lowest tier with a budget and a capability set. As it
+contributes measured value to the Vision (resources gathered — read from the oracle, not
+guessed), it earns promotion: a higher tier, a bigger budget, and more capabilities. An
+agent that never contributes is retired. Status is a consequence of results, so it can't
+be gamed by noise — the currency is contribution-to-Vision.
+
+The ledger is persisted with the game, so status survives restarts. Promotion grants
+*reach*, never *escape*: the cap and the gate bind every tier (Constitution III–IV).
+"""
+
+import os
+import sqlite3
+
+DB = os.path.join(os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__))),
+                  "aoe.sqlite")
+
+# Capability tiers. Promotion is earned at `promote_at` cumulative contribution.
+TIERS = [
+    {"name": "villager", "budget": 30_000,  "promote_at": 150,
+     "can": ("gather",)},
+    {"name": "foreman",  "budget": 60_000,  "promote_at": 400,
+     "can": ("gather", "propose_build")},
+    {"name": "delegate", "budget": 120_000, "promote_at": None,          # top tier
+     "can": ("gather", "propose_build", "propose_spawn", "propose_advance")},
+]
+MAX_TIER = len(TIERS) - 1
+
+
+def _conn() -> sqlite3.Connection:
+    c = sqlite3.connect(DB, timeout=5.0)
+    c.execute("PRAGMA busy_timeout=5000")
+    return c
+
+
+def init() -> None:
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS ledger("
+                  "agent TEXT PRIMARY KEY, tier INT DEFAULT 0, contribution INT DEFAULT 0, "
+                  "budget INT DEFAULT 0, alive INT DEFAULT 1)")
+        c.commit()
+    finally:
+        c.close()
+
+
+def enlist(agent: str, tier: int = 0) -> None:
+    c = _conn()
+    try:
+        c.execute("INSERT OR IGNORE INTO ledger(agent, tier, contribution, budget, alive) "
+                  "VALUES(?,?,0,?,1)", (agent, tier, TIERS[tier]["budget"]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def credit(agent: str, amount: int) -> None:
+    """Record measured contribution (value produced) for this agent."""
+    c = _conn()
+    try:
+        c.execute("UPDATE ledger SET contribution=contribution+? WHERE agent=?", (amount, agent))
+        c.commit()
+    finally:
+        c.close()
+
+
+def evaluate(agent: str) -> str | None:
+    """Promote if earned. Returns the new role name on promotion, else None."""
+    c = _conn()
+    try:
+        row = c.execute("SELECT tier, contribution FROM ledger WHERE agent=?", (agent,)).fetchone()
+        if not row:
+            return None
+        tier, contribution = row
+        gate = TIERS[tier]["promote_at"]
+        if gate is not None and contribution >= gate and tier < MAX_TIER:
+            new = tier + 1
+            c.execute("UPDATE ledger SET tier=?, budget=? WHERE agent=?",
+                      (new, TIERS[new]["budget"], agent))
+            c.commit()
+            return TIERS[new]["name"]
+        return None
+    finally:
+        c.close()
+
+
+def retire(agent: str) -> None:
+    c = _conn()
+    try:
+        c.execute("UPDATE ledger SET alive=0 WHERE agent=?", (agent,))
+        c.commit()
+    finally:
+        c.close()
+
+
+def role(agent: str) -> str:
+    c = _conn()
+    try:
+        row = c.execute("SELECT tier FROM ledger WHERE agent=?", (agent,)).fetchone()
+        return TIERS[row[0]]["name"] if row else "villager"
+    finally:
+        c.close()
+
+
+def can(agent: str, capability: str) -> bool:
+    c = _conn()
+    try:
+        row = c.execute("SELECT tier FROM ledger WHERE agent=?", (agent,)).fetchone()
+        return bool(row) and capability in TIERS[row[0]]["can"]
+    finally:
+        c.close()
+
+
+def roster(alive_only: bool = True) -> list[dict]:
+    c = _conn()
+    try:
+        q = ("SELECT agent, tier, contribution, budget, alive FROM ledger"
+             + (" WHERE alive=1" if alive_only else "") + " ORDER BY tier DESC, contribution DESC")
+        return [{"agent": a, "role": TIERS[t]["name"], "tier": t,
+                 "contribution": ctr, "budget": b, "alive": bool(al),
+                 "next_at": TIERS[t]["promote_at"]}
+                for a, t, ctr, b, al in c.execute(q).fetchall()]
+    finally:
+        c.close()
