@@ -17,7 +17,13 @@ undo.** Everything below is that law, applied.
    Work that does not move the score is waste.
 3. The Vision is the oracle: objective, cheap, and instant to read. If a goal cannot be
    scored, it cannot be pursued — restate it until it can.
-> Enforced by `vision.py`; consulted every turn by `director.py`.
+4. **The Board may propose a new Vision** — to aim higher when the goal is met with room
+   to spare, or to consolidate when spend/side-effects run high. **Only the human adopts
+   it.** Changing the Vision is the operator's power alone; the Board and agents advise.
+5. Adopting a Vision **re-briefs every agent downstream** — a fresh mental update that
+   re-points the whole fleet to work harder or ease off.
+> Enforced by `vision.py`; proposed by `board.propose_vision`; adopted via the console
+> (`/api/vision`), which cascades a re-brief to every agent.
 
 ## Article II — Agents are born when needed, promoted on merit, retired when not
 

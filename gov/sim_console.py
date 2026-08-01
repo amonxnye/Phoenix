@@ -39,11 +39,31 @@ _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0,
-      "goal_met": False, "last_vote": None}
+      "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION}
 
 
 def _by_uid():
     return {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+
+
+def _vision():
+    return V.get(_S["vision_key"])
+
+
+def _target_villagers():
+    # bolder visions demand more hands; consolidating relaxes the fleet
+    return max(2, 3 + V.AGES.index(_vision().target_age))
+
+
+def _adopt_vision(key: str):
+    """The human adopts a new Vision — a fresh mental update cascades to every agent."""
+    if key not in V.VISIONS:
+        return
+    _S["vision_key"] = key
+    _S["goal_met"] = False                      # re-open the drive toward the new goal
+    for uid in _S["villagers"]:
+        anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
+    anchor.record(_S["turn"], "vision-change", f"operator adopted vision → {V.get(key).name}")
 
 
 def _pending_herald() -> bool:
@@ -57,8 +77,8 @@ def _one_turn():
 
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
     views = list(_by_uid().values())
-    sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"])
-    while len(_S["villagers"]) < min(TARGET_VILLAGERS, w["pop_cap"]):
+    sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    while len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"]):
         ok, reason = G.may_spawn(views)
         uid = f"vil-{len(_S['villagers']) + 1:02d}"
         ctx = {"aligned": True, "affordable": ok, "within_budget": sc_now["within_budget"],
@@ -98,14 +118,14 @@ def _one_turn():
             _S["side_effects"] += 1
 
     w = sim.world()
-    aligned = V.AGES.index(w["age"]) < V.AGES.index(V.GOAL.target_age)
+    aligned = V.AGES.index(w["age"]) < V.AGES.index(_vision().target_age)
     if aligned and sim.NEXT_AGE.get(w["age"]) and brain.should_advance(w, sim.ADVANCE_COST) \
             and not _pending_herald():
         _S["heralds"] += 1
         sim.spawn(_GRAPH, f"herald-{_S['heralds']:02d}", "herald")
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
 
-    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"])
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     if sc["goal_met"]:
         status = _by_uid()
         for uid in list(_S["villagers"]):
@@ -133,9 +153,16 @@ def _drive():
 def _snapshot() -> dict:
     with _LOCK:
         views = G.units(_GRAPH, _CP)
-        sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"])
+        sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+        spend_ratio = G.spent(views) / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
+        proposal = board.propose_vision(sc, spend_ratio, _S["vision_key"])
         return {
-            "vision": {"name": V.GOAL.name, **sc},
+            "vision": {"name": _vision().name, **sc},
+            "strategy": {
+                "current_key": _S["vision_key"], "current": _vision().name,
+                "options": [{"key": k, "name": v.name} for k, v in V.VISIONS.items()],
+                "proposal": proposal,
+            },
             "world": sim.world(),
             "structures": sim.structures(),
             "buildable": list(sim.STRUCTURES.keys()),
@@ -185,6 +212,13 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 sim.resume(_GRAPH, uid, decision)
             return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/vision":
+            key = self._read_json().get("vision")
+            if key not in V.VISIONS:
+                return self._send(400, json.dumps({"error": "unknown vision"}))
+            with _LOCK:
+                _adopt_vision(key)               # only the human adopts (Constitution I)
+            return self._send(200, json.dumps(_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -207,8 +241,9 @@ h1{font-size:15px;margin:0;letter-spacing:1px;white-space:nowrap}
 .age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
 .res{display:flex;gap:14px;flex-wrap:wrap}.r b{font-weight:700}.r.food b{color:var(--food)}.r.wood b{color:var(--wood)}.r.gold b{color:var(--gold)}
 main{padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));max-width:1200px;margin:0 auto}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.wide{grid-column:1/-1}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;max-height:340px;overflow:auto}
+.card h2{position:sticky;top:0;background:var(--panel);z-index:2}
+.wide{grid-column:1/-1;max-height:420px}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
 table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--dim);font-weight:600;font-size:10px;text-transform:uppercase}
@@ -224,6 +259,9 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
 .tech{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px}
 .chip{padding:4px 10px;border-radius:20px;border:1px solid var(--line);font-size:12px;color:var(--dim)}
 .chip.on{border-color:#3a5a1a;background:#14240c;color:#a8e086}
+.chip button{margin-left:8px;padding:2px 9px;font-size:11px}
+.propose{padding:12px 14px;background:#241a05;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.propose .why{color:var(--dim);font-size:12px}.propose-none{padding:12px 14px;color:var(--dim);font-size:12px}
 .log{margin:0;padding:10px 14px;max-height:260px;overflow:auto;font-size:12px;line-height:1.7}
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
@@ -259,6 +297,9 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <table><thead><tr><th>Agent</th><th>Role</th><th class=num>Contribution</th><th>Progress to promotion</th><th class=num>Budget</th></tr></thead>
       <tbody id=roster></tbody></table></div>
   <div class=card><h2>Board of Governors &mdash; quorum for agent creation</h2><div class=kv id=boardp></div></div>
+  <div class="card wide"><h2>Strategy &mdash; the Board proposes, you adopt the Vision</h2>
+    <div id=proposal></div>
+    <div class=tech id=visions></div></div>
   <div class="card wide"><h2>Event log</h2><div class=log id=log></div></div>
   <p class=foot>director auto-plays &middot; live over the checkpointer + World + anchor &middot; the game state is the oracle</p>
 </main>
@@ -307,10 +348,22 @@ async function tick(){
     <div><span>quorum</span><b>${bd.quorum} of ${bd.governors.length}</b></div>`
     +(lv?`<div><span>last: ${esc(lv.proposal)}</span><b>${lv.approved?'APPROVED':'BLOCKED'} ${lv.tally}</b></div>
       <div><span>ballots</span><b>${Object.entries(lv.ballots).map(([g,v])=>g+(v?' ✓':' ✗')).join('  ')}</b></div>`:'');
-  log.innerHTML=d.events.map(e=>{const m=e.match(/\\[(\\w+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
+  const st=d.strategy;
+  proposal.innerHTML=st.proposal
+    ? `<div class=propose><b>Board proposal:</b> ${esc(st.proposal.action)} &rarr; <b>${esc(st.proposal.name)}</b>
+        <span class=why>${esc(st.proposal.why)}</span>
+        <button class=ok onclick="adopt('${esc(st.proposal.vision)}')">Adopt</button></div>`
+    : `<div class=propose-none>Board holding &mdash; current vision on track. You can still re-point it below.</div>`;
+  visions.innerHTML=st.options.map(o=>`<span class="chip ${o.key===st.current_key?'on':''}">${esc(o.name)}`
+    +(o.key===st.current_key?' &check;':`<button onclick="adopt('${o.key}')">Adopt</button>`)+`</span>`).join('');
+  log.innerHTML=d.events.map(e=>{const m=e.match(/\\[([\\w-]+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
 }
 async function decide(unit_id,decision){
   await fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unit_id,decision})});
+  tick();
+}
+async function adopt(vision){
+  await fetch('/api/vision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vision})});
   tick();
 }
 tick(); setInterval(tick,1000);

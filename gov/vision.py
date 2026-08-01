@@ -40,6 +40,22 @@ GOAL = Vision(
     max_side_effects=5,
 )
 
+# The menu of visions the Board can propose and the human can adopt. Adopting one
+# re-briefs every agent downstream — to push harder (a bolder goal) or ease off
+# (consolidate). Only the human adopts; the Board only proposes (Constitution I).
+VISIONS = {
+    "consolidate": Vision("Consolidate — stabilise and bank", "Dark Age", 5, 800, 3),
+    "feudal":      GOAL,
+    "castle":      Vision("Ascend to the Castle Age", "Castle Age", 6, 2000, 6),
+    "imperial":    Vision("Empire — reach the Imperial Age", "Imperial Age", 7, 3000, 8),
+}
+DEFAULT_VISION = "feudal"
+MORE_AMBITIOUS = {"consolidate": "feudal", "feudal": "castle", "castle": "imperial"}
+
+
+def get(key: str) -> Vision:
+    return VISIONS.get(key, GOAL)
+
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
