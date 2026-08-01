@@ -36,6 +36,17 @@ def propose_vision(sc: dict, spend_ratio: float, current_key: str) -> dict | Non
     return None
 
 
+def propose_cap(spend_ratio: float, sc: dict, cap: int) -> dict | None:
+    """The Board watches the spend cap and recommends a change to the human."""
+    if spend_ratio > 0.9 and not sc["goal_met"]:
+        return {"action": "Raise the cap", "cap": int(cap * 1.5),
+                "why": "spend near the ceiling while the goal is unfinished"}
+    if spend_ratio < 0.3 and sc["side_effects"] == 0 and cap > 50_000:
+        return {"action": "Tighten the cap", "cap": int(cap * 0.75),
+                "why": "plenty of headroom — tighten to enforce discipline"}
+    return None
+
+
 def vote(proposal: str, ctx: dict) -> dict:
     """ctx: aligned(bool), affordable(bool), within_budget(bool), spent(int), cap(int)."""
     spend_ratio = ctx["spent"] / ctx["cap"] if ctx.get("cap") else 1.0

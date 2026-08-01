@@ -39,7 +39,7 @@ _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
-      "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION}
+      "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION, "orders": {}}
 
 
 def _new_vid() -> str:
@@ -70,6 +70,66 @@ def _adopt_vision(key: str):
     for uid in _S["villagers"]:
         anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
     anchor.record(_S["turn"], "vision-change", f"operator adopted vision → {V.get(key).name}")
+
+
+# ── operator controls (every action is logged so the Board & governor see it) ──
+
+def _op_add(resource: str = "") -> tuple[bool, str]:
+    """Operator adds an agent — a token-maxing power, so it goes through the Board."""
+    views = list(_by_uid().values())
+    ok, reason = G.may_spawn(views)
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    uid = _new_vid()
+    ctx = {"aligned": True, "affordable": ok, "within_budget": sc["within_budget"],
+           "spent": G.spent(views), "cap": G.TOKEN_CAP}
+    bv = board.vote(f"operator add {uid}", ctx)
+    _S["last_vote"] = bv
+    if not bv["approved"]:
+        _S["seq"] -= 1
+        anchor.record(_S["turn"], "board", f"[{bv['tally']}] BLOCKED operator add — {reason if not ok else 'no quorum'}")
+        return False, f"board blocked ({bv['tally']})"
+    res = resource if resource in sim.RESOURCES else D._scarcest(sim.world())
+    sim.spawn(_GRAPH, uid, "villager", resource=res)
+    economy.enlist(uid)
+    _S["villagers"].append(uid)
+    anchor.record(_S["turn"], "operator", f"added {uid} → gather {res} (board {bv['tally']})")
+    return True, uid
+
+
+def _op_terminate(uid: str) -> None:
+    """Operator terminates an agent — irreversible, so the human click is the gate."""
+    u = _by_uid().get(uid)
+    if u and u.pending:
+        sim.resume(_GRAPH, uid, "dismiss")
+    economy.retire(uid)
+    if uid in _S["villagers"]:
+        _S["villagers"].remove(uid)
+    _S["orders"].pop(uid, None)
+    anchor.record(_S["turn"], "operator", f"terminated {uid} (human gate)")
+
+
+def _op_order(uid: str, resource: str) -> bool:
+    """Operator sends an agent a standing order — a message that changes its work."""
+    if resource not in sim.RESOURCES:
+        return False
+    _S["orders"][uid] = resource                       # sticky: the driver honours it
+    u = _by_uid().get(uid)
+    if u and u.pending and u.pending.get("reversible") is not False:
+        sim.resume(_GRAPH, uid, f"gather:{resource}")
+        economy.credit(uid, sim.QUOTA * sim.effective_yield(resource))
+    anchor.record(_S["turn"], "message", f"operator → {uid}: standing order gather {resource}")
+    return True
+
+
+def _op_cap(new_cap) -> bool:
+    """Operator updates the hard spend cap."""
+    try:
+        v = max(1_000, int(new_cap))
+    except (TypeError, ValueError):
+        return False
+    old, G.TOKEN_CAP = G.TOKEN_CAP, v
+    anchor.record(_S["turn"], "operator", f"cap updated {old:,} → {v:,}")
+    return True
 
 
 def _pending_herald() -> bool:
@@ -107,7 +167,7 @@ def _one_turn():
     for uid in _S["villagers"]:
         u = status.get(uid)
         if u and u.status in ("awaiting_approval", "idle"):
-            res = D._scarcest(sim.world())
+            res = _S["orders"].get(uid) or D._scarcest(sim.world())     # honour standing orders
             sim.resume(_GRAPH, uid, f"gather:{res}")
             economy.credit(uid, sim.QUOTA * sim.effective_yield(res))   # measured contribution
             anchor.observe_yield(res, sim.effective_yield(res))
@@ -162,6 +222,22 @@ def _snapshot() -> dict:
         sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
         spend_ratio = G.spent(views) / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
         proposal = board.propose_vision(sc, spend_ratio, _S["vision_key"])
+        roster_by = {r["agent"]: r for r in economy.roster()}
+        agents = []
+        for u in views:
+            r = roster_by.get(u.unit_id)
+            if not r:
+                continue                                  # only enlisted agents
+            budget = r["budget"] or 1
+            ratio = u.tokens / budget
+            agents.append({
+                "uid": u.unit_id, "role": r["role"], "tier": r["tier"],
+                "task": u.task, "node": u.node, "status": u.status,
+                "tokens": u.tokens, "budget": r["budget"], "contribution": r["contribution"],
+                "health": max(0, round(100 * (1 - min(1, ratio)))),
+                "overwork": ratio > 0.8, "pending": bool(u.pending),
+                "order": _S["orders"].get(u.unit_id),
+            })
         return {
             "vision": {"name": _vision().name, **sc},
             "strategy": {
@@ -174,11 +250,15 @@ def _snapshot() -> dict:
             "buildable": list(sim.STRUCTURES.keys()),
             "units": [asdict(u) for u in views],
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
-            "events": anchor.recent(14),
+            "events": anchor.event_log(150),
+            "event_count": anchor.event_count(),
             "knowledge": anchor.summary(),
             "roster": economy.roster(),
+            "agents": agents,
             "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
                       "last": _S["last_vote"]},
+            "cap_proposal": board.propose_cap(spend_ratio, sc, G.TOKEN_CAP),
+            "resources": list(sim.RESOURCES),
             "turn": _S["turn"], "goal_met": _S["goal_met"],
         }
 
@@ -205,6 +285,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
+        if self.path == "/agents":
+            return self._send(200, AGENTS_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/state":
             return self._send(200, json.dumps(_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
@@ -225,6 +307,26 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 _adopt_vision(key)               # only the human adopts (Constitution I)
             return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/spawn":
+            with _LOCK:
+                ok, msg = _op_add(self._read_json().get("resource", ""))
+            return self._send(200 if ok else 409, json.dumps({"ok": ok, "detail": msg, **_snapshot()}))
+        if self.path == "/api/terminate":
+            uid = self._read_json().get("unit_id")
+            if not uid:
+                return self._send(400, json.dumps({"error": "unit_id required"}))
+            with _LOCK:
+                _op_terminate(uid)
+            return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/order":
+            body = self._read_json()
+            with _LOCK:
+                ok = _op_order(body.get("unit_id", ""), body.get("resource", ""))
+            return self._send(200 if ok else 400, json.dumps(_snapshot()))
+        if self.path == "/api/cap":
+            with _LOCK:
+                ok = _op_cap(self._read_json().get("token_cap"))
+            return self._send(200 if ok else 400, json.dumps(_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -244,6 +346,9 @@ h1{font-size:15px;margin:0;letter-spacing:1px;white-space:nowrap}
 .pbar{height:16px;background:#0e0a05;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:3px}
 .pfill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e);transition:width .4s;text-align:right}
 .vmeta{display:flex;gap:16px;font-size:12px;color:var(--dim);flex-wrap:wrap}
+.ops{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--dim)}
+.ops select,.ops input{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit}
+.navlink{color:var(--gold);text-decoration:none;border:1px solid var(--gold);padding:3px 10px;border-radius:20px}
 .age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
 .res{display:flex;gap:14px;flex-wrap:wrap}.r b{font-weight:700}.r.food b{color:var(--food)}.r.wood b{color:var(--wood)}.r.gold b{color:var(--gold)}
 main{padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));max-width:1200px;margin:0 auto}
@@ -291,6 +396,15 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <div class="res" id=res></div>
   </div>
   <div class=vmeta id=vmeta></div>
+  <div class=ops>
+    <a class=navlink href="/agents">Agent Health &rarr;</a>
+    <span>Add villager</span>
+    <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
+    <button class=ok onclick=addAgent()>Add</button>
+    <span>Cap</span><input id=capin type=number step=10000 style="width:110px">
+    <button onclick=setCap()>Set</button>
+    <span id=capprop class=why></span>
+  </div>
 </header>
 <main>
   <div class="card wide"><h2>Fleet</h2>
@@ -307,7 +421,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class="card wide"><h2>Strategy &mdash; the Board proposes, you adopt the Vision</h2>
     <div id=proposal></div>
     <div class=tech id=visions></div></div>
-  <div class="card wide"><h2>Event log</h2><div class=log id=log></div></div>
+  <div class="card wide"><h2>Event log &mdash; permanent audit trail (<span id=evcount>0</span> total)</h2><div class=log id=log></div></div>
   <p class=foot>director auto-plays &middot; live over the checkpointer + World + anchor &middot; the game state is the oracle</p>
 </main>
 <script>
@@ -364,15 +478,84 @@ async function tick(){
   visions.innerHTML=st.options.map(o=>`<span class="chip ${o.key===st.current_key?'on':''}">${esc(o.name)}`
     +(o.key===st.current_key?' &check;':`<button onclick="adopt('${o.key}')">Adopt</button>`)+`</span>`).join('');
   log.innerHTML=d.events.map(e=>{const m=e.match(/\\[([\\w-]+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
+  evcount.textContent=(d.event_count||0).toLocaleString();
+  if(document.activeElement!==capin) capin.value=d.cap;
+  const cp=d.cap_proposal;
+  capprop.innerHTML=cp?`Board: ${esc(cp.action)} to <b>${cp.cap.toLocaleString()}</b> <button onclick="applyCap(${cp.cap})">Apply</button>`:'';
 }
-async function decide(unit_id,decision){
-  await fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({unit_id,decision})});
-  tick();
+async function post(url,body){await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});tick();}
+function decide(unit_id,decision){post('/api/resume',{unit_id,decision});}
+function adopt(vision){post('/api/vision',{vision});}
+function addAgent(){post('/api/spawn',{resource:addres.value});}
+function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
+function applyCap(v){post('/api/cap',{token_cap:v});}
+tick(); setInterval(tick,1000);
+</script>
+</html>"""
+
+
+AGENTS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Agent Health — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;
+--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold)}
+.ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
+select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit}
+button{cursor:pointer;background:#26200f}button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}
+button.no{border-color:#5b2a1a;background:#2a140f;color:#fca5a5}
+main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));max-width:1200px;margin:0 auto}
+.a{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.a.overwork{border-color:var(--bad)}
+.a h3{margin:0 0 2px;font-size:14px}.badge{font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
+.badge.t1{color:#8ab4ff}.badge.t2{color:var(--gold)}
+.work{color:var(--dim);margin:6px 0}
+.hbar{height:12px;background:#0e0a05;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:6px 0}
+.hfill{height:100%}
+.stat{display:flex;justify-content:space-between;color:var(--dim);padding:2px 0}.stat b{color:var(--ink)}
+.flag{color:var(--bad);font-weight:700}.ctl{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.empty{grid-column:1/-1;color:var(--dim);padding:30px;text-align:center}
+</style>
+<header>
+  <h1>&#9670; AGENT HEALTH</h1>
+  <a href="/">&larr; Governor console</a>
+  <div class=ops>
+    <span>Add</span>
+    <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
+    <button class=ok onclick=addAgent()>Add villager</button>
+    <span>Cap</span><input id=capin type=number step=10000 style="width:110px"><button onclick=setCap()>Set</button>
+  </div>
+</header>
+<main id=grid></main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const RES=['food','wood','gold'];
+function hcolor(h){return h>50?'var(--ok)':h>20?'var(--warn)':'var(--bad)'}
+async function tick(){
+  let d; try{ d=await (await fetch('/api/state')).json() }catch(e){ return }
+  if(document.activeElement!==capin) capin.value=d.cap;
+  const a=d.agents||[];
+  grid.innerHTML=a.length? a.map(x=>`<div class="a ${x.overwork?'overwork':''}">
+    <h3>${esc(x.uid)} <span class="badge t${x.tier}">${esc(x.role)}</span> ${x.overwork?'<span class=flag>&#9888; OVERWORKING</span>':''}</h3>
+    <div class=work>working on: <b>${esc(x.task)}</b> &middot; node ${esc(x.node)} &middot; ${esc(x.status)}${x.order?` &middot; order: gather ${esc(x.order)}`:''}</div>
+    <div>health ${x.health}%</div>
+    <div class=hbar><div class=hfill style="width:${x.health}%;background:${hcolor(x.health)}"></div></div>
+    <div class=stat><span>compute / budget</span><b>${x.tokens.toLocaleString()} / ${x.budget.toLocaleString()}</b></div>
+    <div class=stat><span>contribution</span><b>${x.contribution.toLocaleString()}</b></div>
+    <div class=ctl>
+      <select id="ord-${esc(x.uid)}">${RES.map(r=>`<option>${r}</option>`).join('')}</select>
+      <button onclick="order('${esc(x.uid)}')">Send order</button>
+      <button class=no onclick="term('${esc(x.uid)}')">Terminate</button>
+    </div></div>`).join('') : '<div class=empty>No agents enlisted yet — the fleet is being staffed, or add one above.</div>';
 }
-async function adopt(vision){
-  await fetch('/api/vision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vision})});
-  tick();
-}
+async function post(u,b){await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});tick();}
+function addAgent(){post('/api/spawn',{resource:addres.value});}
+function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
+function order(uid){const r=document.getElementById('ord-'+uid).value;post('/api/order',{unit_id:uid,resource:r});}
+function term(uid){if(confirm('Terminate '+uid+'? This retires the agent (gated).'))post('/api/terminate',{unit_id:uid});}
 tick(); setInterval(tick,1000);
 </script>
 </html>"""

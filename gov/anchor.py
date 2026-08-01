@@ -12,11 +12,17 @@ volume) redeploys. It only ever *records and recalls* — it proposes nothing
 irreversible; the governor still gates every action that spends or can't be undone.
 """
 
+import json
 import os
 import sqlite3
 
-DB = os.path.join(os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__))),
-                  "aoe.sqlite")
+_DATA_DIR = os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB = os.path.join(_DATA_DIR, "aoe.sqlite")
+
+# The permanent, append-only event log. It is written on every record() and is NEVER
+# truncated, so the audit trail survives a game DB reset. Put GOV_DATA_DIR on a durable
+# volume (see DEPLOY.md) and it survives redeploys too.
+EVENTS_PATH = os.path.join(_DATA_DIR, "aoe-events.jsonl")
 
 
 def _conn() -> sqlite3.Connection:
@@ -44,6 +50,39 @@ def record(turn: int, kind: str, note: str) -> None:
         c.commit()
     finally:
         c.close()
+    # mirror to the permanent append-only log — never truncated, survives a DB reset
+    try:
+        with open(EVENTS_PATH, "a") as f:
+            f.write(json.dumps({"turn": turn, "kind": kind, "note": note}) + "\n")
+    except OSError:
+        pass
+
+
+def event_log(limit: int = 200) -> list[str]:
+    """The permanent event log, newest first. Read from the append-only file so it
+    survives even if the game DB is reset."""
+    try:
+        with open(EVENTS_PATH) as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    out = []
+    for ln in lines[-limit:]:
+        try:
+            d = json.loads(ln)
+            out.append(f"t{d['turn']} [{d['kind']}] {d['note']}")
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return list(reversed(out))
+
+
+def event_count() -> int:
+    """Total events ever recorded in the permanent log."""
+    try:
+        with open(EVENTS_PATH) as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
 
 
 def observe_yield(resource: str, amount: int) -> None:
