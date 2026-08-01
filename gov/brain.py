@@ -87,6 +87,44 @@ def think(persona: str, situation: str, task: str) -> str | None:
         return None
 
 
+def propose_development(situation: str, knowledge: list, existing: list) -> dict | None:
+    """The Governor invents a new development using ingested knowledge. Returns
+    {name, cost:{food,wood,gold}, kind, value, resource, rank, why} constrained to the
+    machine-usable effect vocabulary — or None (no model / bad output), so the caller
+    can fall back to a template proposal."""
+    if not _deepseek_available():
+        return None
+    import json as _json
+    facts = "; ".join(f"{k['topic']}: {k['fact']}" for k in knowledge[:5]) or "none yet"
+    prompt = (
+        f"Situation: {situation}\nKnowledge the settlement has ingested: {facts}\n"
+        f"Existing developments: {', '.join(existing)}\n\n"
+        "Invent ONE new Age-of-Empires-style development (building or technology) that this "
+        "settlement could adopt, inspired by the knowledge if relevant. Reply with STRICT JSON "
+        "only, no prose: {\"name\": str (snake_case, new, not in existing), "
+        "\"cost\": {\"food\": int, \"wood\": int, \"gold\": int}, "
+        "\"kind\": one of [\"yield_pct\",\"all_yield_pct\",\"pop_cap\"], "
+        "\"value\": int (5-40 for pct kinds, 1-4 for pop_cap), "
+        "\"resource\": one of [\"food\",\"wood\",\"gold\"] (only for yield_pct, else \"\"), "
+        "\"rank\": int 2-4 (higher = grander), \"why\": one short sentence}"
+    )
+    try:
+        client = _deepseek_client()
+        out = client.chat.completions.create(
+            model=_model(),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=220, temperature=0.8,
+        ).choices[0].message.content.strip()
+        if out.startswith("```"):
+            out = out.strip("`").lstrip("json").strip()
+        d = _json.loads(out)
+        if d.get("kind") not in ("yield_pct", "all_yield_pct", "pop_cap"):
+            return None
+        return d
+    except Exception:
+        return None
+
+
 def research(topic: str) -> str | None:
     """External knowledge for the anchor (Article VI). Uses the model's knowledge; returns
     a concise fact, or None if no model is configured. The caller records the source and

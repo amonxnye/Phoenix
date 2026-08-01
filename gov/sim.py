@@ -49,14 +49,18 @@ ADVANCE_COST = {"food": 500, "gold": 300}            # irreversible age-up price
 NEXT_AGE = {"Dark Age": "Feudal Age", "Feudal Age": "Castle Age", "Castle Age": "Imperial Age"}
 
 # What the settlement can develop. Buildings are reversible (you can demolish), so they
-# run free; only advancing the Age is gated.
+# run free; only advancing the Age is gated. rank orders the tree (I = foundations).
 STRUCTURES = {
-    "house":        {"cost": {"wood": 50},               "effect": "+2 population cap"},
-    "mill":         {"cost": {"wood": 100},              "effect": "+50% food yield"},
-    "lumber_camp":  {"cost": {"wood": 80},               "effect": "+50% wood yield"},
-    "mining_camp":  {"cost": {"wood": 120},              "effect": "+50% gold yield"},
-    "wheelbarrow":  {"cost": {"food": 100, "wood": 100}, "effect": "+25% all yields"},
+    "house":        {"cost": {"wood": 50},               "effect": "+2 population cap",  "rank": 1},
+    "mill":         {"cost": {"wood": 100},              "effect": "+50% food yield",    "rank": 1},
+    "lumber_camp":  {"cost": {"wood": 80},               "effect": "+50% wood yield",    "rank": 1},
+    "mining_camp":  {"cost": {"wood": 120},              "effect": "+50% gold yield",    "rank": 1},
+    "wheelbarrow":  {"cost": {"food": 100, "wood": 100}, "effect": "+25% all yields",    "rank": 2},
 }
+
+# Effect vocabulary for governor-proposed developments — machine-usable by design so a
+# proposal can actually change the world: yield_pct (one resource), all_yield_pct, pop_cap.
+CUSTOM_KINDS = ("yield_pct", "all_yield_pct", "pop_cap")
 _COLUMNS = ("food", "wood", "gold", "house", "mill", "lumber_camp", "mining_camp", "wheelbarrow")
 
 
@@ -90,6 +94,11 @@ def _world_init(c: sqlite3.Connection) -> None:
     c.execute(f"CREATE TABLE IF NOT EXISTS world(id INTEGER PRIMARY KEY CHECK(id=1), "
               f"{cols}, age TEXT DEFAULT 'Dark Age')")
     c.execute("INSERT OR IGNORE INTO world(id) VALUES(1)")
+    # Governor-proposed developments, adopted by the human. Machine-usable effects only.
+    c.execute("CREATE TABLE IF NOT EXISTS custom_devs("
+              "name TEXT PRIMARY KEY, food INT DEFAULT 0, wood INT DEFAULT 0, gold INT DEFAULT 0, "
+              "kind TEXT, value INT, resource TEXT DEFAULT '', rank INT DEFAULT 2, "
+              "source TEXT DEFAULT '', built INT DEFAULT 0)")
     c.commit()
 
 
@@ -98,7 +107,9 @@ def world() -> dict:
     try:
         row = c.execute(f"SELECT {', '.join(_COLUMNS)}, age FROM world WHERE id=1").fetchone()
         w = dict(zip(_COLUMNS + ("age",), row))
-        w["pop_cap"] = 3 + 2 * w["house"]
+        pop_bonus = c.execute("SELECT COALESCE(SUM(value*built),0) FROM custom_devs "
+                              "WHERE kind='pop_cap'").fetchone()[0]
+        w["pop_cap"] = 3 + 2 * w["house"] + pop_bonus
         return w
     finally:
         c.close()
@@ -110,11 +121,98 @@ def structures() -> dict:
 
 
 def effective_yield(resource: str, w: dict | None = None) -> int:
-    """Yield grows as the settlement develops — camps and the wheelbarrow tech."""
+    """Yield grows as the settlement develops — camps, the wheelbarrow tech, and any
+    adopted custom developments."""
     w = w or world()
     camp = w[CAMP_FOR[resource]]
     tech = w["wheelbarrow"]
-    return int(BASE[resource] * (1 + 0.5 * camp) * (1 + 0.25 * tech))
+    y = BASE[resource] * (1 + 0.5 * camp) * (1 + 0.25 * tech)
+    for d in custom_devs():
+        if not d["built"]:
+            continue
+        if d["kind"] == "yield_pct" and d["resource"] == resource:
+            y *= 1 + (d["value"] / 100) * d["built"]
+        elif d["kind"] == "all_yield_pct":
+            y *= 1 + (d["value"] / 100) * d["built"]
+    return int(y)
+
+
+def custom_devs() -> list[dict]:
+    c = _conn()
+    try:
+        rows = c.execute("SELECT name, food, wood, gold, kind, value, resource, rank, source, "
+                         "built FROM custom_devs ORDER BY rank, name").fetchall()
+        return [{"name": n, "cost": {r: v for r, v in (("food", f), ("wood", wd), ("gold", g)) if v},
+                 "kind": k, "value": val, "resource": res, "rank": rk, "source": src, "built": b}
+                for n, f, wd, g, k, val, res, rk, src, b in rows]
+    finally:
+        c.close()
+
+
+def dev_add(name: str, cost: dict, kind: str, value: int, resource: str = "",
+            rank: int = 2, source: str = "") -> tuple[bool, str]:
+    """Adopt a governor-proposed development into the buildable catalog."""
+    name = name.strip().lower().replace(" ", "_")[:32]
+    if not name or kind not in CUSTOM_KINDS:
+        return False, f"invalid development (kind must be one of {CUSTOM_KINDS})"
+    if kind == "yield_pct" and resource not in RESOURCES:
+        return False, "yield_pct needs a valid resource"
+    if name in STRUCTURES:
+        return False, f"{name} already exists as a base structure"
+    value = max(1, min(100, int(value)))
+    c = _conn()
+    try:
+        c.execute("INSERT OR IGNORE INTO custom_devs(name, food, wood, gold, kind, value, "
+                  "resource, rank, source) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (name, int(cost.get("food", 0)), int(cost.get("wood", 0)),
+                   int(cost.get("gold", 0)), kind, value, resource, int(rank), source))
+        c.commit()
+        return True, f"adopted development {name}"
+    finally:
+        c.close()
+
+
+def _custom_effect_text(d: dict) -> str:
+    if d["kind"] == "yield_pct":
+        return f"+{d['value']}% {d['resource']} yield"
+    if d["kind"] == "all_yield_pct":
+        return f"+{d['value']}% all yields"
+    return f"+{d['value']} population cap"
+
+
+def dev_catalog() -> list[dict]:
+    """The full ranked development tree — base structures + adopted customs, with counts."""
+    w = world()
+    out = [{"name": k, "cost": v["cost"], "effect": v["effect"], "rank": v["rank"],
+            "built": w[k], "custom": False} for k, v in STRUCTURES.items()]
+    out += [{"name": d["name"], "cost": d["cost"], "effect": _custom_effect_text(d),
+             "rank": d["rank"], "built": d["built"], "custom": True, "source": d["source"]}
+            for d in custom_devs()]
+    return sorted(out, key=lambda x: (x["rank"], x["name"]))
+
+
+def build_development(name: str) -> tuple[bool, str]:
+    """Build anything in the catalog — base structure or adopted custom development."""
+    if name in STRUCTURES:
+        return build_structure(name)
+    d = next((x for x in custom_devs() if x["name"] == name), None)
+    if d is None:
+        return False, f"unknown development {name}"
+    c = _conn()
+    try:
+        have = dict(zip(("food", "wood", "gold"),
+                        c.execute("SELECT food, wood, gold FROM world WHERE id=1").fetchone()))
+        for r, amt in d["cost"].items():
+            if have[r] < amt:
+                return False, f"cannot afford {name}: need {r} {amt}, have {have[r]}"
+        if d["cost"]:
+            sets = ", ".join(f"{r}={r}-{amt}" for r, amt in d["cost"].items())
+            c.execute(f"UPDATE world SET {sets} WHERE id=1")
+        c.execute("UPDATE custom_devs SET built=built+1 WHERE name=?", (name,))
+        c.commit()
+        return True, f"built {name} ({_custom_effect_text(d)})"
+    finally:
+        c.close()
 
 
 def _world_add(resource: str, amount: int) -> None:

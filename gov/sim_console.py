@@ -40,7 +40,47 @@ anchor.init()
 economy.init()
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
-      "orders": {}, "notified": set()}
+      "orders": {}, "notified": set(), "dev_proposal": None}
+
+# Template proposals used when no model is configured — the Governor still proposes.
+_DEV_TEMPLATES = [
+    {"name": "granary", "cost": {"wood": 150}, "kind": "yield_pct", "value": 15,
+     "resource": "food", "rank": 2, "why": "store food better, waste less"},
+    {"name": "sawmill", "cost": {"wood": 120, "gold": 40}, "kind": "yield_pct", "value": 15,
+     "resource": "wood", "rank": 2, "why": "sharper saws, faster lumber"},
+    {"name": "gold_smelter", "cost": {"wood": 160, "food": 60}, "kind": "yield_pct", "value": 15,
+     "resource": "gold", "rank": 3, "why": "refine ore on site"},
+    {"name": "town_watch", "cost": {"food": 80, "wood": 80}, "kind": "pop_cap", "value": 2,
+     "rank": 2, "why": "order lets more villagers settle"},
+    {"name": "guild_charter", "cost": {"gold": 120}, "kind": "all_yield_pct", "value": 10,
+     "rank": 3, "why": "organised trades lift every yield"},
+]
+
+
+def _propose_development():
+    """The Governor proposes a new development — model + ingested knowledge when alive,
+    a template otherwise. The Board pre-votes; only the human adopts."""
+    existing = [d["name"] for d in sim.dev_catalog()]
+    prop = brain.propose_development(_situation(), anchor.external(8), existing)
+    if not prop:
+        prop = next((dict(t) for t in _DEV_TEMPLATES if t["name"] not in existing), None)
+        if prop:
+            prop["source"] = "template"
+    else:
+        prop["source"] = "deepseek+knowledge"
+    if not prop or prop.get("name") in existing:
+        return
+    views = list(_by_uid().values())
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    bv = board.vote(f"development: {prop['name']}",
+                    {"aligned": True, "affordable": True, "within_budget": sc["within_budget"],
+                     "spent": G.spent(views), "cap": G.TOKEN_CAP})
+    prop["board"] = bv["tally"]
+    prop["board_approved"] = bv["approved"]
+    _S["dev_proposal"] = prop
+    anchor.record(_S["turn"], "proposal",
+                  f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
+                  f"— board {bv['tally']}, awaiting the human")
 
 
 def _new_vid() -> str:
@@ -339,6 +379,19 @@ def _one_turn():
         anchor.record(t, "build" if done else "waste", msg)
         if not done:
             _S["side_effects"] += 1
+    else:
+        # base tree done — develop adopted custom developments (cheapest affordable first)
+        w2 = sim.world()
+        for d in sorted(sim.custom_devs(), key=lambda x: sum(x["cost"].values())):
+            if d["built"] == 0 and all(w2[r] >= amt for r, amt in d["cost"].items()):
+                done, msg = sim.build_development(d["name"])
+                if done:
+                    anchor.record(t, "build", msg)
+                break
+
+    # the Governor proposes a new development every few turns (one pending at a time)
+    if t % 6 == 0 and not _S["dev_proposal"]:
+        _propose_development()
 
     w = sim.world()
     aligned = V.AGES.index(w["age"]) < V.AGES.index(_vision().target_age)
@@ -423,6 +476,9 @@ def _snapshot() -> dict:
             "world": sim.world(),
             "structures": sim.structures(),
             "buildable": list(sim.STRUCTURES.keys()),
+            "dev_catalog": sim.dev_catalog(),
+            "dev_total_built": sum(d["built"] for d in sim.dev_catalog()),
+            "dev_proposal": _S["dev_proposal"],
             "units": [asdict(u) for u in views],
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
             "events": anchor.event_log(300),
@@ -567,6 +623,27 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 _chat_send(thread, text)
                 return self._send(200, json.dumps(_chats_snapshot()))
+        if self.path == "/api/development":
+            action = self._read_json().get("action")
+            ok, msg = False, ""
+            with _LOCK:                       # NOTE: _snapshot() takes _LOCK — call it outside
+                prop = _S["dev_proposal"]
+                if not prop:
+                    return self._send(400, json.dumps({"error": "no pending proposal"}))
+                if action == "adopt":
+                    ok, msg = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
+                                          prop.get("value", 0), prop.get("resource", ""),
+                                          prop.get("rank", 2), prop.get("source", ""))
+                    anchor.record(_S["turn"], "development",
+                                  f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                    _S["dev_proposal"] = None
+                elif action == "reject":
+                    ok, msg = True, f"rejected {prop['name']}"
+                    anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
+                    _S["dev_proposal"] = None
+                else:
+                    return self._send(400, json.dumps({"error": "action must be adopt|reject"}))
+            return self._send(200 if ok else 400, json.dumps({"ok": ok, "detail": msg, **_snapshot()}))
         if self.path == "/api/constitution":
             text = (self._read_json().get("text") or "").strip()
             if not text:
@@ -690,7 +767,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
       <tbody id=fleet></tbody></table></div>
   <div class="card wide"><h2>Command queue &mdash; you gate the irreversible Age-up</h2>
     <table><tbody id=queue></tbody></table><div class=empty id=queueEmpty>Nothing awaiting a human.</div></div>
-  <div class=card><h2>Development</h2><div class=tech id=tech></div></div>
+  <div class=card><h2>Development &mdash; ranked tree (<span id=devcount>0</span> built)</h2>
+    <div id=devprop></div><div class=tech id=tech></div></div>
   <div class=card><h2>Knowledge (the anchor)</h2><div class=kv id=know></div></div>
   <div class="card wide"><h2>Roster &mdash; status earned by measured contribution</h2>
     <table><thead><tr><th>Agent</th><th>Role</th><th class=num>Contribution</th><th>Progress to promotion</th><th class=num>Budget</th></tr></thead>
@@ -733,7 +811,18 @@ async function tick(){
         <button class=ok onclick="decide('${esc(u.unit_id)}','${irr?'approve':'back-to-work'}')">${irr?'Approve':'Re-task'}</button>
         <button class=no onclick="decide('${esc(u.unit_id)}','${irr?'reject':'dismiss'}')">${irr?'Reject':'Dismiss'}</button>
       </td></tr>`}).join('');
-  tech.innerHTML=d.buildable.map(k=>`<span class="chip ${d.structures[k]?'on':''}">${k}${d.structures[k]>1?' ×'+d.structures[k]:''}${d.structures[k]?' ✓':''}</span>`).join('');
+  devcount.textContent=d.dev_total_built||0;
+  const ranks={};(d.dev_catalog||[]).forEach(x=>{(ranks[x.rank]=ranks[x.rank]||[]).push(x)});
+  const roman=['','I','II','III','IV'];
+  tech.innerHTML=Object.keys(ranks).sort().map(r=>
+    `<div style="width:100%;color:var(--dim);font-size:10px;margin:4px 0 0">RANK ${roman[r]||r}</div>`+
+    ranks[r].map(x=>`<span class="chip ${x.built?'on':''}" title="${esc(x.effect)} — cost ${esc(JSON.stringify(x.cost))}">`+
+      `${esc(x.name)}${x.custom?' ✦':''}${x.built>1?' ×'+x.built:''}${x.built?' ✓':''}</span>`).join('')).join('');
+  const dp=d.dev_proposal;
+  devprop.innerHTML=dp?`<div class=propose><b>Governor proposes:</b> ${esc(dp.name)} — ${esc(dp.why||'')}
+      <span class=why>[board ${esc(dp.board||'')}, source ${esc(dp.source||'')}]</span>
+      <button class=ok onclick="devAct('adopt')">Adopt</button>
+      <button class=no onclick="devAct('reject')">Reject</button></div>`:'';
   const kn=d.knowledge;
   know.innerHTML=`<div><span>facts learned</span><b>${kn.facts}</b></div>
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
@@ -781,6 +870,7 @@ function adopt(vision){post('/api/vision',{vision});}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
 function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
 function applyCap(v){post('/api/cap',{token_cap:v});}
+function devAct(action){post('/api/development',{action});}
 function ingest(){const t=topicin.value.trim();if(!t)return;topicin.value='';
   const fact=d_brain_rule?prompt('No model configured — enter a fact about "'+t+'":'):null;
   post('/api/ingest',{topic:t,fact:fact||''});}
