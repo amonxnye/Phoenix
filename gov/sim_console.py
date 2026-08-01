@@ -38,8 +38,14 @@ _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
-_S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0,
+_S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION}
+
+
+def _new_vid() -> str:
+    # monotonic id so a reaped agent's id is never reused (avoids resuming a dead thread)
+    _S["seq"] += 1
+    return f"vil-{_S['seq']:02d}"
 
 
 def _by_uid():
@@ -80,7 +86,7 @@ def _one_turn():
     sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     while len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"]):
         ok, reason = G.may_spawn(views)
-        uid = f"vil-{len(_S['villagers']) + 1:02d}"
+        uid = _new_vid()
         ctx = {"aligned": True, "affordable": ok, "within_budget": sc_now["within_budget"],
                "spent": G.spent(views), "cap": G.TOKEN_CAP}
         bv = board.vote(f"create {uid}", ctx)
@@ -245,9 +251,10 @@ main{padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,mi
 .card h2{position:sticky;top:0;background:var(--panel);z-index:2}
 .wide{grid-column:1/-1;max-height:420px}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--dim);font-weight:600;font-size:10px;text-transform:uppercase}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;white-space:normal;overflow-wrap:normal;word-break:keep-all}
+th{color:var(--dim);font-weight:600;font-size:10px;text-transform:uppercase;position:sticky;top:36px;background:var(--panel);white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{white-space:nowrap}
 .pill{display:inline-flex;gap:6px;align-items:center;padding:1px 8px;border-radius:20px;font-size:11px}
 .dot{width:7px;height:7px;border-radius:50%}
 .running{color:var(--run)}.running .dot{background:var(--run)}
@@ -262,7 +269,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
 .chip button{margin-left:8px;padding:2px 9px;font-size:11px}
 .propose{padding:12px 14px;background:#241a05;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .propose .why{color:var(--dim);font-size:12px}.propose-none{padding:12px 14px;color:var(--dim);font-size:12px}
-.log{margin:0;padding:10px 14px;max-height:260px;overflow:auto;font-size:12px;line-height:1.7}
+.log{margin:0;padding:10px 14px;font-size:12px;line-height:1.7}
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
 .log .k-board{color:#8ab4ff}.log .k-promote{color:#a8e086}.log .k-cap,.log .k-waste,.log .k-error{color:#fca5a5}
@@ -286,10 +293,10 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class=vmeta id=vmeta></div>
 </header>
 <main>
-  <div class=card><h2>Fleet</h2>
+  <div class="card wide"><h2>Fleet</h2>
     <table><thead><tr><th>Unit</th><th>Task</th><th>State</th><th class=num>Rounds</th><th class=num>Compute</th></tr></thead>
       <tbody id=fleet></tbody></table></div>
-  <div class=card><h2>Command queue &mdash; you gate the irreversible Age-up</h2>
+  <div class="card wide"><h2>Command queue &mdash; you gate the irreversible Age-up</h2>
     <table><tbody id=queue></tbody></table><div class=empty id=queueEmpty>Nothing awaiting a human.</div></div>
   <div class=card><h2>Development</h2><div class=tech id=tech></div></div>
   <div class=card><h2>Knowledge (the anchor)</h2><div class=kv id=know></div></div>
