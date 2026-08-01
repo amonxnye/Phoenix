@@ -572,6 +572,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, CHATS_PAGE, "text/html; charset=utf-8")
         if self.path == "/rules":
             return self._send(200, RULES_PAGE, "text/html; charset=utf-8")
+        if self.path == "/logs":
+            return self._send(200, LOGS_PAGE, "text/html; charset=utf-8")
+        if self.path.startswith("/api/logs"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                limit = min(10000, max(50, int(q.get("limit", ["1000"])[0])))
+            except ValueError:
+                limit = 1000
+            return self._send(200, json.dumps({
+                "events": anchor.event_log(limit),
+                "total": anchor.event_count(),
+            }))
         if self.path == "/api/state":
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/chats":
@@ -765,6 +778,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
+    <a class=navlink href="/logs">Logs &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -925,6 +939,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
   <a href="/">&larr; Governor console</a>
   <a href="/chats">Chats</a>
   <a href="/rules">Rules</a>
+  <a href="/logs">Logs</a>
   <div class=ops>
     <span>Add</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
@@ -989,7 +1004,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a></header>
 <div class=wrap>
   <div class=side id=side></div>
   <div class=main>
@@ -1046,7 +1061,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a></header>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a></header>
 <main id=main>loading…</main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -1098,6 +1113,61 @@ async function draftAmend(){const note=document.getElementById('amendnote').valu
   const r=await (await fetch('/api/amend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})})).json();
   document.getElementById('cons').value+='\\n\\n'+(r.draft||'');}
 load();
+</script>
+</html>"""
+
+
+LOGS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Logs — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a}
+*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font:inherit}
+button{cursor:pointer}button.on{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+.log{flex:1;overflow:auto;padding:12px 20px}
+.log div{white-space:pre-wrap;word-break:break-word;color:var(--dim);padding:1px 0}
+.k-build,.k-goal,.k-promote{color:#a8e086}.k-gate,.k-approve,.k-governor,.k-operator,.k-vision{color:var(--gold)}
+.k-reap,.k-cap,.k-waste,.k-error{color:#fca5a5}.k-board,.k-message,.k-ingest,.k-proposal,.k-development,.k-constitution,.k-vision-change,.k-rebrief{color:#8ab4ff}
+.k-gather{color:#c9b98f}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
+mark{background:#5a4a1a;color:#fff}
+</style>
+<header>
+  <h1>&#9670; LOGS</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a>
+  <select id=kind><option value="">all kinds</option></select>
+  <input id=search placeholder="search text…" style="min-width:180px">
+  <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
+  <button id=pauseBtn onclick=togglePause()>Pause</button>
+  <span class=meta><span id=shown>0</span> shown &middot; <span id=total>0</span> total (permanent)</span>
+</header>
+<div class=log id=log></div>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let paused=false, events=[];
+function togglePause(){paused=!paused;pauseBtn.textContent=paused?'Resume':'Pause';pauseBtn.classList.toggle('on',paused);}
+function kindOf(e){const m=e.match(/\\[([\\w-]+)\\]/);return m?m[1]:''}
+function render(){
+  const kinds=[...new Set(events.map(kindOf).filter(Boolean))].sort();
+  if(kinds.join()!==window._k){window._k=kinds.join();const cur=kind.value;
+    kind.innerHTML='<option value="">all kinds</option>'+kinds.map(k=>`<option ${k===cur?'selected':''}>${k}</option>`).join('');}
+  const f=kind.value, s=search.value.toLowerCase();
+  const rows=events.filter(e=>(!f||kindOf(e)===f)&&(!s||e.toLowerCase().includes(s)));
+  shown.textContent=rows.length.toLocaleString();
+  log.innerHTML=rows.map(e=>{let h=esc(e);
+    if(s){const i=h.toLowerCase().indexOf(s);if(i>=0)h=h.slice(0,i)+'<mark>'+h.slice(i,i+s.length)+'</mark>'+h.slice(i+s.length);}
+    return `<div class="k-${kindOf(e)}">${h}</div>`}).join('');
+}
+async function load(){
+  if(paused)return;
+  try{const d=await (await fetch('/api/logs?limit='+limit.value)).json();
+    events=d.events||[]; total.textContent=(d.total||0).toLocaleString(); render();}catch(e){}
+}
+kind.onchange=render; search.oninput=render; limit.onchange=load;
+load(); setInterval(load,2000);
 </script>
 </html>"""
 
