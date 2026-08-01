@@ -16,8 +16,17 @@ RESOURCES = ("food", "wood", "gold")
 
 
 def _model() -> str:
-    # deepseek-chat was renamed deepseek-v4-flash in July 2026; override via DEEPSEEK_MODEL.
-    return os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    """deepseek-chat was renamed deepseek-v4-flash in July 2026; override via
+    DEEPSEEK_MODEL. Configured names are normalised to what the API accepts —
+    e.g. 'DeepSeek-V4-Flash-0731' → 'deepseek-v4-flash' — since the API takes only
+    deepseek-v4-flash / deepseek-v4-pro."""
+    raw = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip().lower()
+    for canonical in ("deepseek-v4-pro", "deepseek-v4-flash"):
+        if raw.startswith(canonical):
+            return canonical
+    if raw in ("deepseek-chat", "deepseek-v3", ""):  # retired names → current default
+        return "deepseek-v4-flash"
+    return raw
 
 
 def _deepseek_available() -> bool:
