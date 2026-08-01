@@ -12,10 +12,13 @@ design record that produced it.
 ```bash
 pip install -r requirements.txt
 python3 gov/verify.py          # → 16/16 checks passed
+python3 gov/console.py --seed  # → live operator console at http://127.0.0.1:8787
 ```
 
 No credentials, no network, no model calls — work nodes are deterministic so the
-control plane is testable on its own.
+control plane is testable on its own. The console is standard-library only (no web
+framework) and renders live from the checkpointer — the spend meter, the idle-villager
+alert, and a working approve/reject queue, no fixtures.
 
 ## What's here
 
@@ -24,6 +27,8 @@ control plane is testable on its own.
 | `gov/runtime.py` | The agent runtime: a LangGraph graph whose irreversible step pauses for a human |
 | `gov/governor.py` | The control plane: a read view over the checkpointer + hard cap + idle detection |
 | `gov/verify.py` | 16 acceptance checks, including durability across a real process boundary |
+| `gov/console.py` | Live operator console (stdlib HTTP): fleet grid, spend meter, idle alert, approval queue |
+| `gov/console_smoke.py` | Headless smoke test of the console's HTTP layer (runs in CI) |
 | `SRS-Project-Phoenix-v2.md` | The specification — requirements, 12 acceptance criteria, open questions, roadmap |
 | `GOVERNOR.md` | Build doc: the architectural bet, results, and rationale (narrative) |
 | `PROJECT-RECORD.md` | Session record: the eight insights and decisions behind the design |
@@ -41,6 +46,8 @@ checkpointer interface is identical.
 
 ## Status
 
-`gov/` is a working spike: AC-1..11 pass (16/16 executable checks, pinned deps). The
-next increment is **AC-12** — wiring a live operator console to `governor.units()`
-instead of rendering fixtures. See the roadmap in the SRS.
+`gov/` is a working spike: **AC-1..12 pass** — `gov/verify.py` (16 checks) covers the
+runtime, read layer, approval gate, and governor; `gov/console_smoke.py` covers the
+live console. The next increment is swapping the simulated work nodes for real agent
+work against a repo-with-tests (the domain that already owns the oracle). See the
+roadmap in the SRS.

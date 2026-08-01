@@ -176,10 +176,11 @@ witness for the subset marked ✅.
 | AC-9 | Decisions persist across a real restart | NFR-1 | ✅ verify §3 |
 | AC-10 | Cap **halts** spawning (returns False), not warns | FR-4.1 | ✅ verify §4 |
 | AC-11 | A parked unit ages from `awaiting_approval` → `idle` | FR-3.3/4.2 | ✅ verify §4 |
-| AC-12 | Console renders from live `governor.units()`, not fixtures | FR-5.2 | ⬜ **not yet** |
+| AC-12 | Console renders from live `governor.units()`, not fixtures | FR-5.2 | ✅ `gov/console.py` + `console_smoke.py` |
 
-**Current status:** AC-1..11 pass (16/16 executable checks green against pinned deps).
-AC-12 is the open increment.
+**Current status:** AC-1..12 pass. `gov/verify.py` (16 checks) covers AC-1..11;
+`gov/console_smoke.py` covers AC-12 by driving the live HTTP read view and approval
+endpoint. Both green against pinned deps.
 
 ---
 
@@ -202,10 +203,10 @@ AC-12 is the open increment.
 
 ## 8. Roadmap
 
-1. **Wire the console to `governor.units()`** (AC-12) — render live, not fixtures.
-   First increment; makes everything after it easier to debug.
+1. ~~**Wire the console to `governor.units()`** (AC-12)~~ — **done** (`gov/console.py`,
+   stdlib-only, live read view + approval queue + hard-cap-aware spawn).
 2. **Swap simulated nodes for real agent work** against a repo-with-tests (OPEN-3) —
-   the domain that already owns the oracle.
+   the domain that already owns the oracle. ← next
 3. **Sandbox the execution path** (OPEN-2).
 
 ---
