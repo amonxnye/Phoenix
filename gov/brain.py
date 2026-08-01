@@ -49,6 +49,30 @@ def reply(persona: str, situation: str, message: str) -> str | None:
         return None                       # any API/SDK problem → fall back to rules
 
 
+def think(persona: str, situation: str, task: str) -> str | None:
+    """General reasoning in a persona's voice — powers board deliberation, governor
+    directives, internal agent chatter, amendment drafts, development proposals. Returns
+    None when no model is configured, so every caller falls back to a rule-based line."""
+    if not _deepseek_available():
+        return None
+    system = (
+        f"You are {persona} in an Age of Empires-style organisation of AI agents under a "
+        "constitution: spend is capped, irreversible actions need human approval, creating "
+        "agents is a Board power, and only the human changes the constitution. Answer in one "
+        "short sentence, in character."
+    )
+    try:
+        client = _deepseek_client()
+        return client.chat.completions.create(
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
+            max_tokens=70, temperature=0.6,
+        ).choices[0].message.content.strip() or None
+    except Exception:
+        return None
+
+
 def research(topic: str) -> str | None:
     """External knowledge for the anchor (Article VI). Uses the model's knowledge; returns
     a concise fact, or None if no model is configured. The caller records the source and

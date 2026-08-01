@@ -235,6 +235,27 @@ def _chat_send(key: str, body: str):
         anchor.msg_send(key, name, _chat_reply(key, body))
 
 
+def _internal_voices():
+    """The system talks to ITSELF — board deliberation and governor directives, model-
+    driven when DeepSeek is alive, templated otherwise. The human observes on /chats."""
+    t = _S["turn"]
+    sit = _situation()
+    if t % 2 == 0:
+        line = brain.think("the Chief Governor", sit,
+                           "Issue one short directive to the fleet for this cycle.") \
+            or f"Directive: press toward '{_vision().name}'; keep spend under cap and gather what's scarce."
+        anchor.msg_send("internal", "Chief Governor", line)
+    if t % 3 == 0:
+        for g in board.GOVERNORS:
+            stance = {"Prudence": "watch the spend, block anything reckless",
+                      "Growth": "push toward the vision",
+                      "Ledger": "spend only what we can afford"}[g]
+            line = brain.think(f"{g}, a member of the Board", sit,
+                               f"Give your one-line view to the other governors ({stance}).") \
+                or f"{stance.capitalize()}."
+            anchor.msg_send("internal", g, line)
+
+
 def _fleet_speaks():
     """Agents / governor raise messages to the human, each at most once per condition."""
     seen = _S["notified"]
@@ -258,6 +279,8 @@ def _chats_snapshot() -> dict:
                           "last": anchor.msg_last(p["key"])} for p in parts],
         "threads": {p["key"]: anchor.msg_thread(p["key"]) for p in parts},
         "broadcast": anchor.msg_thread("all"),
+        "internal": anchor.msg_thread("internal", 80),      # the system talking to itself
+        "brain": "deepseek" if brain.available() else "rule-based",
     }
 
 
@@ -326,6 +349,7 @@ def _one_turn():
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
 
     _fleet_speaks()                              # agents / governor raise chat messages
+    _internal_voices()                           # the system deliberates with itself
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = list(_by_uid().values())
@@ -401,7 +425,7 @@ def _snapshot() -> dict:
             "buildable": list(sim.STRUCTURES.keys()),
             "units": [asdict(u) for u in views],
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
-            "events": anchor.event_log(150),
+            "events": anchor.event_log(300),
             "event_count": anchor.event_count(),
             "knowledge": anchor.summary(),
             "roster": economy.roster(),
@@ -418,6 +442,9 @@ def _snapshot() -> dict:
 
 
 def _constitution_text() -> str:
+    override = anchor.config_get("constitution", "")
+    if override:
+        return override                          # live, human-edited version
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CONSTITUTION.md")
     try:
         with open(p) as f:
@@ -525,6 +552,25 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 _chat_send(thread, text)
                 return self._send(200, json.dumps(_chats_snapshot()))
+        if self.path == "/api/constitution":
+            text = (self._read_json().get("text") or "").strip()
+            if not text:
+                return self._send(400, json.dumps({"error": "text required"}))
+            with _LOCK:
+                anchor.config_set("constitution", text)
+                anchor.record(_S["turn"], "constitution", "the human amended the constitution")
+                anchor.msg_send("internal", "Chief Governor",
+                                "The constitution was amended by the human — re-briefing the fleet.")
+            return self._send(200, json.dumps({"ok": True, **_rules_data()}))
+        if self.path == "/api/amend":
+            note = (self._read_json().get("note") or "").strip()
+            with _LOCK:
+                draft = brain.think("the Chief Governor", _situation(),
+                                    f"Draft one new constitution article (title + one rule) about: {note or 'improving governance'}.")
+            if not draft:
+                draft = ("## Proposed article\n\n- (No model configured — set DEEPSEEK_API_KEY to have the "
+                         "Chief Governor draft amendments. Meanwhile, edit the text directly.)")
+            return self._send(200, json.dumps({"draft": draft}))
         if self.path == "/api/ingest":
             body = self._read_json()
             topic = (body.get("topic") or "").strip()
@@ -638,7 +684,9 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class="card wide"><h2>Strategy &mdash; the Board proposes, you adopt the Vision</h2>
     <div id=proposal></div>
     <div class=tech id=visions></div></div>
-  <div class="card wide"><h2>Event log &mdash; permanent audit trail (<span id=evcount>0</span> total)</h2><div class=log id=log></div></div>
+  <div class="card wide"><h2>Event log &mdash; permanent (<span id=evcount>0</span> total)
+    &nbsp;<select id=logfilter onchange=renderLog() style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 6px;font:inherit"><option value="">all kinds</option></select></h2>
+    <div class=log id=log></div></div>
   <p class=foot>director auto-plays &middot; live over the checkpointer + World + anchor &middot; the game state is the oracle</p>
 </main>
 <script>
@@ -697,11 +745,20 @@ async function tick(){
     : `<div class=propose-none>Board holding &mdash; current vision on track. You can still re-point it below.</div>`;
   visions.innerHTML=st.options.map(o=>`<span class="chip ${o.key===st.current_key?'on':''}">${esc(o.name)}`
     +(o.key===st.current_key?' &check;':`<button onclick="adopt('${o.key}')">Adopt</button>`)+`</span>`).join('');
-  log.innerHTML=d.events.map(e=>{const m=e.match(/\\[([\\w-]+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
+  window._events=d.events; renderLog();
   evcount.textContent=(d.event_count||0).toLocaleString();
   if(document.activeElement!==capin) capin.value=d.cap;
   const cp=d.cap_proposal;
   capprop.innerHTML=cp?`Board: ${esc(cp.action)} to <b>${cp.cap.toLocaleString()}</b> <button onclick="applyCap(${cp.cap})">Apply</button>`:'';
+}
+function renderLog(){
+  const evs=window._events||[];
+  const kinds=[...new Set(evs.map(e=>{const m=e.match(/\\[([\\w-]+)\\]/);return m?m[1]:''}).filter(Boolean))].sort();
+  if(kinds.join()!==window._kinds){window._kinds=kinds.join();const cur=logfilter.value;
+    logfilter.innerHTML='<option value="">all kinds</option>'+kinds.map(k=>`<option ${k===cur?'selected':''}>${k}</option>`).join('');}
+  const f=logfilter.value;
+  log.innerHTML=evs.filter(e=>!f||e.indexOf('['+f+']')>=0).map(e=>{
+    const m=e.match(/\\[([\\w-]+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
 }
 async function post(url,body){await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});tick();}
 function decide(unit_id,decision){post('/api/resume',{unit_id,decision});}
@@ -823,15 +880,17 @@ button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8
 </div>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-let sel='chief', data={participants:[],threads:{},broadcast:[]};
+let sel='internal', data={participants:[],threads:{},broadcast:[],internal:[]};
 async function load(){ try{ data=await (await fetch('/api/chats')).json() }catch(e){ return } render(); }
+function lastOf(key){ if(key==='internal')return (data.internal.slice(-1)[0]||{}).body||'';
+  if(key==='all')return (data.broadcast.slice(-1)[0]||{}).body||''; return (data.participants.find(p=>p.key===key)||{}).last||''; }
 function render(){
-  const parts=[{key:'all',name:'All (broadcast)',role:'everyone'}].concat(data.participants);
-  side.innerHTML=parts.map(p=>{const last=p.key==='all'?(data.broadcast.slice(-1)[0]||{}).body||'':p.last||'';
-    return `<div class="p ${p.key===sel?'sel':''}" onclick="pick('${p.key}')">
+  const parts=[{key:'internal',name:'Internal (AI \\u2194 AI)',role:'system'},
+               {key:'all',name:'All (broadcast)',role:'everyone'}].concat(data.participants);
+  side.innerHTML=parts.map(p=>`<div class="p ${p.key===sel?'sel':''}" onclick="pick('${p.key}')">
       <div class=n><b>${esc(p.name)}</b><span class=badge>${esc(p.role)}</span></div>
-      <div class=last>${esc(last||'—')}</div></div>`}).join('');
-  const msgs=sel==='all'?data.broadcast:(data.threads[sel]||[]);
+      <div class=last>${esc(lastOf(p.key)||'—')}</div></div>`).join('');
+  const msgs=sel==='internal'?(data.internal||[]):sel==='all'?data.broadcast:(data.threads[sel]||[]);
   const box=document.getElementById('msgs');
   box.innerHTML=msgs.length?msgs.map(m=>`<div class="m ${m.mine?'mine':''}">
     <div class=s>${m.mine?'You':esc(m.sender)}</div>${esc(m.body)}</div>`).join(''):'<div class=hint>No messages yet — say hello.</div>';
@@ -861,6 +920,10 @@ th{color:var(--dim);font-size:10px;text-transform:uppercase}
 .p{padding:12px 16px}.chip{display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:20px;margin:2px;color:var(--dim)}
 pre{white-space:pre-wrap;word-break:break-word;padding:16px;margin:0;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
 pre .h{color:var(--gold);font-weight:700}
+textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace}
+.row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.row input{flex:1;min-width:220px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
+.row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a></header>
@@ -900,8 +963,20 @@ async function load(){
     <table><tr><th>Vision</th><th>Target age</th><th>Buildings</th><th>Resources</th><th>Side-effect budget</th></tr>
     ${Object.values(d.visions).map(v=>`<tr><td>${esc(v.name)}</td><td>${esc(v.target_age)}</td><td>${v.target_buildings}</td><td>${v.target_resources}</td><td>${v.max_side_effects}</td></tr>`).join('')}</table></div>
 
-  <div class=card><h2>The Constitution</h2><pre>${mdlite(d.constitution)}</pre></div>`;
+  <div class=card><h2>The Constitution — editable (only the human adopts)</h2><div class=p>
+    <textarea id=cons>${esc(d.constitution)}</textarea>
+    <div class=row>
+      <button onclick=saveCons()>Save constitution</button>
+      <input id=amendnote placeholder="ask the Chief Governor to draft an amendment about…">
+      <button onclick=draftAmend()>AI draft &rarr; append</button>
+    </div></div></div>`;
 }
+async function saveCons(){const t=document.getElementById('cons').value;
+  await fetch('/api/constitution',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+  const b=event.target;b.textContent='Saved ✓';setTimeout(()=>b.textContent='Save constitution',1500);}
+async function draftAmend(){const note=document.getElementById('amendnote').value;
+  const r=await (await fetch('/api/amend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})})).json();
+  document.getElementById('cons').value+='\\n\\n'+(r.draft||'');}
 load();
 </script>
 </html>"""

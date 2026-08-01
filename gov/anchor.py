@@ -42,6 +42,26 @@ def init() -> None:
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, thread TEXT, sender TEXT, body TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS external_knowledge("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, source TEXT, fact TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT)")
+        c.commit()
+    finally:
+        c.close()
+
+
+def config_get(key: str, default: str = "") -> str:
+    c = _conn()
+    try:
+        row = c.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    finally:
+        c.close()
+
+
+def config_set(key: str, value: str) -> None:
+    c = _conn()
+    try:
+        c.execute("INSERT INTO config(key, value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=?", (key, value, value))
         c.commit()
     finally:
         c.close()
