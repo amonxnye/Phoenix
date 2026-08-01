@@ -1,0 +1,12 @@
+# LangGraph checkpointer database (regenerated on every run)
+gov/checkpoints.sqlite
+gov/checkpoints.sqlite-wal
+gov/checkpoints.sqlite-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
