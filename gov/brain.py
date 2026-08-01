@@ -56,7 +56,7 @@ def reply(persona: str, situation: str, message: str) -> str | None:
             model=_model(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
-            max_tokens=90, temperature=0.5,
+            max_tokens=500, temperature=0.5,
         ).choices[0].message.content.strip()
         return out or None
     except Exception:
@@ -81,7 +81,7 @@ def think(persona: str, situation: str, task: str) -> str | None:
             model=_model(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
-            max_tokens=70, temperature=0.6,
+            max_tokens=400, temperature=0.6,
         ).choices[0].message.content.strip() or None
     except Exception:
         return None
@@ -113,7 +113,7 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
         out = client.chat.completions.create(
             model=_model(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=220, temperature=0.8,
+            max_tokens=800, temperature=0.8,
         ).choices[0].message.content.strip()
         if out.startswith("```"):
             out = out.strip("`").lstrip("json").strip()
@@ -137,7 +137,7 @@ def research(topic: str) -> str | None:
             model=_model(),
             messages=[{"role": "user", "content":
                        f"In one sentence, give a useful factual note about: {topic}"}],
-            max_tokens=80, temperature=0.3,
+            max_tokens=400, temperature=0.3,
         ).choices[0].message.content.strip() or None
     except Exception:
         return None
@@ -184,9 +184,12 @@ def _deepseek_choose_resource(index: int, world: dict) -> str:
     out = client.chat.completions.create(
         model=_model(),
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=4, temperature=0.3,
+        max_tokens=200, temperature=0.3,
     ).choices[0].message.content.strip().lower()
-    return out if out in RESOURCES else RESOURCES[index % len(RESOURCES)]
+    for r in RESOURCES:                     # tolerate prose around the answer
+        if r in out.split() or out == r:
+            return r
+    return next((r for r in RESOURCES if r in out), RESOURCES[index % len(RESOURCES)])
 
 
 def _deepseek_should_advance(world: dict, cost: dict) -> bool:
@@ -198,6 +201,6 @@ def _deepseek_should_advance(world: dict, cost: dict) -> bool:
     out = client.chat.completions.create(
         model=_model(),
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=3, temperature=0.3,
+        max_tokens=200, temperature=0.3,
     ).choices[0].message.content.strip().lower()
-    return out.startswith("y")
+    return out.startswith("y") or ("yes" in out and "no" not in out.split())

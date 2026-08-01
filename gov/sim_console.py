@@ -571,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
                 out = client.chat.completions.create(
                     model=brain._model(),
                     messages=[{"role": "user", "content": "Reply with the single word: alive"}],
-                    max_tokens=4,
+                    max_tokens=200,
                 ).choices[0].message.content.strip()
                 return self._send(200, json.dumps({"ok": True, "model": brain._model(), "reply": out}))
             except Exception as e:
