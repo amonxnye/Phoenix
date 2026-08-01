@@ -13,8 +13,19 @@ The ledger is persisted with the game, so status survives restarts. Promotion gr
 import os
 import sqlite3
 
-DB = os.path.join(os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__))),
-                  "aoe.sqlite")
+def _data_dir() -> str:
+    d = os.environ.get("GOV_DATA_DIR", "").strip()
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            if os.access(d, os.W_OK):
+                return d
+        except OSError:
+            pass
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DB = os.path.join(_data_dir(), "aoe.sqlite")
 
 # Capability tiers. Promotion is earned at `promote_at` cumulative contribution.
 TIERS = [

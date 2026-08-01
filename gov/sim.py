@@ -13,6 +13,7 @@ This module reuses ``governor.py`` unchanged: ``tokens`` is compute/effort (capp
 food/wood/gold are the economy.
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -23,9 +24,22 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 # Defaults next to this file; set GOV_DATA_DIR (e.g. a Railway volume mount like /data)
-# to persist game state across redeploys.
-DB = os.path.join(os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__))),
-                  "aoe.sqlite")
+# to persist game state across redeploys. The directory is created if missing, and if
+# it can't be written (e.g. GOV_DATA_DIR set but no volume mounted) we fall back to the
+# module directory instead of crash-looping.
+def _data_dir() -> str:
+    d = os.environ.get("GOV_DATA_DIR", "").strip()
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            if os.access(d, os.W_OK):
+                return d
+        except OSError:
+            pass
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DB = os.path.join(_data_dir(), "aoe.sqlite")
 
 RESOURCES = ("food", "wood", "gold")
 BASE = {"food": 20, "wood": 15, "gold": 8}           # base yield per gather round

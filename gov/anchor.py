@@ -16,7 +16,19 @@ import json
 import os
 import sqlite3
 
-_DATA_DIR = os.environ.get("GOV_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+def _data_dir() -> str:
+    d = os.environ.get("GOV_DATA_DIR", "").strip()
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            if os.access(d, os.W_OK):
+                return d
+        except OSError:
+            pass
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_DATA_DIR = _data_dir()
 DB = os.path.join(_DATA_DIR, "aoe.sqlite")
 
 # The permanent, append-only event log. It is written on every record() and is NEVER
