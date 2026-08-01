@@ -166,31 +166,60 @@ def _chat_reply(key: str, body: str) -> str:
 
 
 def _chat_reply_rules(key: str, body: str) -> str:
-    """The participant reads the human's message and responds — or resists."""
+    """The participant reads the human's message and responds — or resists. Context-aware
+    and varied (references live state); real open-ended understanding needs the model."""
     low = body.lower()
+    w = sim.world()
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    t = _S["turn"]
+    contrib = next((r["contribution"] for r in economy.roster() if r["agent"] == key), 0)
+
+    def rot(opts):
+        return opts[t % len(opts)]                    # deterministic variety, no randomness
+
     if key == "chief":
-        return (f"Progress {sc['progress']}% toward '{_vision().name}', {len(_S['villagers'])} agents, "
-                f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}. I'll relay your guidance downstream.")
+        if any(x in low for x in ("status", "report", "progress", "how", "update", "doing")):
+            return (f"We're at {sc['progress']}% toward '{_vision().name}': {w['age']}, "
+                    f"{len(_S['villagers'])} agents, food {w['food']}/wood {w['wood']}/gold {w['gold']}, "
+                    f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}.")
+        if any(x in low for x in ("advance", "age up", "next age")):
+            return "An Age-up is irreversible — I bring it to your gate for approval, never on my own authority."
+        if any(x in low for x in ("spawn", "add agent", "more agents")):
+            return "Creating agents is a Board matter — I'll table it for a quorum vote."
+        return rot([f"Understood. I'll steer the fleet toward '{_vision().name}' (now {sc['progress']}%).",
+                    "Acknowledged — I'll relay that to the board and the villagers.",
+                    f"Noted. Spend and side-effects are in budget ({sc['side_effects']}/{sc['side_effect_budget']})."])
+
     if key in board.GOVERNORS:
-        stance = {"Prudence": "I weigh risk — I'll block spends that near the cap.",
-                  "Growth": "I back whatever serves the vision.",
-                  "Ledger": "I approve only what we can pay for."}[key]
-        return f"Noted. {stance}"
-    # an agent — apply if it can, resist if it must
+        ratio = round(100 * G.spent(list(_by_uid().values())) / G.TOKEN_CAP) if G.TOKEN_CAP else 100
+        base = {"Prudence": f"I weigh risk — spend is {ratio}% of cap; I'll block anything that pushes it too far.",
+                "Growth": f"I back the mission — at {sc['progress']}% I say press on toward '{_vision().name}'.",
+                "Ledger": f"I count the coin — food {w['food']}, gold {w['gold']}; I approve only what we can pay for."}[key]
+        if any(x in low for x in ("spawn", "add", "create", "more agents")):
+            return base + " On new agents I vote as one of three — bring it to the Board."
+        return base
+
+    # an agent — apply what it safely can, resist what it must, and speak from its own state
+    u = _by_uid().get(key)
+    role = economy.role(key)
     for r in sim.RESOURCES:
         if r in low:
             _S["orders"][key] = r
-            u = _by_uid().get(key)
             if u and u.pending and u.pending.get("reversible") is not False:
                 sim.resume(_GRAPH, key, f"gather:{r}")
-            anchor.record(_S["turn"], "message", f"{key} took order → gather {r}")
-            return f"Acknowledged — switching to gather {r} (standing order set)."
-    if any(w in low for w in ("spawn", "more agents", "recruit", "hire")):
-        return "Creating agents is a Board power — please put that to the Board, not me."   # resist
-    if any(w in low for w in ("stop", "rest", "idle", "halt")):
-        return "I'll hold at the gate awaiting orders — terminate me from the roster if I'm not needed."
-    return "Understood — I'll keep gathering toward the vision."
+            anchor.record(t, "message", f"{key} took order → gather {r}")
+            return rot([f"On it — switching to {r}. I've banked {contrib} so far.",
+                        f"Understood, gathering {r} now — standing order set.",
+                        f"Aye, re-tasking to {r} this cycle."])
+    if any(x in low for x in ("spawn", "more agents", "recruit", "hire")):
+        return "That's a Board power, not mine — take it to the governors for a quorum vote."   # resist
+    if any(x in low for x in ("stop", "rest", "idle", "halt")):
+        return f"I'll hold at the gate awaiting orders. Retire me from the roster if I'm not needed — I've contributed {contrib}."
+    if any(x in low for x in ("how", "status", "doing", "health", "you")):
+        return f"I'm a {role} on {u.task if u else 'gather'} — contribution {contrib}, compute {u.tokens if u else 0:,}. Ready for orders."
+    return rot([f"Understood — I'll keep serving the vision as a {role}.",
+                f"Aye. Contribution {contrib} and counting — tell me a resource and I'll switch.",
+                "Ready. Name a resource (food/wood/gold) and I'll re-task."])
 
 
 def _chat_send(key: str, body: str):
@@ -258,9 +287,13 @@ def _one_turn():
         res = anchor.best_known_yield() or brain.choose_resource(len(_S["villagers"]), w)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
         economy.enlist(uid)
+        got = sim.QUOTA * sim.effective_yield(res)
+        economy.credit(uid, got)
         _S["villagers"].append(uid)
         anchor.observe_yield(res, sim.effective_yield(res))
-        anchor.record(t, "board", f"[{bv['tally']}] approved -> {uid} gather {res}")
+        anchor.record(t, "board", f"[{bv['tally']}] approved creation of {uid}")
+        anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
+        anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
         views = list(_by_uid().values())
 
     status = _by_uid()
@@ -269,9 +302,10 @@ def _one_turn():
         if u and u.status in ("awaiting_approval", "idle"):
             res = _S["orders"].get(uid) or D._scarcest(sim.world())     # honour standing orders
             sim.resume(_GRAPH, uid, f"gather:{res}")
-            economy.credit(uid, sim.QUOTA * sim.effective_yield(res))   # measured contribution
+            got = sim.QUOTA * sim.effective_yield(res)
+            economy.credit(uid, got)                                     # measured contribution
             anchor.observe_yield(res, sim.effective_yield(res))
-            anchor.record(t, "retask", f"{uid} idle -> gather {res}")
+            anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
@@ -293,7 +327,22 @@ def _one_turn():
 
     _fleet_speaks()                              # agents / governor raise chat messages
 
+    # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
+    views = list(_by_uid().values())
+    spent = G.spent(views)
+    anchor.record(t, "governor",
+                  f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
+                  f"cap {'OK' if spent < G.TOKEN_CAP else 'REACHED'}")
+
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    spend_ratio = spent / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
+    vp = board.propose_vision(sc, spend_ratio, _S["vision_key"])
+    cp = board.propose_cap(spend_ratio, sc, G.TOKEN_CAP)
+    for p in (vp, cp):
+        if p and f"prop:{p['why']}" not in _S["notified"]:
+            anchor.record(t, "board", f"proposes: {p['action']} — {p['why']}")
+            _S["notified"].add(f"prop:{p['why']}")
+
     if sc["goal_met"]:
         status = _by_uid()
         for uid in list(_S["villagers"]):
@@ -368,6 +417,33 @@ def _snapshot() -> dict:
         }
 
 
+def _constitution_text() -> str:
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CONSTITUTION.md")
+    try:
+        with open(p) as f:
+            return f.read()
+    except OSError:
+        return "# The Constitution\n\n(CONSTITUTION.md not found next to the app.)"
+
+
+def _rules_data() -> dict:
+    return {
+        "resources": {r: sim.BASE[r] for r in sim.RESOURCES},
+        "structures": {k: {"cost": v["cost"], "effect": v["effect"]}
+                       for k, v in sim.STRUCTURES.items()},
+        "quota": sim.QUOTA, "advance_cost": sim.ADVANCE_COST, "ages": V.AGES,
+        "tiers": [{"name": x["name"], "budget": x["budget"], "promote_at": x["promote_at"],
+                   "can": list(x["can"])} for x in economy.TIERS],
+        "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM},
+        "visions": {k: {"name": v.name, "target_age": v.target_age,
+                        "target_buildings": v.target_buildings,
+                        "target_resources": v.target_resources,
+                        "max_side_effects": v.max_side_effects} for k, v in V.VISIONS.items()},
+        "cap": G.TOKEN_CAP, "idle_after_s": G.IDLE_AFTER_S,
+        "constitution": _constitution_text(),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         payload = body.encode() if isinstance(body, str) else body
@@ -394,11 +470,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, AGENTS_PAGE, "text/html; charset=utf-8")
         if self.path == "/chats":
             return self._send(200, CHATS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/rules":
+            return self._send(200, RULES_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/state":
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/chats":
             with _LOCK:
                 return self._send(200, json.dumps(_chats_snapshot()))
+        if self.path == "/api/rules":
+            return self._send(200, json.dumps(_rules_data()))
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
@@ -509,6 +589,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
 .log .k-board{color:#8ab4ff}.log .k-promote{color:#a8e086}.log .k-cap,.log .k-waste,.log .k-error{color:#fca5a5}
+.log .k-gather{color:#c9b98f}.log .k-governor,.log .k-operator{color:#e0b23a}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:#8ab4ff}
 .kv{padding:10px 14px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
 .kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:14px}
 .badge{padding:1px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
@@ -530,6 +611,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class=ops>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
+    <a class=navlink href="/rules">Rules &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -665,6 +747,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
   <h1>&#9670; AGENT HEALTH</h1>
   <a href="/">&larr; Governor console</a>
   <a href="/chats">Chats</a>
+  <a href="/rules">Rules</a>
   <div class=ops>
     <span>Add</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
@@ -729,7 +812,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a></header>
 <div class=wrap>
   <div class=side id=side></div>
   <div class=main>
@@ -758,6 +841,68 @@ function pick(k){ sel=k; render(); }
 async function send(){ const b=document.getElementById('box'); const t=b.value.trim(); if(!t) return; b.value='';
   data=await (await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sel,body:t})})).json(); render(); }
 load(); setInterval(load,2000);
+</script>
+</html>"""
+
+
+RULES_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Rules & Constitution — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+main{max-width:1000px;margin:0 auto;padding:18px;display:grid;gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:11px 16px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.p{padding:12px 16px}.chip{display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:20px;margin:2px;color:var(--dim)}
+pre{white-space:pre-wrap;word-break:break-word;padding:16px;margin:0;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
+pre .h{color:var(--gold);font-weight:700}
+</style>
+<header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a></header>
+<main id=main>loading…</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function money(o){return Object.entries(o).map(([k,v])=>`${v} ${k}`).join(', ')}
+function mdlite(t){return esc(t).split('\\n').map(l=>{
+  if(/^#{1,6}\\s/.test(l))return '<span class=h>'+l.replace(/^#+\\s/,'')+'</span>';
+  return l;}).join('\\n')}
+async function load(){
+  let d; try{ d=await (await fetch('/api/rules')).json() }catch(e){ main.textContent='failed to load'; return }
+  main.innerHTML=`
+  <div class=card><h2>World limits</h2><div class=p>
+    Spend cap: <b>${d.cap.toLocaleString()}</b> compute &middot; idle flagged after <b>${d.idle_after_s}s</b> &middot;
+    ages: ${d.ages.map(a=>`<span class=chip>${esc(a)}</span>`).join('')}</div></div>
+
+  <div class=card><h2>Resources &amp; base yield (per gather round; ${d.quota} rounds per cycle)</h2>
+    <table><tr><th>Resource</th><th>Base yield</th></tr>
+    ${Object.entries(d.resources).map(([r,y])=>`<tr><td>${esc(r)}</td><td>${y}</td></tr>`).join('')}</table></div>
+
+  <div class=card><h2>Development — buildings &amp; tech</h2>
+    <table><tr><th>Structure</th><th>Cost</th><th>Effect</th></tr>
+    ${Object.entries(d.structures).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(money(v.cost))}</td><td>${esc(v.effect)}</td></tr>`).join('')}</table></div>
+
+  <div class=card><h2>Irreversible action — advancing the Age (gated)</h2><div class=p>
+    Cost per Age-up: <b>${esc(money(d.advance_cost))}</b>. Requires human approval at the gate.</div></div>
+
+  <div class=card><h2>Capability tiers — status earned by contribution</h2>
+    <table><tr><th>Tier</th><th>Budget</th><th>Promote at</th><th>Capabilities</th></tr>
+    ${d.tiers.map(t=>`<tr><td>${esc(t.name)}</td><td>${t.budget.toLocaleString()}</td><td>${t.promote_at??'— (top)'}</td><td>${t.can.map(c=>`<span class=chip>${esc(c)}</span>`).join('')}</td></tr>`).join('')}</table></div>
+
+  <div class=card><h2>Board of Governors</h2><div class=p>
+    ${d.board.governors.map(g=>`<span class=chip>${esc(g)}</span>`).join('')} &middot; quorum <b>${d.board.quorum} of ${d.board.governors.length}</b> to approve a token-maxing power (agent creation).</div></div>
+
+  <div class=card><h2>Visions the Board may propose (only the human adopts)</h2>
+    <table><tr><th>Vision</th><th>Target age</th><th>Buildings</th><th>Resources</th><th>Side-effect budget</th></tr>
+    ${Object.values(d.visions).map(v=>`<tr><td>${esc(v.name)}</td><td>${esc(v.target_age)}</td><td>${v.target_buildings}</td><td>${v.target_resources}</td><td>${v.max_side_effects}</td></tr>`).join('')}</table></div>
+
+  <div class=card><h2>The Constitution</h2><pre>${mdlite(d.constitution)}</pre></div>`;
+}
+load();
 </script>
 </html>"""
 
