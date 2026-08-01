@@ -199,9 +199,12 @@ def _situation() -> str:
 
 
 def _chat_reply(key: str, body: str) -> str:
-    """Rules decide the action (safe); the model decides the words when available."""
-    sentence = _chat_reply_rules(key, body)          # applies any safe action, returns wording
-    llm = brain.reply(_persona_for(key), _situation(), body)
+    """Rules decide the action (safe); the model decides the words when available.
+    The lock covers only the rule/action part — never the slow model call."""
+    with _LOCK:
+        sentence = _chat_reply_rules(key, body)      # applies any safe action, returns wording
+        persona, sit = _persona_for(key), _situation()
+    llm = brain.reply(persona, sit, body)
     return llm or sentence
 
 
@@ -389,20 +392,13 @@ def _one_turn():
                     anchor.record(t, "build", msg)
                 break
 
-    # the Governor proposes a new development every few turns (one pending at a time)
-    if t % 6 == 0 and not _S["dev_proposal"]:
-        _propose_development()
-
     w = sim.world()
     aligned = V.AGES.index(w["age"]) < V.AGES.index(_vision().target_age)
-    if aligned and sim.NEXT_AGE.get(w["age"]) and brain.should_advance(w, sim.ADVANCE_COST) \
-            and not _pending_herald():
+    affordable = w["food"] >= sim.ADVANCE_COST["food"] and w["gold"] >= sim.ADVANCE_COST["gold"]
+    if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         _S["heralds"] += 1
         sim.spawn(_GRAPH, f"herald-{_S['heralds']:02d}", "herald")
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
-
-    _fleet_speaks()                              # agents / governor raise chat messages
-    _internal_voices()                           # the system deliberates with itself
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = list(_by_uid().values())
@@ -436,12 +432,20 @@ def _one_turn():
 def _drive():
     while True:
         time.sleep(TICK)
-        with _LOCK:
-            if not _S["goal_met"]:
-                try:
-                    _one_turn()
-                except Exception as e:            # never let the loop die silently
-                    anchor.record(_S["turn"], "error", str(e)[:300])
+        if _S["goal_met"]:
+            continue
+        try:
+            with _LOCK:
+                _one_turn()                       # fast game mechanics only
+            # Slow work — DeepSeek calls — happens OUTSIDE the lock, so /api/*
+            # requests never queue behind the model (that starvation caused the
+            # BrokenPipe floods: pollers hung up before the lock freed).
+            _fleet_speaks()
+            _internal_voices()
+            if _S["turn"] % 6 == 0 and not _S["dev_proposal"]:
+                _propose_development()
+        except Exception as e:                    # never let the loop die silently
+            anchor.record(_S["turn"], "error", str(e)[:300])
 
 
 def _snapshot() -> dict:
@@ -527,14 +531,27 @@ def _rules_data() -> dict:
     }
 
 
+class QuietServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that doesn't spam tracebacks when a poller hangs up."""
+    def handle_error(self, request, client_address):
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         payload = body.encode() if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                  # client hung up mid-response — not an error
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -620,9 +637,8 @@ class Handler(BaseHTTPRequestHandler):
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
             if not thread or not text:
                 return self._send(400, json.dumps({"error": "thread and body required"}))
-            with _LOCK:
-                _chat_send(thread, text)
-                return self._send(200, json.dumps(_chats_snapshot()))
+            _chat_send(thread, text)              # takes the lock only around actions,
+            return self._send(200, json.dumps(_chats_snapshot()))  # not the model call
         if self.path == "/api/development":
             action = self._read_json().get("action")
             ok, msg = False, ""
@@ -668,13 +684,12 @@ class Handler(BaseHTTPRequestHandler):
             topic = (body.get("topic") or "").strip()
             if not topic:
                 return self._send(400, json.dumps({"error": "topic required"}))
-            with _LOCK:
-                fact = brain.research(topic) or (body.get("fact") or "").strip()
-                source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
-                if not fact:
-                    return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
-                anchor.ingest(topic, source, fact)   # Article VI: source recorded, never executed
-                anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
+            fact = brain.research(topic) or (body.get("fact") or "").strip()   # model call: no lock
+            source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
+            if not fact:
+                return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
+            anchor.ingest(topic, source, fact)       # Article VI: source recorded, never executed
+            anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
             return self._send(200, json.dumps(_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
@@ -1091,7 +1106,7 @@ def main(argv):
     threading.Thread(target=_drive, daemon=True).start()
     port = int(os.environ.get("PORT", "8788"))
     host = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
-    srv = ThreadingHTTPServer((host, port), Handler)
+    srv = QuietServer((host, port), Handler)
     print(f"AoE governor console -> http://{host}:{port}  (director auto-playing; Ctrl-C to stop)")
     try:
         srv.serve_forever()
