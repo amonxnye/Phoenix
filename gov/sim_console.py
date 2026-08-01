@@ -388,7 +388,7 @@ def _drive():
                 try:
                     _one_turn()
                 except Exception as e:            # never let the loop die silently
-                    anchor.record(_S["turn"], "error", str(e)[:80])
+                    anchor.record(_S["turn"], "error", str(e)[:300])
 
 
 def _snapshot() -> dict:

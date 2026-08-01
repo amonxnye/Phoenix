@@ -15,6 +15,11 @@ import os
 RESOURCES = ("food", "wood", "gold")
 
 
+def _model() -> str:
+    # deepseek-chat was renamed deepseek-v4-flash in July 2026; override via DEEPSEEK_MODEL.
+    return os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+
 def _deepseek_available() -> bool:
     return bool(os.environ.get("DEEPSEEK_API_KEY"))
 
@@ -39,7 +44,7 @@ def reply(persona: str, situation: str, message: str) -> str | None:
     try:
         client = _deepseek_client()
         out = client.chat.completions.create(
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=_model(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
             max_tokens=90, temperature=0.5,
@@ -64,7 +69,7 @@ def think(persona: str, situation: str, task: str) -> str | None:
     try:
         client = _deepseek_client()
         return client.chat.completions.create(
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=_model(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
             max_tokens=70, temperature=0.6,
@@ -82,7 +87,7 @@ def research(topic: str) -> str | None:
     try:
         client = _deepseek_client()
         return client.chat.completions.create(
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=_model(),
             messages=[{"role": "user", "content":
                        f"In one sentence, give a useful factual note about: {topic}"}],
             max_tokens=80, temperature=0.3,
@@ -92,18 +97,26 @@ def research(topic: str) -> str | None:
 
 
 def choose_resource(index: int, world: dict) -> str:
-    """Which resource should villager #index gather?"""
+    """Which resource should villager #index gather? Model when available; any API
+    problem falls back to the rule — a brain hiccup must never stall the fleet."""
     if _deepseek_available():
-        return _deepseek_choose_resource(index, world)
+        try:
+            return _deepseek_choose_resource(index, world)
+        except Exception:
+            pass
     # Rule-based: cover all three resources round-robin, then bias toward whatever is
     # scarcest relative to the age-up cost.
     return RESOURCES[index % len(RESOURCES)]
 
 
 def should_advance(world: dict, cost: dict) -> bool:
-    """Should the herald propose advancing the Age now?"""
+    """Should the herald propose advancing the Age now? Falls back to the rule on any
+    API problem."""
     if _deepseek_available():
-        return _deepseek_should_advance(world, cost)
+        try:
+            return _deepseek_should_advance(world, cost)
+        except Exception:
+            pass
     return world["food"] >= cost["food"] and world["gold"] >= cost["gold"]
 
 
@@ -122,7 +135,7 @@ def _deepseek_choose_resource(index: int, world: dict) -> str:
               f"You command villager #{index}. Reply with exactly one word — the resource "
               f"to gather: food, wood, or gold. Balance the economy toward advancing the Age.")
     out = client.chat.completions.create(
-        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        model=_model(),
         messages=[{"role": "user", "content": prompt}],
         max_tokens=4, temperature=0.3,
     ).choices[0].message.content.strip().lower()
@@ -136,7 +149,7 @@ def _deepseek_should_advance(world: dict, cost: dict) -> bool:
     prompt = (f"Age of Empires. Stockpile: {world}. Advancing costs {cost}. "
               f"Is now a good time to advance the Age? Reply yes or no.")
     out = client.chat.completions.create(
-        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        model=_model(),
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3, temperature=0.3,
     ).choices[0].message.content.strip().lower()
