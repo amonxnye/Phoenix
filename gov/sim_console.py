@@ -39,7 +39,8 @@ _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
-      "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION, "orders": {}}
+      "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
+      "orders": {}, "notified": set()}
 
 
 def _new_vid() -> str:
@@ -132,6 +133,82 @@ def _op_cap(new_cap) -> bool:
     return True
 
 
+# ── chat: agents, board and the Chief Governor talk to the human ──────────────
+
+def _participants() -> list[dict]:
+    parts = [{"key": "chief", "name": "Chief Governor", "role": "governor"}]
+    parts += [{"key": g, "name": g, "role": "board"} for g in board.GOVERNORS]
+    parts += [{"key": u, "name": u, "role": economy.role(u)} for u in _S["villagers"]]
+    return parts
+
+
+def _chat_reply(key: str, body: str) -> str:
+    """The participant reads the human's message and responds — or resists."""
+    low = body.lower()
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    if key == "chief":
+        return (f"Progress {sc['progress']}% toward '{_vision().name}', {len(_S['villagers'])} agents, "
+                f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}. I'll relay your guidance downstream.")
+    if key in board.GOVERNORS:
+        stance = {"Prudence": "I weigh risk — I'll block spends that near the cap.",
+                  "Growth": "I back whatever serves the vision.",
+                  "Ledger": "I approve only what we can pay for."}[key]
+        return f"Noted. {stance}"
+    # an agent — apply if it can, resist if it must
+    for r in sim.RESOURCES:
+        if r in low:
+            _S["orders"][key] = r
+            u = _by_uid().get(key)
+            if u and u.pending and u.pending.get("reversible") is not False:
+                sim.resume(_GRAPH, key, f"gather:{r}")
+            anchor.record(_S["turn"], "message", f"{key} took order → gather {r}")
+            return f"Acknowledged — switching to gather {r} (standing order set)."
+    if any(w in low for w in ("spawn", "more agents", "recruit", "hire")):
+        return "Creating agents is a Board power — please put that to the Board, not me."   # resist
+    if any(w in low for w in ("stop", "rest", "idle", "halt")):
+        return "I'll hold at the gate awaiting orders — terminate me from the roster if I'm not needed."
+    return "Understood — I'll keep gathering toward the vision."
+
+
+def _chat_send(key: str, body: str):
+    if key == "all":
+        anchor.msg_send("all", "operator", body)
+        for p in _participants():
+            reply = _chat_reply(p["key"], body)
+            anchor.msg_send(p["key"], p["name"], reply)      # in each private thread
+            anchor.msg_send("all", p["name"], reply)         # echoed into the broadcast view
+    else:
+        anchor.msg_send(key, "operator", body)
+        name = next((p["name"] for p in _participants() if p["key"] == key), key)
+        anchor.msg_send(key, name, _chat_reply(key, body))
+
+
+def _fleet_speaks():
+    """Agents / governor raise messages to the human, each at most once per condition."""
+    seen = _S["notified"]
+    roster_by = {r["agent"]: r for r in economy.roster()}
+    for u in _by_uid().values():
+        if u.pending and u.pending.get("reversible") is False and f"gate:{u.unit_id}" not in seen:
+            anchor.msg_send("chief", "Chief Governor",
+                            f"Requesting your approval: {u.pending['action']}.")
+            seen.add(f"gate:{u.unit_id}")
+        r = roster_by.get(u.unit_id)
+        if r and r["budget"] and u.tokens / r["budget"] > 0.8 and f"ow:{u.unit_id}" not in seen:
+            anchor.msg_send(u.unit_id, u.unit_id,
+                            "I'm overworking — compute is near my budget. Requesting relief or more budget.")
+            seen.add(f"ow:{u.unit_id}")
+
+
+def _chats_snapshot() -> dict:
+    parts = _participants()
+    return {
+        "participants": [{**p, "count": anchor.msg_count(p["key"]),
+                          "last": anchor.msg_last(p["key"])} for p in parts],
+        "threads": {p["key"]: anchor.msg_thread(p["key"]) for p in parts},
+        "broadcast": anchor.msg_thread("all"),
+    }
+
+
 def _pending_herald() -> bool:
     return any(u.pending and u.pending.get("reversible") is False for u in _by_uid().values())
 
@@ -190,6 +267,8 @@ def _one_turn():
         _S["heralds"] += 1
         sim.spawn(_GRAPH, f"herald-{_S['heralds']:02d}", "herald")
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
+
+    _fleet_speaks()                              # agents / governor raise chat messages
 
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     if sc["goal_met"]:
@@ -287,8 +366,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
             return self._send(200, AGENTS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/chats":
+            return self._send(200, CHATS_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/state":
             return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/chats":
+            with _LOCK:
+                return self._send(200, json.dumps(_chats_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
@@ -327,6 +411,14 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 ok = _op_cap(self._read_json().get("token_cap"))
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
+        if self.path == "/api/chat":
+            body = self._read_json()
+            thread, text = body.get("thread", ""), (body.get("body") or "").strip()
+            if not thread or not text:
+                return self._send(400, json.dumps({"error": "thread and body required"}))
+            with _LOCK:
+                _chat_send(thread, text)
+                return self._send(200, json.dumps(_chats_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -398,6 +490,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class=vmeta id=vmeta></div>
   <div class=ops>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
+    <a class=navlink href="/chats">Chats &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -522,6 +615,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
 <header>
   <h1>&#9670; AGENT HEALTH</h1>
   <a href="/">&larr; Governor console</a>
+  <a href="/chats">Chats</a>
   <div class=ops>
     <span>Add</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
@@ -557,6 +651,64 @@ function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:
 function order(uid){const r=document.getElementById('ord-'+uid).value;post('/api/order',{unit_id:uid,resource:r});}
 function term(uid){if(confirm('Terminate '+uid+'? This retires the agent (gated).'))post('/api/terminate',{unit_id:uid});}
 tick(); setInterval(tick,1000);
+</script>
+</html>"""
+
+
+CHATS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Chats — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--mine:#14240c}
+*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none;margin-left:8px}
+.wrap{flex:1;display:flex;min-height:0}
+.side{width:260px;border-right:1px solid var(--line);overflow:auto;flex-shrink:0}
+.p{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.p:hover{background:#241a0f}.p.sel{background:#2a1f10;border-left:3px solid var(--gold)}
+.p .n{display:flex;justify-content:space-between}.p .n b{font-size:13px}
+.badge{font-size:10px;padding:0 7px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
+.p .last{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.msgs{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:75%;padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel)}
+.m.mine{align-self:flex-end;background:var(--mine);border-color:#3a5a1a}
+.m .s{font-size:10px;color:var(--dim);margin-bottom:2px}
+.compose{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit}
+button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
+.hint{color:var(--dim);padding:16px}
+</style>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a></header>
+<div class=wrap>
+  <div class=side id=side></div>
+  <div class=main>
+    <div class=msgs id=msgs><div class=hint>Select a conversation. Agents, the Board and the Chief Governor message you here; reply to each, or broadcast to All.</div></div>
+    <div class=compose><input id=box placeholder="Message… (try 'gather gold' to an agent)" onkeydown="if(event.key==='Enter')send()">
+      <button onclick=send()>Send</button></div>
+  </div>
+</div>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let sel='chief', data={participants:[],threads:{},broadcast:[]};
+async function load(){ try{ data=await (await fetch('/api/chats')).json() }catch(e){ return } render(); }
+function render(){
+  const parts=[{key:'all',name:'All (broadcast)',role:'everyone'}].concat(data.participants);
+  side.innerHTML=parts.map(p=>{const last=p.key==='all'?(data.broadcast.slice(-1)[0]||{}).body||'':p.last||'';
+    return `<div class="p ${p.key===sel?'sel':''}" onclick="pick('${p.key}')">
+      <div class=n><b>${esc(p.name)}</b><span class=badge>${esc(p.role)}</span></div>
+      <div class=last>${esc(last||'—')}</div></div>`}).join('');
+  const msgs=sel==='all'?data.broadcast:(data.threads[sel]||[]);
+  const box=document.getElementById('msgs');
+  box.innerHTML=msgs.length?msgs.map(m=>`<div class="m ${m.mine?'mine':''}">
+    <div class=s>${m.mine?'You':esc(m.sender)}</div>${esc(m.body)}</div>`).join(''):'<div class=hint>No messages yet — say hello.</div>';
+  box.scrollTop=box.scrollHeight;
+}
+function pick(k){ sel=k; render(); }
+async function send(){ const b=document.getElementById('box'); const t=b.value.trim(); if(!t) return; b.value='';
+  data=await (await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sel,body:t})})).json(); render(); }
+load(); setInterval(load,2000);
 </script>
 </html>"""
 

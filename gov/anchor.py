@@ -38,6 +38,8 @@ def init() -> None:
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, kind TEXT, note TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS observed_yield("
                   "resource TEXT PRIMARY KEY, total INT DEFAULT 0, samples INT DEFAULT 0)")
+        c.execute("CREATE TABLE IF NOT EXISTS messages("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, thread TEXT, sender TEXT, body TEXT)")
         c.commit()
     finally:
         c.close()
@@ -74,6 +76,45 @@ def event_log(limit: int = 200) -> list[str]:
         except (json.JSONDecodeError, KeyError):
             continue
     return list(reversed(out))
+
+
+def msg_send(thread: str, sender: str, body: str) -> None:
+    """Store a chat message. thread = the counterpart the human converses with;
+    sender = 'operator' (the human) or the counterpart's name."""
+    c = _conn()
+    try:
+        c.execute("INSERT INTO messages(thread, sender, body) VALUES(?,?,?)", (thread, sender, body))
+        c.commit()
+    finally:
+        c.close()
+
+
+def msg_thread(thread: str, limit: int = 100) -> list[dict]:
+    c = _conn()
+    try:
+        rows = c.execute("SELECT sender, body FROM messages WHERE thread=? ORDER BY id "
+                         "LIMIT ?", (thread, limit)).fetchall()
+        return [{"sender": s, "body": b, "mine": s == "operator"} for s, b in rows]
+    finally:
+        c.close()
+
+
+def msg_last(thread: str) -> str:
+    c = _conn()
+    try:
+        row = c.execute("SELECT body FROM messages WHERE thread=? ORDER BY id DESC LIMIT 1",
+                        (thread,)).fetchone()
+        return row[0] if row else ""
+    finally:
+        c.close()
+
+
+def msg_count(thread: str) -> int:
+    c = _conn()
+    try:
+        return c.execute("SELECT COUNT(*) FROM messages WHERE thread=?", (thread,)).fetchone()[0]
+    finally:
+        c.close()
 
 
 def event_count() -> int:
