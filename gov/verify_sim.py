@@ -54,7 +54,7 @@ check("3 villagers spawned concurrently", len(v) == 3)
 check("each gathered its quota", all(u.steps == S.QUOTA for u in v))
 check("all parked awaiting orders", all(u.pending for u in v))
 
-expect = {r: sum(S.YIELD[res] * S.QUOTA for _, res in villagers if res == r) for r in S.RESOURCES}
+expect = {r: sum(S.BASE[res] * S.QUOTA for _, res in villagers if res == r) for r in S.RESOURCES}
 w = S.world()
 check("World reflects gathered resources (the oracle)",
       all(w[r] == expect[r] for r in S.RESOURCES),
