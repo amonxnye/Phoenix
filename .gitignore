@@ -1,7 +1,10 @@
-# LangGraph checkpointer database (regenerated on every run)
+# LangGraph checkpointer databases (regenerated on every run)
 gov/checkpoints.sqlite
 gov/checkpoints.sqlite-wal
 gov/checkpoints.sqlite-shm
+gov/aoe.sqlite
+gov/aoe.sqlite-wal
+gov/aoe.sqlite-shm
 
 # Python
 __pycache__/

@@ -1,0 +1,71 @@
+"""The agent brain — where DeepSeek plugs in.
+
+Two decisions drive the game: what a villager should gather, and whether the herald
+should propose advancing the Age. Both go through this one interface so the policy can
+swap from rule-based to a real model without touching the sim or the governor.
+
+Rule-based is the default and runs with no key. If ``DEEPSEEK_API_KEY`` is set, the
+DeepSeek policy is used (OpenAI-compatible API). The model only ever *proposes* — every
+irreversible action still stops at the human gate, so a bad decision here is capped and
+gated, never executed blindly.
+"""
+
+import os
+
+RESOURCES = ("food", "wood", "gold")
+
+
+def _deepseek_available() -> bool:
+    return bool(os.environ.get("DEEPSEEK_API_KEY"))
+
+
+def choose_resource(index: int, world: dict) -> str:
+    """Which resource should villager #index gather?"""
+    if _deepseek_available():
+        return _deepseek_choose_resource(index, world)
+    # Rule-based: cover all three resources round-robin, then bias toward whatever is
+    # scarcest relative to the age-up cost.
+    return RESOURCES[index % len(RESOURCES)]
+
+
+def should_advance(world: dict, cost: dict) -> bool:
+    """Should the herald propose advancing the Age now?"""
+    if _deepseek_available():
+        return _deepseek_should_advance(world, cost)
+    return world["food"] >= cost["food"] and world["gold"] >= cost["gold"]
+
+
+# ── DeepSeek policy (used when DEEPSEEK_API_KEY is set) ───────────────────────
+# DeepSeek exposes an OpenAI-compatible API at https://api.deepseek.com. We keep the
+# calls behind these functions so the rest of the system never imports an SDK.
+
+def _deepseek_client():
+    from openai import OpenAI  # deferred; only needed when a key is present
+    return OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
+
+
+def _deepseek_choose_resource(index: int, world: dict) -> str:
+    client = _deepseek_client()
+    prompt = (f"Age of Empires economy. Current stockpile: {world}. "
+              f"You command villager #{index}. Reply with exactly one word — the resource "
+              f"to gather: food, wood, or gold. Balance the economy toward advancing the Age.")
+    out = client.chat.completions.create(
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4, temperature=0.3,
+    ).choices[0].message.content.strip().lower()
+    return out if out in RESOURCES else RESOURCES[index % len(RESOURCES)]
+
+
+def _deepseek_should_advance(world: dict, cost: dict) -> bool:
+    if world["food"] < cost["food"] or world["gold"] < cost["gold"]:
+        return False  # never propose an advance we can't afford
+    client = _deepseek_client()
+    prompt = (f"Age of Empires. Stockpile: {world}. Advancing costs {cost}. "
+              f"Is now a good time to advance the Age? Reply yes or no.")
+    out = client.chat.completions.create(
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=3, temperature=0.3,
+    ).choices[0].message.content.strip().lower()
+    return out.startswith("y")

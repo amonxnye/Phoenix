@@ -13,7 +13,17 @@ design record that produced it.
 pip install -r requirements.txt
 python3 gov/verify.py          # → 16/16 checks passed
 python3 gov/console.py --seed  # → live operator console at http://127.0.0.1:8787
+python3 gov/verify_sim.py      # → 15/15 — the Age of Empires MVP
 ```
+
+### MVP: the Governor over an Age of Empires economy
+
+Villagers gather food/wood/gold — reversible and cheap, so it runs free. Advancing to
+the next Age spends resources you can't get back — the irreversible action, so it stops
+at the human gate. The game state (the World) is the oracle: objective, instant, and
+resettable. The DeepSeek brain (`brain.py`) decides what to gather and when to advance;
+a rule-based policy runs with no key. To use DeepSeek: `pip install openai` and set
+`DEEPSEEK_API_KEY` in the environment (its API is OpenAI-compatible).
 
 No credentials, no network, no model calls — work nodes are deterministic so the
 control plane is testable on its own. The console is standard-library only (no web
@@ -29,6 +39,9 @@ alert, and a working approve/reject queue, no fixtures.
 | `gov/verify.py` | 16 acceptance checks, including durability across a real process boundary |
 | `gov/console.py` | Live operator console (stdlib HTTP): fleet grid, spend meter, idle alert, approval queue |
 | `gov/console_smoke.py` | Headless smoke test of the console's HTTP layer (runs in CI) |
+| `gov/sim.py` | **MVP** — Age of Empires economy: villagers gather (reversible), advancing the Age is the irreversible gated action, the World is the oracle |
+| `gov/brain.py` | The agent brain: rule-based by default, DeepSeek when `DEEPSEEK_API_KEY` is set |
+| `gov/verify_sim.py` | 15 acceptance checks for the MVP, reusing `governor.py` unchanged |
 | `SRS-Project-Phoenix-v2.md` | The specification — requirements, 12 acceptance criteria, open questions, roadmap |
 | `GOVERNOR.md` | Build doc: the architectural bet, results, and rationale (narrative) |
 | `PROJECT-RECORD.md` | Session record: the eight insights and decisions behind the design |
