@@ -142,7 +142,30 @@ def _participants() -> list[dict]:
     return parts
 
 
+def _persona_for(key: str) -> str:
+    if key == "chief":
+        return "the Chief Governor"
+    if key in board.GOVERNORS:
+        return f"{key}, a member of the Board of Governors"
+    return f"{key}, a {economy.role(key)} agent"
+
+
+def _situation() -> str:
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    w = sim.world()
+    return (f"Vision '{_vision().name}' at {sc['progress']}%. Age {w['age']}, food {w['food']} "
+            f"wood {w['wood']} gold {w['gold']}, {len(_S['villagers'])} agents, "
+            f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}.")
+
+
 def _chat_reply(key: str, body: str) -> str:
+    """Rules decide the action (safe); the model decides the words when available."""
+    sentence = _chat_reply_rules(key, body)          # applies any safe action, returns wording
+    llm = brain.reply(_persona_for(key), _situation(), body)
+    return llm or sentence
+
+
+def _chat_reply_rules(key: str, body: str) -> str:
     """The participant reads the human's message and responds — or resists."""
     low = body.lower()
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
@@ -334,6 +357,9 @@ def _snapshot() -> dict:
             "knowledge": anchor.summary(),
             "roster": economy.roster(),
             "agents": agents,
+            "external": anchor.external(12),
+            "external_count": anchor.external_count(),
+            "brain": "deepseek" if brain.available() else "rule-based",
             "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
                       "last": _S["last_vote"]},
             "cap_proposal": board.propose_cap(spend_ratio, sc, G.TOKEN_CAP),
@@ -419,6 +445,19 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 _chat_send(thread, text)
                 return self._send(200, json.dumps(_chats_snapshot()))
+        if self.path == "/api/ingest":
+            body = self._read_json()
+            topic = (body.get("topic") or "").strip()
+            if not topic:
+                return self._send(400, json.dumps({"error": "topic required"}))
+            with _LOCK:
+                fact = brain.research(topic) or (body.get("fact") or "").strip()
+                source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
+                if not fact:
+                    return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
+                anchor.ingest(topic, source, fact)   # Article VI: source recorded, never executed
+                anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
+            return self._send(200, json.dumps(_snapshot()))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -497,6 +536,9 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <span>Cap</span><input id=capin type=number step=10000 style="width:110px">
     <button onclick=setCap()>Set</button>
     <span id=capprop class=why></span>
+    <span>Learn</span><input id=topicin placeholder="topic" style="width:130px">
+    <button onclick=ingest()>Ingest</button>
+    <span id=brainmode class=navlink style="border-color:var(--line)"></span>
   </div>
 </header>
 <main>
@@ -550,7 +592,10 @@ async function tick(){
   const kn=d.knowledge;
   know.innerHTML=`<div><span>facts learned</span><b>${kn.facts}</b></div>
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
-    ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}`;
+    ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}
+    <div><span>external facts (${esc(d.brain)})</span><b>${d.external_count||0}</b></div>
+    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}`;
+  brainmode.textContent='brain: '+d.brain; d_brain_rule=(d.brain==='rule-based');
   roster.innerHTML=(d.roster||[]).map(a=>{const pct=a.next_at?Math.min(100,Math.round(100*a.contribution/a.next_at)):100;
     return `<tr><td>${esc(a.agent)}</td><td><span class="badge t${a.tier}">${esc(a.role)}</span></td>
       <td class=num>${a.contribution.toLocaleString()}</td>
@@ -582,6 +627,10 @@ function adopt(vision){post('/api/vision',{vision});}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
 function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
 function applyCap(v){post('/api/cap',{token_cap:v});}
+function ingest(){const t=topicin.value.trim();if(!t)return;topicin.value='';
+  const fact=d_brain_rule?prompt('No model configured — enter a fact about "'+t+'":'):null;
+  post('/api/ingest',{topic:t,fact:fact||''});}
+let d_brain_rule=true;
 tick(); setInterval(tick,1000);
 </script>
 </html>"""

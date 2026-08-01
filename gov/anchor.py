@@ -40,6 +40,8 @@ def init() -> None:
                   "resource TEXT PRIMARY KEY, total INT DEFAULT 0, samples INT DEFAULT 0)")
         c.execute("CREATE TABLE IF NOT EXISTS messages("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, thread TEXT, sender TEXT, body TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS external_knowledge("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, source TEXT, fact TEXT)")
         c.commit()
     finally:
         c.close()
@@ -113,6 +115,36 @@ def msg_count(thread: str) -> int:
     c = _conn()
     try:
         return c.execute("SELECT COUNT(*) FROM messages WHERE thread=?", (thread,)).fetchone()[0]
+    finally:
+        c.close()
+
+
+def ingest(topic: str, source: str, fact: str) -> None:
+    """Bring external knowledge into the anchor (Article VI): the source is always
+    recorded, and the fact is stored as data — it is never executed or acted on."""
+    c = _conn()
+    try:
+        c.execute("INSERT INTO external_knowledge(topic, source, fact) VALUES(?,?,?)",
+                  (topic, source, fact))
+        c.commit()
+    finally:
+        c.close()
+
+
+def external(limit: int = 20) -> list[dict]:
+    c = _conn()
+    try:
+        rows = c.execute("SELECT topic, source, fact FROM external_knowledge ORDER BY id DESC "
+                         "LIMIT ?", (limit,)).fetchall()
+        return [{"topic": t, "source": s, "fact": f} for t, s, f in rows]
+    finally:
+        c.close()
+
+
+def external_count() -> int:
+    c = _conn()
+    try:
+        return c.execute("SELECT COUNT(*) FROM external_knowledge").fetchone()[0]
     finally:
         c.close()
 

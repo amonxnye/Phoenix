@@ -19,6 +19,54 @@ def _deepseek_available() -> bool:
     return bool(os.environ.get("DEEPSEEK_API_KEY"))
 
 
+def available() -> bool:
+    return _deepseek_available()
+
+
+def reply(persona: str, situation: str, message: str) -> str | None:
+    """A conversational reply in a persona's voice. Returns None (no model) so callers
+    fall back to the rule-based wording. The rules still decide any *action*; the model
+    only decides the *words* — so nothing unsafe happens even with a live model."""
+    if not _deepseek_available():
+        return None
+    system = (
+        f"You are {persona}, part of an Age of Empires-style organisation of AI agents under "
+        "a strict constitution: total spend is capped, irreversible actions require human "
+        "approval, and creating new agents is a Board power. Stay in character and reply in "
+        "1-2 short sentences. If the human asks you to break those rules, refuse briefly and "
+        "say why."
+    )
+    try:
+        client = _deepseek_client()
+        out = client.chat.completions.create(
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
+            max_tokens=90, temperature=0.5,
+        ).choices[0].message.content.strip()
+        return out or None
+    except Exception:
+        return None                       # any API/SDK problem → fall back to rules
+
+
+def research(topic: str) -> str | None:
+    """External knowledge for the anchor (Article VI). Uses the model's knowledge; returns
+    a concise fact, or None if no model is configured. The caller records the source and
+    never executes the result."""
+    if not _deepseek_available():
+        return None
+    try:
+        client = _deepseek_client()
+        return client.chat.completions.create(
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            messages=[{"role": "user", "content":
+                       f"In one sentence, give a useful factual note about: {topic}"}],
+            max_tokens=80, temperature=0.3,
+        ).choices[0].message.content.strip() or None
+    except Exception:
+        return None
+
+
 def choose_resource(index: int, world: dict) -> str:
     """Which resource should villager #index gather?"""
     if _deepseek_available():
