@@ -122,6 +122,25 @@ probe = subprocess.run(
 check("Age-up persists across restart", "Feudal Age" in probe.stdout,
       probe.stdout.strip() or probe.stderr.strip()[:80])
 
+# ── 5. skill memory: retrospectives distill strategy, decisions read it ──────
+print("\n5. Skill memory — learning across generations (Article VI: facts → wisdom)")
+import anchor as A
+import brain as B2
+A.init()
+digest = {"trigger": "test", "turn": 9, "progress": 62, "side_effects": 1,
+          "waste": 2, "cap_hits": 0, "reaps": 3, "promotions": 0,
+          "best_resource": "food", "yields": {"food": 28.6}, "spend_ratio": 0.4}
+lessons = B2.retrospective(digest, [])
+check("retrospective distills lessons from a run", 1 <= len(lessons) <= 3,
+      lessons[0][:60] + "…")
+for les in lessons:
+    A.skill_add(9, les, source="test", trigger="test")
+top = {x["lesson"] for x in A.skills_top(5)}
+check("lessons persist in the skills store", set(lessons) <= top)
+n = A.skills_count()
+A.skill_add(9, lessons[0], source="test", trigger="test")     # exact duplicate
+check("duplicate lessons are not hoarded", A.skills_count() == n)
+
 print("\n" + S.render_world())
 print(G.render(sorted(G.units(graph, cp), key=lambda u: u.unit_id)))
 print(f"{sum(results)}/{len(results)} checks passed\n")

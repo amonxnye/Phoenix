@@ -55,7 +55,47 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS external_knowledge("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, source TEXT, fact TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT)")
+        # Skills: distilled lessons from retrospectives — strategy, not just numbers.
+        # This is Article VI taken from facts to wisdom: future decisions read these.
+        c.execute("CREATE TABLE IF NOT EXISTS skills("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, lesson TEXT, "
+                  "source TEXT DEFAULT '', trigger TEXT DEFAULT '')")
         c.commit()
+    finally:
+        c.close()
+
+
+def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> None:
+    lesson = (lesson or "").strip()[:280]
+    if not lesson:
+        return
+    c = _conn()
+    try:
+        # de-dup: don't hoard the same lesson every retrospective
+        if c.execute("SELECT 1 FROM skills WHERE lesson=?", (lesson,)).fetchone():
+            return
+        c.execute("INSERT INTO skills(turn, lesson, source, trigger) VALUES(?,?,?,?)",
+                  (turn, lesson, source, trigger))
+        c.commit()
+    finally:
+        c.close()
+
+
+def skills_top(limit: int = 5) -> list[dict]:
+    """Most recent distilled lessons — what the brain reads before deciding."""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT turn, lesson, source, trigger FROM skills "
+                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"turn": t, "lesson": l, "source": s, "trigger": tr} for t, l, s, tr in rows]
+    finally:
+        c.close()
+
+
+def skills_count() -> int:
+    c = _conn()
+    try:
+        return c.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
     finally:
         c.close()
 

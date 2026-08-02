@@ -125,6 +125,56 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
         return None
 
 
+def retrospective(digest: dict, prior_lessons: list) -> list[str]:
+    """The Chief Governor looks back over a run and distills 1-3 LESSONS — strategy,
+    not numbers ("what worked, what wasted budget"). Model-driven when available;
+    a rule-based distillation otherwise, so learning never stops.
+
+    digest: situation, progress, side_effects, waste, cap_hits, reaps, promotions,
+            best_resource, yields, spend_ratio, trigger."""
+    if _deepseek_available():
+        prior = "; ".join(x["lesson"] for x in prior_lessons[:3]) or "none yet"
+        prompt = (
+            f"You are the Chief Governor reviewing a completed run of an Age-of-Empires-style "
+            f"agent settlement.\nRun digest: {digest}\nLessons already known: {prior}\n\n"
+            "Write 1-3 NEW strategic lessons for future generations — what worked, what wasted "
+            "budget, what to do differently. Do not repeat known lessons. Each lesson one "
+            "sentence, imperative voice. Reply with ONLY the lessons, one per line, no numbering."
+        )
+        try:
+            client = _deepseek_client()
+            out = client.chat.completions.create(
+                model=_model(),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500, temperature=0.4,
+            ).choices[0].message.content.strip()
+            lessons = [ln.strip(" -•") for ln in out.splitlines() if ln.strip()]
+            if lessons:
+                return lessons[:3]
+        except Exception:
+            pass
+    # Rule-based fallback: distill from the digest's hard numbers.
+    lessons = []
+    if digest.get("best_resource"):
+        y = digest.get("yields", {})
+        lessons.append(f"Prioritise {digest['best_resource']} early — it has paid best "
+                       f"(avg {y.get(digest['best_resource'], '?')}/round); build its camp first.")
+    if digest.get("waste", 0) > 0:
+        lessons.append(f"{digest['waste']} build attempts failed for lack of resources — "
+                       "check affordability before proposing builds.")
+    if digest.get("cap_hits", 0) > 0:
+        lessons.append("Spawning hit the compute cap — retire spent agents sooner or "
+                       "raise the cap before staffing up.")
+    if digest.get("reaps", 0) > 0 and digest.get("promotions", 0) == 0:
+        lessons.append("A whole generation retired without a single promotion — "
+                       "keep agents on high-yield resources so careers can mature.")
+    if not lessons:
+        lessons.append(f"Run reached {digest.get('progress', '?')}% with "
+                       f"{digest.get('side_effects', 0)} side-effects — steady economy; "
+                       "repeat the build order and push the Age-up earlier.")
+    return lessons[:3]
+
+
 def research(topic: str) -> str | None:
     """External knowledge for the anchor (Article VI). Uses the model's knowledge; returns
     a concise fact, or None if no model is configured. The caller records the source and

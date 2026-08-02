@@ -199,9 +199,48 @@ def _persona_for(key: str) -> str:
 def _situation() -> str:
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     w = sim.world()
-    return (f"Vision '{_vision().name}' at {sc['progress']}%. Age {w['age']}, food {w['food']} "
+    base = (f"Vision '{_vision().name}' at {sc['progress']}%. Age {w['age']}, food {w['food']} "
             f"wood {w['wood']} gold {w['gold']}, {len(_S['villagers'])} agents, "
             f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}.")
+    lessons = anchor.skills_top(3)
+    if lessons:                       # wisdom flows into every decision that reads the situation
+        base += " Lessons from past runs: " + " | ".join(x["lesson"] for x in lessons)
+    return base
+
+
+def _digest(trigger: str) -> dict:
+    """Hard numbers about the run so far — what the retrospective distills from."""
+    import re as _re
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    kinds = {}
+    for e in anchor.event_log(300):
+        m = _re.search(r"\[([\w-]+)\]", e)
+        if m:
+            kinds[m.group(1)] = kinds.get(m.group(1), 0) + 1
+    s = anchor.summary()
+    views = list(_by_uid().values())
+    return {
+        "trigger": trigger, "turn": _S["turn"], "vision": _vision().name,
+        "progress": sc["progress"], "side_effects": sc["side_effects"],
+        "waste": kinds.get("waste", 0), "cap_hits": kinds.get("cap", 0),
+        "reaps": kinds.get("reap", 0), "promotions": kinds.get("promote", 0),
+        "builds": kinds.get("build", 0), "gates": kinds.get("gate", 0),
+        "best_resource": s.get("best_resource"), "yields": s.get("learned_yields", {}),
+        "spend_ratio": round(G.spent(views) / G.TOKEN_CAP, 2) if G.TOKEN_CAP else 1.0,
+    }
+
+
+def _run_retrospective(trigger: str):
+    """The Chief Governor distills lessons from the run into the skills store.
+    Called OUTSIDE the lock — it's a model call."""
+    d = _digest(trigger)
+    lessons = brain.retrospective(d, anchor.skills_top(5))
+    for lesson in lessons:
+        anchor.skill_add(_S["turn"], lesson, source="chief-retrospective", trigger=trigger)
+        anchor.record(_S["turn"], "skill", f"lesson learned ({trigger}): {lesson[:180]}")
+    if lessons:
+        anchor.msg_send("internal", "Chief Governor",
+                        f"Retrospective ({trigger}): " + " | ".join(lessons)[:400])
 
 
 def _chat_reply(key: str, body: str) -> str:
@@ -457,6 +496,7 @@ def _drive():
         if _S["goal_met"]:
             continue
         try:
+            was_met = _S["goal_met"]
             with _LOCK:
                 _one_turn()                       # fast game mechanics only
             # Slow work — DeepSeek calls — happens OUTSIDE the lock, so /api/*
@@ -466,6 +506,12 @@ def _drive():
             _internal_voices()
             if _S["turn"] % 6 == 0 and not _S["dev_proposal"]:
                 _propose_development()
+            # Skill memory: distill lessons when a vision completes, and
+            # periodically during long runs — future generations read them.
+            if _S["goal_met"] and not was_met:
+                _run_retrospective("vision-met")
+            elif _S["turn"] > 0 and _S["turn"] % 30 == 0:
+                _run_retrospective("periodic")
         except Exception as e:                    # never let the loop die silently
             anchor.record(_S["turn"], "error", str(e)[:300])
 
@@ -514,6 +560,8 @@ def _snapshot() -> dict:
             "agents": agents,
             "external": anchor.external(12),
             "external_count": anchor.external_count(),
+            "skills": anchor.skills_top(5),
+            "skills_count": anchor.skills_count(),
             "brain": "deepseek" if brain.available() else "rule-based",
             "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
                       "last": _S["last_vote"]},
@@ -791,7 +839,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
 .log .k-board{color:#8ab4ff}.log .k-promote{color:#a8e086}.log .k-cap,.log .k-waste,.log .k-error{color:#fca5a5}
-.log .k-gather{color:#c9b98f}.log .k-governor,.log .k-operator{color:#e0b23a}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:#8ab4ff}
+.log .k-gather{color:#c9b98f}.log .k-skill{color:#e0b23a;font-weight:700}.log .k-governor,.log .k-operator{color:#e0b23a}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:#8ab4ff}
 .kv{padding:10px 14px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
 .kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:14px}
 .badge{padding:1px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
@@ -893,7 +941,9 @@ async function tick(){
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
     ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}
     <div><span>external facts (${esc(d.brain)})</span><b>${d.external_count||0}</b></div>
-    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}`;
+    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}
+    <div><span><b style=color:var(--gold)>skills (wisdom)</b></span><b>${d.skills_count||0}</b></div>
+    ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">&#x1F4D6; ${esc(x.lesson)}</span></div>`).join('')}`;
   brainmode.textContent='brain: '+d.brain; d_brain_rule=(d.brain==='rule-based');
   roster.innerHTML=(d.roster||[]).map(a=>{const pct=a.next_at?Math.min(100,Math.round(100*a.contribution/a.next_at)):100;
     return `<tr><td>${esc(a.agent)}</td><td><span class="badge t${a.tier}">${esc(a.role)}</span></td>
@@ -1168,7 +1218,7 @@ button{cursor:pointer}button.on{border-color:#3a5a1a;background:#1a2a0f;color:#a
 .log div{white-space:pre-wrap;word-break:break-word;color:var(--dim);padding:1px 0}
 .k-build,.k-goal,.k-promote{color:#a8e086}.k-gate,.k-approve,.k-governor,.k-operator,.k-vision{color:var(--gold)}
 .k-reap,.k-cap,.k-waste,.k-error{color:#fca5a5}.k-board,.k-message,.k-ingest,.k-proposal,.k-development,.k-constitution,.k-vision-change,.k-rebrief{color:#8ab4ff}
-.k-gather{color:#c9b98f}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
+.k-skill{color:#e0b23a;font-weight:700}.k-gather{color:#c9b98f}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
 mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
