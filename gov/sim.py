@@ -45,8 +45,20 @@ RESOURCES = ("food", "wood", "gold")
 BASE = {"food": 20, "wood": 15, "gold": 8}           # base yield per gather round
 CAMP_FOR = {"food": "mill", "wood": "lumber_camp", "gold": "mining_camp"}
 QUOTA = 3                                            # rounds before a villager parks
-ADVANCE_COST = {"food": 500, "gold": 300}            # irreversible age-up price
+ADVANCE_COST = {"food": 500, "gold": 300}            # Dark→Feudal base price
+ADVANCE_GROWTH = 100                                 # each later age costs 100x the one before
+AGE_ORDER = ("Dark Age", "Feudal Age", "Castle Age", "Imperial Age")
 NEXT_AGE = {"Dark Age": "Feudal Age", "Feudal Age": "Castle Age", "Castle Age": "Imperial Age"}
+
+
+def advance_cost(age: str | None = None) -> dict:
+    """Price of advancing OUT of `age` (current world age when None). Real growth is
+    exponential, not linear: every age costs 100-fold the one before, so each era is a
+    genuine accumulation project — Feudal 500 food, Castle 50,000, Imperial 5,000,000."""
+    if age is None:
+        age = world()["age"]
+    mult = ADVANCE_GROWTH ** AGE_ORDER.index(age) if age in AGE_ORDER else 1
+    return {r: v * mult for r, v in ADVANCE_COST.items()}
 
 # What the settlement can develop. Buildings are reversible (you can demolish), so they
 # run free; only advancing the Age is gated. rank orders the tree (I = foundations).
@@ -255,11 +267,12 @@ def _world_advance() -> tuple[bool, str]:
         nxt = NEXT_AGE.get(age)
         if nxt is None:
             return False, f"already at {age}"
-        if food < ADVANCE_COST["food"] or gold < ADVANCE_COST["gold"]:
+        cost = advance_cost(age)
+        if food < cost["food"] or gold < cost["gold"]:
             return False, (f"insufficient resources: have food {food}/gold {gold}, "
-                           f"need food {ADVANCE_COST['food']}/gold {ADVANCE_COST['gold']}")
+                           f"need food {cost['food']}/gold {cost['gold']}")
         c.execute("UPDATE world SET food=food-?, gold=gold-?, age=? WHERE id=1",
-                  (ADVANCE_COST["food"], ADVANCE_COST["gold"], nxt))
+                  (cost["food"], cost["gold"], nxt))
         c.commit()
         return True, f"advanced to {nxt}"
     finally:
@@ -325,10 +338,11 @@ def assess(state: Unit) -> dict:
 
 def advance(state: Unit) -> dict:
     """The irreversible action: spend resources to advance the Age. Gated."""
+    cost = advance_cost()
     decision = interrupt({
         "uid": state["uid"],
         "action": f"ADVANCE to {NEXT_AGE.get(world()['age'], 'next Age')} — "
-                  f"spend food {ADVANCE_COST['food']} + gold {ADVANCE_COST['gold']} (irreversible)",
+                  f"spend food {cost['food']:,} + gold {cost['gold']:,} (irreversible)",
         "reversible": False,
         "tokens_spent": state["tokens"],
     })

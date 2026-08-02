@@ -24,8 +24,9 @@ def _by_uid(graph, cp):
 
 def _scarcest(w: dict) -> str:
     """Gather toward whatever the settlement is shortest on (balances the economy)."""
-    need_food = max(0, sim.ADVANCE_COST["food"] - w["food"])
-    need_gold = max(0, sim.ADVANCE_COST["gold"] - w["gold"])
+    cost = sim.advance_cost(w["age"])
+    need_food = max(0, cost["food"] - w["food"])
+    need_gold = max(0, cost["gold"] - w["gold"])
     if w["wood"] < 150:                      # keep wood flowing so we can keep building
         return "wood"
     if need_food or need_gold:
@@ -105,7 +106,7 @@ def run(turns: int = 8, target_villagers: int = 4, verbose: bool = True) -> dict
         #    always through the human gate (irreversible)
         w = sim.world()
         aligned = V.AGES.index(w["age"]) < V.AGES.index(V.GOAL.target_age)
-        if aligned and sim.NEXT_AGE.get(w["age"]) and brain.should_advance(w, sim.ADVANCE_COST):
+        if aligned and sim.NEXT_AGE.get(w["age"]) and brain.should_advance(w, sim.advance_cost(w["age"])):
             heralds += 1
             huid = f"herald-{heralds:02d}"
             sim.spawn(graph, huid, "herald")

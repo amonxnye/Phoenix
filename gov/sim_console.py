@@ -88,8 +88,9 @@ else:
 
 def _choose_gather(w: dict) -> tuple[str, str]:
     """Pick a resource AND say why — the reasoning is first-class, not implicit."""
-    need_food = max(0, sim.ADVANCE_COST["food"] - w["food"])
-    need_gold = max(0, sim.ADVANCE_COST["gold"] - w["gold"])
+    cost = sim.advance_cost(w["age"])
+    need_food = max(0, cost["food"] - w["food"])
+    need_gold = max(0, cost["gold"] - w["gold"])
     if w["wood"] < 150:
         return "wood", f"wood at {w['wood']}, below the 150 floor needed to keep building"
     if need_food or need_gold:
@@ -714,20 +715,39 @@ def _one_turn():
                     anchor.record(t, "build", msg)
                 break
 
+    # Age development: exponential growth (each age costs 100x the one before), and the
+    # herald only goes to the human gate once the BOARD judges the treasury ready —
+    # advancing an era is a board sense, not a director reflex.
     w = sim.world()
+    acost = sim.advance_cost(w["age"])
     aligned = V.AGES.index(w["age"]) < V.AGES.index(_vision().target_age)
-    affordable = w["food"] >= sim.ADVANCE_COST["food"] and w["gold"] >= sim.ADVANCE_COST["gold"]
+    affordable = w["food"] >= acost["food"] and w["gold"] >= acost["gold"]
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
-        _S["heralds"] += 1
-        anchor.config_set("heralds", str(_S["heralds"]))
-        hid = f"herald-{_S['heralds']:02d}"
-        sim.spawn(_GRAPH, hid, "herald")
-        anchor.career_add(hid, t, "born", "sent to the Age-up gate — irreversible, human decides")
-        anchor.reason_add(t, "director", "send herald to the Age-up gate",
-                          f"aligned with vision '{_vision().name}' and affordable "
-                          f"(food {w['food']}≥{sim.ADVANCE_COST['food']}, gold {w['gold']}≥{sim.ADVANCE_COST['gold']}); "
-                          "irreversible, so the human decides")
-        anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
+        nxt = sim.NEXT_AGE[w["age"]]
+        bv = board.vote(f"advance to {nxt} (spend food {acost['food']:,} + gold {acost['gold']:,})",
+                        {"aligned": True, "affordable": True,
+                         "within_budget": sc_now["within_budget"],
+                         "spent": G.spent(_fleet_views()), "cap": G.TOKEN_CAP})
+        if not bv["approved"]:
+            if f"advblock:{w['age']}" not in _S["notified"]:   # narrate the refusal once per age
+                _S["notified"].add(f"advblock:{w['age']}")
+                _narrate_vote(bv, "the board does not judge the treasury ready")
+                anchor.record(t, "board", f"[{bv['tally']}] holds the {nxt} advance — treasury not ready")
+        else:
+            _narrate_vote(bv, f"the board judges the treasury ready for {nxt}")
+            _S["heralds"] += 1
+            anchor.config_set("heralds", str(_S["heralds"]))
+            hid = f"herald-{_S['heralds']:02d}"
+            sim.spawn(_GRAPH, hid, "herald")
+            anchor.career_add(hid, t, "born",
+                              f"board {bv['tally']} judged the treasury ready for {nxt} — "
+                              "sent to the gate; irreversible, human decides")
+            anchor.reason_add(t, "director", "send herald to the Age-up gate",
+                              f"aligned with vision '{_vision().name}'; board {bv['tally']} judged "
+                              f"the treasury ready (food {w['food']:,}≥{acost['food']:,}, "
+                              f"gold {w['gold']:,}≥{acost['gold']:,}); irreversible, human decides")
+            anchor.record(t, "gate", f"herald parked at the gate — board {bv['tally']} approved; "
+                                     "awaiting YOUR approval to advance the Age")
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
@@ -909,7 +929,11 @@ def _rules_data() -> dict:
         "resources": {r: sim.BASE[r] for r in sim.RESOURCES},
         "structures": {k: {"cost": v["cost"], "effect": v["effect"]}
                        for k, v in sim.STRUCTURES.items()},
-        "quota": sim.QUOTA, "advance_cost": sim.ADVANCE_COST, "ages": V.AGES,
+        "quota": sim.QUOTA, "ages": V.AGES,
+        # exponential era pricing: each advance costs 100x the previous one
+        "advance_cost": sim.ADVANCE_COST,
+        "advance_costs": {age: sim.advance_cost(age) for age in sim.AGE_ORDER[:-1]},
+        "advance_growth": sim.ADVANCE_GROWTH,
         "tiers": [{"name": x["name"], "budget": x["budget"], "promote_at": x["promote_at"],
                    "can": list(x["can"])} for x in economy.TIERS],
         "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM},
@@ -1559,7 +1583,11 @@ async function load(){
     ${Object.entries(d.structures).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(money(v.cost))}</td><td>${esc(v.effect)}</td></tr>`).join('')}</table></div>
 
   <div class=card><h2>Irreversible action — advancing the Age (gated)</h2><div class=p>
-    Cost per Age-up: <b>${esc(money(d.advance_cost))}</b>. Requires human approval at the gate.</div></div>
+    Era prices grow <b>&times;${d.advance_growth}</b> per age — real growth is exponential.
+    The Board must judge the treasury ready (quorum vote) before a herald reaches the gate;
+    the final approval is always human.</div>
+    <table><tr><th>Advance</th><th>Price</th></tr>
+    ${Object.entries(d.advance_costs||{}).map(([age,c])=>`<tr><td>${esc(age)} &rarr;</td><td>${esc(money(c))}</td></tr>`).join('')}</table></div>
 
   <div class=card><h2>Capability tiers — status earned by contribution</h2>
     <table><tr><th>Tier</th><th>Budget</th><th>Promote at</th><th>Capabilities</th></tr>
