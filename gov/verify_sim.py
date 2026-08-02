@@ -143,5 +143,22 @@ check("duplicate lessons are not hoarded", A.skills_count() == n)
 
 print("\n" + S.render_world())
 print(G.render(sorted(G.units(graph, cp), key=lambda u: u.unit_id)))
-print(f"{sum(results)}/{len(results)} checks passed\n")
+
+# ── 6. permanent memory: the anchor survives a world reset ───────────────────
+print("\n6. Permanence — wiping the game world never touches the memory")
+check("anchor lives in its own DB, separate from the game world", A.DB != S.DB,
+      os.path.basename(A.DB))
+A.career_add("vil-test", 9, "born", "enlisted for the permanence check")
+A.career_add("vil-test", 12, "retired", "budget spent")
+life = next((c for c in A.careers() if c["uid"] == "vil-test"), None)
+check("an agent's career is recorded and readable", life is not None
+      and [e["event"] for e in life["events"]][:2] == ["born", "retired"])
+before_skills, before_reasons = A.skills_count(), A.reasons_count()
+fresh_db()                                        # the world reset: game DB deleted
+check("skills survive the world wipe", A.skills_count() == before_skills and before_skills > 0)
+check("reasoning and careers survive the world wipe",
+      A.reasons_count() == before_reasons
+      and any(c["uid"] == "vil-test" for c in A.careers()))
+
+print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

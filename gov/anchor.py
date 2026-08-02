@@ -29,7 +29,13 @@ def _data_dir() -> str:
 
 
 _DATA_DIR = _data_dir()
-DB = os.path.join(_DATA_DIR, "aoe.sqlite")
+
+# The anchor lives in its OWN database, separate from the game world. A world reset —
+# or any wipe of the game DB — can therefore never take the settlement's memory with
+# it: skills, reasoning, chats, learned yields, ingested knowledge and config are
+# permanent. Put GOV_DATA_DIR on a volume and they survive redeploys too.
+DB = os.path.join(_DATA_DIR, "aoe-anchor.sqlite")
+LEGACY_DB = os.path.join(_DATA_DIR, "aoe.sqlite")   # where these tables used to live
 
 # The permanent, append-only event log. It is written on every record() and is NEVER
 # truncated, so the audit trail survives a game DB reset. Put GOV_DATA_DIR on a durable
@@ -65,7 +71,100 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS reasoning("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, actor TEXT, "
                   "decision TEXT, why TEXT)")
+        # Careers: the permanent record of every agent that ever lived — what made it,
+        # what it did, and how it ended. gen (generation) rises on each world reset so
+        # a vil-01 from world 3 is never confused with a vil-01 from world 1.
+        c.execute("CREATE TABLE IF NOT EXISTS careers("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, gen INT, uid TEXT, "
+                  "turn INT, event TEXT, detail TEXT)")
         c.commit()
+        _migrate_legacy(c)
+    finally:
+        c.close()
+
+
+_TABLES = ("knowledge", "observed_yield", "messages", "external_knowledge",
+           "config", "skills", "reasoning")
+
+
+def _migrate_legacy(c: sqlite3.Connection) -> None:
+    """One-time lift: the anchor's tables used to live inside the game DB. If this
+    anchor DB is empty and the legacy game DB holds memory, copy it over so nothing
+    already learned is lost when upgrading."""
+    if DB == LEGACY_DB or not os.path.exists(LEGACY_DB):
+        return
+    if (c.execute("SELECT COUNT(*) FROM knowledge").fetchone()[0]
+            or c.execute("SELECT COUNT(*) FROM skills").fetchone()[0]):
+        return                                     # already has memory — never overwrite
+    try:
+        c.execute("ATTACH ? AS legacy", (LEGACY_DB,))
+        have = {r[0] for r in c.execute(
+            "SELECT name FROM legacy.sqlite_master WHERE type='table'")}
+        for t in _TABLES:
+            if t in have:
+                c.execute(f"INSERT OR IGNORE INTO {t} SELECT * FROM legacy.{t}")
+        c.commit()
+        c.execute("DETACH legacy")
+    except sqlite3.Error:
+        pass                                       # legacy busy/absent — start fresh
+
+
+def generation() -> int:
+    """Which world this is. Rises by one on every world reset; never falls."""
+    return int(config_get("generation", "1") or 1)
+
+
+def new_generation() -> int:
+    """Called at boot when the game world is fresh — a new world, same memory."""
+    g = int(config_get("generation", "0") or 0) + 1
+    config_set("generation", str(g))
+    return g
+
+
+def career_add(uid: str, turn: int, event: str, detail: str = "") -> None:
+    """Append one line to an agent's permanent record: born, order, promote, build,
+    gate, message, retire, terminate. Survives world resets — agents are remembered."""
+    if turn < 0:
+        turn = CURRENT_TURN
+    c = _conn()
+    try:
+        c.execute("INSERT INTO careers(gen, uid, turn, event, detail) VALUES(?,?,?,?,?)",
+                  (generation(), uid, turn, event[:40], (detail or "")[:240]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def careers(limit_agents: int = 40) -> list[dict]:
+    """The hall of records: every agent ever, newest first, each with its full life
+    story oldest-to-newest. [{gen, uid, events: [{turn, event, detail}, ...]}]"""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT gen, uid, turn, event, detail FROM careers "
+                         "ORDER BY id DESC LIMIT 1200").fetchall()
+    finally:
+        c.close()
+    agents: dict[tuple, dict] = {}
+    for g, uid, t, ev, det in rows:                # newest rows first
+        key = (g, uid)
+        if key not in agents:
+            if len(agents) >= limit_agents:
+                continue
+            agents[key] = {"gen": g, "uid": uid, "events": []}
+        agents[key]["events"].append({"turn": t, "event": ev, "detail": det})
+    out = list(agents.values())                    # insertion order = newest agent first
+    for a in out:
+        a["events"].reverse()                      # each life told oldest → newest
+    return out
+
+
+def careers_count() -> tuple[int, int]:
+    """(total career events, distinct agents ever recorded)."""
+    c = _conn()
+    try:
+        ev = c.execute("SELECT COUNT(*) FROM careers").fetchone()[0]
+        ag = c.execute("SELECT COUNT(DISTINCT gen || ':' || uid) FROM careers").fetchone()[0]
+        return ev, ag
     finally:
         c.close()
 

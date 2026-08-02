@@ -5,6 +5,9 @@ gov/checkpoints.sqlite-shm
 gov/aoe.sqlite
 gov/aoe.sqlite-wal
 gov/aoe.sqlite-shm
+gov/aoe-anchor.sqlite
+gov/aoe-anchor.sqlite-wal
+gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 
 # Python

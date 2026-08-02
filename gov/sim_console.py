@@ -40,10 +40,16 @@ G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
 _LOCK = threading.Lock()
+_FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
+if _FRESH_WORLD:
+    # A new world, same memory: the generation counter rises so agent ids stay unique
+    # in the permanent career records across world resets.
+    gen = anchor.new_generation()
+    anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
@@ -60,6 +66,14 @@ def _choose_gather(w: dict) -> tuple[str, str]:
     if need_food or need_gold:
         r = "food" if need_food >= need_gold else "gold"
         return r, f"Age-up shortfall drives it: food short {need_food}, gold short {need_gold}"
+    # Rebalance guard: "bank the best yield" is a feedback loop (the resource gathered
+    # most gets the camps and the observations, so it stays "best" forever and wood/gold
+    # starve). When the economy is lopsided, gather the poorest stock instead.
+    lo = min(sim.RESOURCES, key=lambda k: w[k])
+    hi = max(sim.RESOURCES, key=lambda k: w[k])
+    if w[hi] > 4 * max(1, w[lo]):
+        return lo, (f"economy is lopsided — {hi} {w[hi]:,} vs {lo} {w[lo]:,}; "
+                    f"rebalance into {lo} instead of banking more surplus")
     br = anchor.best_known_yield()
     if br:
         return br, f"no shortages — {br} has the best learned yield, so bank the surplus there"
@@ -114,6 +128,7 @@ def _propose_development():
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
     _S["dev_proposal"] = prop
+    _narrate_vote(bv, prop.get("why", ""))
     anchor.reason_add(_S["turn"], "governor", f"propose development '{prop['name']}'",
                       f"{prop.get('why', '')} (source {prop.get('source', '')}; board {bv['tally']})")
     anchor.record(_S["turn"], "proposal",
@@ -166,12 +181,15 @@ def _op_add(resource: str = "") -> tuple[bool, str]:
     if not bv["approved"]:
         _S["seq"] -= 1
         anchor.record(_S["turn"], "board", f"[{bv['tally']}] BLOCKED operator add — {reason if not ok else 'no quorum'}")
+        _narrate_vote(bv, reason if not ok else "no quorum")
         return False, f"board blocked ({bv['tally']})"
     res = resource if resource in sim.RESOURCES else D._scarcest(sim.world())
     sim.spawn(_GRAPH, uid, "villager", resource=res)
     economy.enlist(uid)
     _S["villagers"].append(uid)
     anchor.record(_S["turn"], "operator", f"added {uid} → gather {res} (board {bv['tally']})")
+    anchor.career_add(uid, _S["turn"], "born", f"added by operator (board {bv['tally']}) → gather {res}")
+    _narrate_vote(bv)
     return True, uid
 
 
@@ -185,6 +203,7 @@ def _op_terminate(uid: str) -> None:
         _S["villagers"].remove(uid)
     _S["orders"].pop(uid, None)
     anchor.record(_S["turn"], "operator", f"terminated {uid} (human gate)")
+    anchor.career_add(uid, _S["turn"], "terminated", "by operator at the human gate")
 
 
 def _op_order(uid: str, resource: str) -> bool:
@@ -197,6 +216,7 @@ def _op_order(uid: str, resource: str) -> bool:
         sim.resume(_GRAPH, uid, f"gather:{resource}")
         economy.credit(uid, sim.QUOTA * sim.effective_yield(resource))
     anchor.record(_S["turn"], "message", f"operator → {uid}: standing order gather {resource}")
+    anchor.career_add(uid, _S["turn"], "message", f"operator standing order: gather {resource}")
     return True
 
 
@@ -355,6 +375,19 @@ def _chat_send(key: str, body: str):
         anchor.msg_send(key, name, _chat_reply(key, body))
 
 
+def _narrate_vote(bv: dict, why: str = ""):
+    """Board votes are DECISIONS — put the tally and each governor's position into the
+    internal chat, so deliberation is visible on /chats instead of happening silently."""
+    stances = {"Prudence": "budget headroom", "Growth": "vision alignment",
+               "Ledger": "affordability"}
+    detail = ", ".join(f"{g}: {'yes' if ok else 'NO'} ({stances[g]})"
+                       for g, ok in bv["ballots"].items())
+    verdict = "APPROVED" if bv["approved"] else "BLOCKED"
+    anchor.msg_send("internal", "Board vote",
+                    f"{bv['proposal']} — {detail} → {verdict} {bv['tally']}"
+                    + (f"; {why}" if why else ""))
+
+
 def _internal_voices():
     """The system talks to ITSELF — board deliberation and governor directives, model-
     driven when DeepSeek is alive, templated otherwise. The human observes on /chats."""
@@ -366,14 +399,38 @@ def _internal_voices():
             or f"Directive: press toward '{_vision().name}'; keep spend under cap and gather what's scarce."
         anchor.msg_send("internal", "Chief Governor", line)
     if t % 8 == 0:                # board debates less often; each round is 3 model calls
+        said = []                 # a DEBATE: each governor hears and answers the others
         for g in board.GOVERNORS:
             stance = {"Prudence": "watch the spend, block anything reckless",
                       "Growth": "push toward the vision",
                       "Ledger": "spend only what we can afford"}[g]
+            heard = " | ".join(said) or "you open the debate"
             line = brain.think(f"{g}, a member of the Board", sit,
-                               f"Give your one-line view to the other governors ({stance}).") \
+                               f"Board debate so far: {heard}. In one line, respond to your "
+                               f"colleagues — agree or push back ({stance}).") \
                 or f"{stance.capitalize()}."
+            said.append(f"{g}: {line[:140]}")
             anchor.msg_send("internal", g, line)
+
+
+def _peer_chatter():
+    """Agents talk to EACH OTHER — the most senior agent coordinates the most junior
+    every few turns. Model-driven when alive, templated otherwise. Visible on /chats
+    (internal thread), in the logs as [comm], and in BOTH agents' permanent careers."""
+    roster = [r for r in economy.roster() if r["agent"] in _S["villagers"]]
+    if len(roster) < 2:
+        return
+    roster.sort(key=lambda r: (-r["tier"], -r["contribution"]))
+    sender, s_role = roster[0]["agent"], roster[0]["role"]
+    receiver = roster[-1]["agent"]
+    res, why = _choose_gather(sim.world())
+    line = brain.think(f"{sender}, a {s_role} in the fleet", _situation(),
+                       f"In one short line, coordinate with your colleague {receiver}: "
+                       f"the settlement should gather {res} because {why}.") \
+        or f"{receiver}, shift to {res} — {why}."
+    anchor.msg_send("internal", f"{sender} → {receiver}", line)
+    anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
+    anchor.career_add(receiver, _S["turn"], "message", f"from {sender}: {line[:140]}")
 
 
 def _fleet_speaks():
@@ -428,7 +485,10 @@ def _one_turn():
         if not bv["approved"]:
             _S["side_effects"] += 1
             anchor.record(t, "board", f"[{bv['tally']}] BLOCKED {uid} — {reason if not ok else 'no quorum'}")
+            _narrate_vote(bv, reason if not ok else "no quorum")
             break
+        if bv["yes"] < len(board.GOVERNORS):      # split approvals are debates worth seeing
+            _narrate_vote(bv)
         res, why = _choose_gather(w)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
         economy.enlist(uid)
@@ -441,6 +501,7 @@ def _one_turn():
                           f"quorum {bv['tally']}; fleet below target; {why}")
         anchor.record(t, "board", f"[{bv['tally']}] approved creation of {uid}")
         anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
+        anchor.career_add(uid, t, "born", f"enlisted by board {bv['tally']} → gather {res}; {why}")
         anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
         views = list(_by_uid().values())
 
@@ -462,6 +523,9 @@ def _one_turn():
                               f"Article II lifecycle: compute {u.tokens:,} ≥ budget {r['budget']:,}")
             anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
                                      f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
+            anchor.career_add(uid, t, "retired",
+                              f"Article II: budget spent ({u.tokens:,}/{r['budget']:,}); "
+                              f"rank {r['role']}, final contribution {r['contribution']:,}")
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -472,6 +536,9 @@ def _one_turn():
             else:
                 res, why = _choose_gather(sim.world())
             anchor.reason_add(t, "director", f"{uid} → gather {res}", why)
+            if _S.setdefault("last_res", {}).get(uid) != res:  # career notes changes, not every turn
+                _S["last_res"][uid] = res
+                anchor.career_add(uid, t, "retask", f"gather {res} — {why}")
             sim.resume(_GRAPH, uid, f"gather:{res}")
             got = sim.QUOTA * sim.effective_yield(res)
             economy.credit(uid, got)                                     # measured contribution
@@ -480,6 +547,7 @@ def _one_turn():
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
+                anchor.career_add(uid, t, "promote", f"earned promotion to {promo} by contribution")
 
     kind, build_why = _choose_build(sim.world(), len(_S["villagers"]))
     if kind:
@@ -504,7 +572,9 @@ def _one_turn():
     affordable = w["food"] >= sim.ADVANCE_COST["food"] and w["gold"] >= sim.ADVANCE_COST["gold"]
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         _S["heralds"] += 1
-        sim.spawn(_GRAPH, f"herald-{_S['heralds']:02d}", "herald")
+        hid = f"herald-{_S['heralds']:02d}"
+        sim.spawn(_GRAPH, hid, "herald")
+        anchor.career_add(hid, t, "born", "sent to the Age-up gate — irreversible, human decides")
         anchor.reason_add(t, "director", "send herald to the Age-up gate",
                           f"aligned with vision '{_vision().name}' and affordable "
                           f"(food {w['food']}≥{sim.ADVANCE_COST['food']}, gold {w['gold']}≥{sim.ADVANCE_COST['gold']}); "
@@ -536,6 +606,7 @@ def _one_turn():
                 economy.retire(uid)
                 _S["villagers"].remove(uid)
                 anchor.record(t, "reap", f"{uid} retired — vision met")
+                anchor.career_add(uid, t, "retired", "vision met — honourable discharge")
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
 
@@ -554,6 +625,8 @@ def _drive():
             # BrokenPipe floods: pollers hung up before the lock freed).
             _fleet_speaks()
             _internal_voices()
+            if _S["turn"] % 5 == 0:
+                _peer_chatter()                   # agents coordinating with each other
             if _S["turn"] % 6 == 0 and not _S["dev_proposal"]:
                 _propose_development()
             # Skill memory: distill lessons when a vision completes, and
@@ -598,6 +671,13 @@ def _snapshot() -> dict:
                 "eta_turns": (max(0, budget - u.tokens) // burn) if burn else None,
             })
         errors_recent = sum(1 for e in anchor.event_log(300) if "[error]" in e)
+        # A unit parked at an irreversible gate is waiting on the HUMAN — if nobody
+        # notices, the whole world stalls (a herald can sit for hundreds of turns).
+        # Surface it loudly instead of letting it drown in the log.
+        gate_unit = next((u for u in views
+                          if u.pending and u.pending.get("reversible") is False), None)
+        human_gate = (f"{gate_unit.unit_id}: {gate_unit.pending.get('action', '')}"
+                      if gate_unit else None)
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
         system = {
@@ -611,6 +691,10 @@ def _snapshot() -> dict:
             "spend_pct": round(100 * G.spent(views) / G.TOKEN_CAP) if G.TOKEN_CAP else 100,
             "errors_recent": errors_recent,
             "storage": "volume (persistent)" if persistent else "ephemeral (resets on redeploy)",
+            # the anchor (skills, reasoning, chats, knowledge) lives in its own DB and
+            # is never deleted — not even by a world reset
+            "memory": "permanent (own DB, survives world resets)",
+            "human_gate": human_gate,
             "tick_s": TICK,
         }
         return {
@@ -733,6 +817,14 @@ class Handler(BaseHTTPRequestHandler):
                           for x in economy.TIERS],
                 "brain": "deepseek" if brain.available() else "rule-based",
             }))
+        if self.path == "/api/careers":
+            ev_total, agents_ever = anchor.careers_count()
+            return self._send(200, json.dumps({
+                "careers": anchor.careers(40),
+                "events_total": ev_total,
+                "agents_ever": agents_ever,
+                "generation": anchor.generation(),
+            }))
         if self.path.startswith("/api/logs"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -776,6 +868,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "unit_id and a valid decision required"}))
             with _LOCK:
                 sim.resume(_GRAPH, uid, decision)
+            anchor.career_add(uid, _S["turn"], "gate",
+                              f"human decided: {decision} at the irreversible gate")
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/vision":
             key = self._read_json().get("vision")
@@ -805,12 +899,17 @@ class Handler(BaseHTTPRequestHandler):
                 ok = _op_cap(self._read_json().get("token_cap"))
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
         if self.path == "/api/reset":
-            # Operator-ordered FULL RESET: wipe the world, economy, chats, knowledge
-            # and the permanent log, then exit — the platform restarts us fresh.
-            anchor.record(_S["turn"], "operator", "FULL RESET ordered — wiping DB and restarting")
+            # Operator-ordered WORLD RESET: wipe the game world and economy, then exit —
+            # the platform restarts us fresh. The anchor's memory (skills, reasoning,
+            # chats, knowledge, learned yields) lives in its own DB and the permanent
+            # event log is append-only: neither is EVER deleted. New worlds start with
+            # everything past generations learned.
+            anchor.record(_S["turn"], "operator",
+                          "WORLD RESET ordered — wiping the game world and restarting "
+                          "(memory and event log retained)")
             def _wipe_and_restart():
                 time.sleep(0.7)                   # let the response flush first
-                for p in (sim.DB, sim.DB + "-wal", sim.DB + "-shm", anchor.EVENTS_PATH):
+                for p in (sim.DB, sim.DB + "-wal", sim.DB + "-shm"):
                     try:
                         os.remove(p)
                     except OSError:
@@ -1126,6 +1225,12 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
 </header>
 <div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
+<div style="max-width:1200px;margin:0 auto 24px;padding:0 18px">
+  <div class=a>
+    <h3>HALL OF RECORDS — every agent ever, permanently <span id=hallmeta style="color:var(--dim);font-weight:normal"></span></h3>
+    <div id=hall style="max-height:420px;overflow:auto"></div>
+  </div>
+</div>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const RES=['food','wood','gold'];
@@ -1142,6 +1247,8 @@ async function tick(){
     <div class=stat><span>fleet burn</span><b>${(sy.fleet_burn_per_turn||0).toLocaleString()} compute/turn &middot; cap ${sy.spend_pct}% used</b></div>
     <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
     <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
+    <div class=stat><span>memory</span><b>${esc(sy.memory||'—')}</b></div>
+    ${sy.human_gate?`<div class=stat><span>&#9888; WAITING ON YOU</span><b style="color:var(--gold)">${esc(sy.human_gate)} &middot; <a href="/" style="color:var(--gold)">decide on the console</a></b></div>`:''}
   </div>`;
   const a=d.agents||[];
   grid.innerHTML=a.length? a.map(x=>`<div class="a ${x.overwork?'overwork':''}">
@@ -1165,7 +1272,20 @@ function addAgent(){post('/api/spawn',{resource:addres.value});}
 function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
 function order(uid){const r=document.getElementById('ord-'+uid).value;post('/api/order',{unit_id:uid,resource:r});}
 function term(uid){if(confirm('Terminate '+uid+'? This retires the agent (gated).'))post('/api/terminate',{unit_id:uid});}
+async function hallTick(){
+  let d; try{ d=await (await fetch('/api/careers')).json() }catch(e){ return }
+  hallmeta.textContent=` · ${d.agents_ever} agents recorded · ${d.events_total} career events · memory is permanent`;
+  hall.innerHTML=(d.careers||[]).map(c=>{
+    const born=c.events.find(e=>e.event==='born');
+    const end=[...c.events].reverse().find(e=>e.event==='retired'||e.event==='terminated');
+    return `<div style="border-top:1px solid var(--line);padding:8px 2px">
+      <b>g${c.gen}&middot;${esc(c.uid)}</b>
+      <span style="color:var(--dim)"> — ${born?`born t${born.turn}`:''}${end?` &rarr; ${esc(end.event)} t${end.turn}`:' &middot; serving'}</span>
+      <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
+    </div>`}).join('')||'<div class=empty>No careers recorded yet — they begin at the next birth.</div>';
+}
 tick(); setInterval(tick,1000);
+hallTick(); setInterval(hallTick,5000);
 </script>
 </html>"""
 
