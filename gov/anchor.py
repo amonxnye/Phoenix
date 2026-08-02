@@ -60,7 +60,40 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS skills("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, lesson TEXT, "
                   "source TEXT DEFAULT '', trigger TEXT DEFAULT '')")
+        # Reasoning: every strategic decision records WHY it was taken — the
+        # explanation stream behind the fleet's behaviour.
+        c.execute("CREATE TABLE IF NOT EXISTS reasoning("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, actor TEXT, "
+                  "decision TEXT, why TEXT)")
         c.commit()
+    finally:
+        c.close()
+
+
+def reason_add(turn: int, actor: str, decision: str, why: str) -> None:
+    c = _conn()
+    try:
+        c.execute("INSERT INTO reasoning(turn, actor, decision, why) VALUES(?,?,?,?)",
+                  (turn, actor, decision[:160], why[:280]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def reasons_top(limit: int = 100) -> list[dict]:
+    c = _conn()
+    try:
+        rows = c.execute("SELECT turn, actor, decision, why FROM reasoning "
+                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"turn": t, "actor": a, "decision": d, "why": w} for t, a, d, w in rows]
+    finally:
+        c.close()
+
+
+def reasons_count() -> int:
+    c = _conn()
+    try:
+        return c.execute("SELECT COUNT(*) FROM reasoning").fetchone()[0]
     finally:
         c.close()
 
@@ -119,7 +152,13 @@ def config_set(key: str, value: str) -> None:
         c.close()
 
 
+CURRENT_TURN = 0                     # kept fresh by the driver so mirrored messages
+                                     # land on the right turn
+
+
 def record(turn: int, kind: str, note: str) -> None:
+    if turn < 0:
+        turn = CURRENT_TURN
     c = _conn()
     try:
         c.execute("INSERT INTO knowledge(turn, kind, note) VALUES(?,?,?)", (turn, kind, note))
@@ -154,13 +193,19 @@ def event_log(limit: int = 200) -> list[str]:
 
 def msg_send(thread: str, sender: str, body: str) -> None:
     """Store a chat message. thread = the counterpart the human converses with;
-    sender = 'operator' (the human) or the counterpart's name."""
+    sender = 'operator' (the human) or the counterpart's name. Every message is
+    also mirrored into the event log — communications are observable, not hidden."""
     c = _conn()
     try:
         c.execute("INSERT INTO messages(thread, sender, body) VALUES(?,?,?)", (thread, sender, body))
         c.commit()
     finally:
         c.close()
+    kind = "comm" if thread == "internal" else "chat"
+    try:
+        record(-1, kind, f"[{thread}] {sender}: {body[:180]}")
+    except Exception:
+        pass
 
 
 def msg_thread(thread: str, limit: int = 100) -> list[dict]:

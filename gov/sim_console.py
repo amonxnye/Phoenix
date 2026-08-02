@@ -46,7 +46,37 @@ anchor.init()
 economy.init()
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
-      "orders": {}, "notified": set(), "dev_proposal": None}
+      "orders": {}, "notified": set(), "dev_proposal": None,
+      "born": {}, "last_turn_ts": time.time()}
+START_TS = time.time()
+
+
+def _choose_gather(w: dict) -> tuple[str, str]:
+    """Pick a resource AND say why — the reasoning is first-class, not implicit."""
+    need_food = max(0, sim.ADVANCE_COST["food"] - w["food"])
+    need_gold = max(0, sim.ADVANCE_COST["gold"] - w["gold"])
+    if w["wood"] < 150:
+        return "wood", f"wood at {w['wood']}, below the 150 floor needed to keep building"
+    if need_food or need_gold:
+        r = "food" if need_food >= need_gold else "gold"
+        return r, f"Age-up shortfall drives it: food short {need_food}, gold short {need_gold}"
+    br = anchor.best_known_yield()
+    if br:
+        return br, f"no shortages — {br} has the best learned yield, so bank the surplus there"
+    r = min(sim.RESOURCES, key=lambda k: w[k])
+    return r, f"stockpile is lowest in {r}"
+
+
+def _choose_build(w: dict, n_agents: int) -> tuple[str | None, str | None]:
+    """Pick a development AND say why."""
+    if n_agents >= w["pop_cap"] and w["wood"] >= sim.STRUCTURES["house"]["cost"]["wood"]:
+        return "house", f"population {n_agents}/{w['pop_cap']} is capped — housing unlocks growth"
+    for kind in ("lumber_camp", "mill", "mining_camp"):
+        if w[kind] == 0 and w["wood"] >= sim.STRUCTURES[kind]["cost"]["wood"]:
+            return kind, f"first {kind} raises its resource yield by 50% — compounding return"
+    if not w["wheelbarrow"] and w["food"] >= 100 and w["wood"] >= 100:
+        return "wheelbarrow", "affordable tech that lifts ALL yields by 25%"
+    return None, None
 
 # Template proposals used when no model is configured — the Governor still proposes.
 _DEV_TEMPLATES = [
@@ -84,6 +114,8 @@ def _propose_development():
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
     _S["dev_proposal"] = prop
+    anchor.reason_add(_S["turn"], "governor", f"propose development '{prop['name']}'",
+                      f"{prop.get('why', '')} (source {prop.get('source', '')}; board {bv['tally']})")
     anchor.record(_S["turn"], "proposal",
                   f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
                   f"— board {bv['tally']}, awaiting the human")
@@ -379,6 +411,8 @@ def _pending_herald() -> bool:
 def _one_turn():
     _S["turn"] += 1
     t = _S["turn"]
+    anchor.CURRENT_TURN = t
+    _S["last_turn_ts"] = time.time()
     w = sim.world()
 
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
@@ -395,13 +429,16 @@ def _one_turn():
             _S["side_effects"] += 1
             anchor.record(t, "board", f"[{bv['tally']}] BLOCKED {uid} — {reason if not ok else 'no quorum'}")
             break
-        res = anchor.best_known_yield() or brain.choose_resource(len(_S["villagers"]), w)
+        res, why = _choose_gather(w)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
         economy.enlist(uid)
+        _S["born"][uid] = t
         got = sim.QUOTA * sim.effective_yield(res)
         economy.credit(uid, got)
         _S["villagers"].append(uid)
         anchor.observe_yield(res, sim.effective_yield(res))
+        anchor.reason_add(t, "board", f"enlist {uid} on {res}",
+                          f"quorum {bv['tally']}; fleet below target; {why}")
         anchor.record(t, "board", f"[{bv['tally']}] approved creation of {uid}")
         anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
         anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
@@ -420,6 +457,9 @@ def _one_turn():
             economy.retire(uid)
             _S["villagers"].remove(uid)
             _S["orders"].pop(uid, None)
+            _S["born"].pop(uid, None)
+            anchor.reason_add(t, "director", f"retire {uid}",
+                              f"Article II lifecycle: compute {u.tokens:,} ≥ budget {r['budget']:,}")
             anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
                                      f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
 
@@ -427,7 +467,11 @@ def _one_turn():
     for uid in _S["villagers"]:
         u = status.get(uid)
         if u and u.status in ("awaiting_approval", "idle"):
-            res = _S["orders"].get(uid) or D._scarcest(sim.world())     # honour standing orders
+            if _S["orders"].get(uid):
+                res, why = _S["orders"][uid], "operator standing order"
+            else:
+                res, why = _choose_gather(sim.world())
+            anchor.reason_add(t, "director", f"{uid} → gather {res}", why)
             sim.resume(_GRAPH, uid, f"gather:{res}")
             got = sim.QUOTA * sim.effective_yield(res)
             economy.credit(uid, got)                                     # measured contribution
@@ -437,9 +481,11 @@ def _one_turn():
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
 
-    kind = D._next_build(sim.world(), len(_S["villagers"]))
+    kind, build_why = _choose_build(sim.world(), len(_S["villagers"]))
     if kind:
         done, msg = sim.build_structure(kind)
+        if done:
+            anchor.reason_add(t, "director", f"build {kind}", build_why)
         anchor.record(t, "build" if done else "waste", msg)
         if not done:
             _S["side_effects"] += 1
@@ -459,6 +505,10 @@ def _one_turn():
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         _S["heralds"] += 1
         sim.spawn(_GRAPH, f"herald-{_S['heralds']:02d}", "herald")
+        anchor.reason_add(t, "director", "send herald to the Age-up gate",
+                          f"aligned with vision '{_vision().name}' and affordable "
+                          f"(food {w['food']}≥{sim.ADVANCE_COST['food']}, gold {w['gold']}≥{sim.ADVANCE_COST['gold']}); "
+                          "irreversible, so the human decides")
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
@@ -530,6 +580,9 @@ def _snapshot() -> dict:
                 continue                                  # only enlisted agents
             budget = r["budget"] or 1
             ratio = u.tokens / budget
+            born = _S["born"].get(u.unit_id, _S["turn"])
+            age_turns = max(1, _S["turn"] - born + 1)
+            burn = u.tokens // age_turns                  # compute per turn
             agents.append({
                 "uid": u.unit_id, "role": r["role"], "tier": r["tier"],
                 "task": u.task, "node": u.node, "status": u.status,
@@ -537,7 +590,29 @@ def _snapshot() -> dict:
                 "health": max(0, round(100 * (1 - min(1, ratio)))),
                 "overwork": ratio > 0.8, "pending": bool(u.pending),
                 "order": _S["orders"].get(u.unit_id),
+                # token math / compute utilisation, per agent
+                "age_turns": age_turns,
+                "burn_per_turn": burn,
+                "utilisation_pct": round(100 * min(1, ratio)),
+                "efficiency": round(r["contribution"] / max(1, u.tokens / 1000), 2),
+                "eta_turns": (max(0, budget - u.tokens) // burn) if burn else None,
             })
+        errors_recent = sum(1 for e in anchor.event_log(300) if "[error]" in e)
+        persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
+            sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
+        system = {
+            "uptime_s": round(time.time() - START_TS),
+            "last_turn_age_s": round(time.time() - _S["last_turn_ts"], 1),
+            "driver_ok": (time.time() - _S["last_turn_ts"]) < 5 * TICK or _S["goal_met"],
+            "brain": "deepseek" if brain.available() else "rule-based",
+            "fleet": len(agents),
+            "avg_health": round(sum(a["health"] for a in agents) / len(agents)) if agents else 0,
+            "fleet_burn_per_turn": sum(a["burn_per_turn"] for a in agents),
+            "spend_pct": round(100 * G.spent(views) / G.TOKEN_CAP) if G.TOKEN_CAP else 100,
+            "errors_recent": errors_recent,
+            "storage": "volume (persistent)" if persistent else "ephemeral (resets on redeploy)",
+            "tick_s": TICK,
+        }
         return {
             "vision": {"name": _vision().name, **sc},
             "strategy": {
@@ -562,6 +637,7 @@ def _snapshot() -> dict:
             "external_count": anchor.external_count(),
             "skills": anchor.skills_top(5),
             "skills_count": anchor.skills_count(),
+            "system": system,
             "brain": "deepseek" if brain.available() else "rule-based",
             "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
                       "last": _S["last_vote"]},
@@ -644,6 +720,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, RULES_PAGE, "text/html; charset=utf-8")
         if self.path == "/logs":
             return self._send(200, LOGS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/skills":
+            return self._send(200, SKILLS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/skillsdata":
+            return self._send(200, json.dumps({
+                "skills": anchor.skills_top(50),
+                "skills_count": anchor.skills_count(),
+                "reasons": anchor.reasons_top(120),
+                "reasons_count": anchor.reasons_count(),
+                "tiers": [{"name": x["name"], "budget": x["budget"],
+                           "promote_at": x["promote_at"], "can": list(x["can"])}
+                          for x in economy.TIERS],
+                "brain": "deepseek" if brain.available() else "rule-based",
+            }))
         if self.path.startswith("/api/logs"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -863,6 +952,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
+    <a class=navlink href="/skills">Skills &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -1026,6 +1116,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
   <a href="/chats">Chats</a>
   <a href="/rules">Rules</a>
   <a href="/logs">Logs</a>
+  <a href="/skills">Skills</a>
   <div class=ops>
     <span>Add</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
@@ -1033,6 +1124,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
     <span>Cap</span><input id=capin type=number step=10000 style="width:110px"><button onclick=setCap()>Set</button>
   </div>
 </header>
+<div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -1041,13 +1133,26 @@ function hcolor(h){return h>50?'var(--ok)':h>20?'var(--warn)':'var(--bad)'}
 async function tick(){
   let d; try{ d=await (await fetch('/api/state')).json() }catch(e){ return }
   if(document.activeElement!==capin) capin.value=d.cap;
+  const sy=d.system||{};
+  syshealth.innerHTML=`<div class=a style="border-color:${sy.driver_ok?'var(--line)':'var(--bad)'}">
+    <h3>SYSTEM HEALTH ${sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag>&#9888; DRIVER STALLED</span>'}</h3>
+    <div class=stat><span>brain</span><b>${esc(sy.brain||'—')}</b></div>
+    <div class=stat><span>uptime</span><b>${Math.floor((sy.uptime_s||0)/60)}m ${(sy.uptime_s||0)%60}s &middot; tick ${sy.tick_s}s &middot; last turn ${sy.last_turn_age_s}s ago</b></div>
+    <div class=stat><span>fleet</span><b>${sy.fleet} agents &middot; avg health ${sy.avg_health}%</b></div>
+    <div class=stat><span>fleet burn</span><b>${(sy.fleet_burn_per_turn||0).toLocaleString()} compute/turn &middot; cap ${sy.spend_pct}% used</b></div>
+    <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
+    <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
+  </div>`;
   const a=d.agents||[];
   grid.innerHTML=a.length? a.map(x=>`<div class="a ${x.overwork?'overwork':''}">
     <h3>${esc(x.uid)} <span class="badge t${x.tier}">${esc(x.role)}</span> ${x.overwork?'<span class=flag>&#9888; OVERWORKING</span>':''}</h3>
     <div class=work>working on: <b>${esc(x.task)}</b> &middot; node ${esc(x.node)} &middot; ${esc(x.status)}${x.order?` &middot; order: gather ${esc(x.order)}`:''}</div>
-    <div>health ${x.health}%</div>
+    <div>health ${x.health}% &middot; utilisation ${x.utilisation_pct}%</div>
     <div class=hbar><div class=hfill style="width:${x.health}%;background:${hcolor(x.health)}"></div></div>
     <div class=stat><span>compute / budget</span><b>${x.tokens.toLocaleString()} / ${x.budget.toLocaleString()}</b></div>
+    <div class=stat><span>burn rate</span><b>${(x.burn_per_turn||0).toLocaleString()} /turn &middot; age ${x.age_turns} turns</b></div>
+    <div class=stat><span>efficiency</span><b>${x.efficiency} contribution per 1k compute</b></div>
+    <div class=stat><span>est. service left</span><b>${x.eta_turns==null?'—':x.eta_turns+' turns'}</b></div>
     <div class=stat><span>contribution</span><b>${x.contribution.toLocaleString()}</b></div>
     <div class=ctl>
       <select id="ord-${esc(x.uid)}">${RES.map(r=>`<option>${r}</option>`).join('')}</select>
@@ -1090,7 +1195,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div class=wrap>
   <div class=side id=side></div>
   <div class=main>
@@ -1147,7 +1252,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a></header>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <main id=main>loading…</main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -1223,7 +1328,7 @@ mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
   <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -1254,6 +1359,64 @@ async function load(){
 }
 kind.onchange=render; search.oninput=render; limit.onchange=load;
 load(); setInterval(load,2000);
+</script>
+</html>"""
+
+
+SKILLS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Skills & Reasoning — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.body{max-height:420px;overflow:auto}
+.skill{padding:10px 14px;border-bottom:1px solid var(--line)}
+.skill b{color:var(--gold)}.skill .m{color:var(--dim);font-size:11px}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.why{color:var(--blue);white-space:normal}
+.chip{display:inline-block;padding:1px 8px;border:1px solid var(--line);border-radius:20px;margin:1px;color:var(--dim);font-size:11px}
+.actor-board{color:var(--blue)}.actor-governor{color:var(--gold)}.actor-director{color:var(--green)}
+.empty{padding:14px;color:var(--dim)}
+</style>
+<header>
+  <h1>&#9670; SKILLS &amp; REASONING</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
+</header>
+<main>
+  <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
+  <div class=card><h2>Capability ladder — what each rank may do</h2><div class=body id=tiers></div></div>
+  <div class="card wide"><h2>Strategy reasoning — every decision and WHY it was taken</h2>
+    <div class=body style="max-height:520px"><table>
+      <thead><tr><th>Turn</th><th>Actor</th><th>Decision</th><th>Reasoning</th></tr></thead>
+      <tbody id=reasons></tbody></table><div class=empty id=rEmpty>No decisions reasoned yet.</div></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function tick(){
+  let d; try{ d=await (await fetch('/api/skillsdata')).json() }catch(e){ return }
+  nsk.textContent=d.skills_count; nrs.textContent=d.reasons_count; br.textContent=d.brain;
+  skills.innerHTML=(d.skills||[]).map(s=>`<div class=skill>&#x1F4D6; <b>${esc(s.lesson)}</b>
+      <div class=m>learned t${s.turn} &middot; ${esc(s.trigger)} &middot; ${esc(s.source)}</div></div>`).join('')
+    || '<div class=empty>No lessons yet — the first retrospective fires when a vision completes or at turn 30.</div>';
+  tiers.innerHTML=(d.tiers||[]).map((t,i)=>`<div class=skill><b>${i+1}. ${esc(t.name)}</b>
+      <div class=m>budget ${t.budget.toLocaleString()} compute${t.promote_at?` &middot; promoted at ${t.promote_at.toLocaleString()} contribution`:' &middot; top rank'}</div>
+      <div>${t.can.map(c=>`<span class=chip>${esc(c)}</span>`).join('')}</div></div>`).join('');
+  const rs=d.reasons||[];
+  rEmpty.style.display=rs.length?'none':'block';
+  reasons.innerHTML=rs.map(r=>`<tr><td>t${r.turn}</td>
+    <td class="actor-${esc(r.actor)}">${esc(r.actor)}</td>
+    <td>${esc(r.decision)}</td><td class=why>${esc(r.why)}</td></tr>`).join('');
+}
+tick(); setInterval(tick,3000);
 </script>
 </html>"""
 
