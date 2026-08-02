@@ -57,6 +57,7 @@ if _FRESH_WORLD:
     anchor.config_set("turn", "0")
     anchor.config_set("seq", "0")
     anchor.config_set("heralds", "0")
+    anchor.config_set("vision_key", V.DEFAULT_VISION)
     anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
 else:
     # A RESTART (deploy, crash) is not a new world: restore the counters and re-adopt
@@ -65,6 +66,9 @@ else:
     _S["turn"] = anchor.counter_get("turn")
     _S["seq"] = anchor.counter_get("seq")
     _S["heralds"] = anchor.counter_get("heralds")
+    _vk = anchor.config_get("vision_key", "")
+    if _vk in V.VISIONS:
+        _S["vision_key"] = _vk                    # the human's adopted vision persists
     if _S["seq"] == 0:      # first boot on persisted counters: seed from history
         _nums = [int(r["agent"].split("-")[1]) for r in economy.roster(alive_only=False)
                  if r["agent"].startswith("vil-") and r["agent"].split("-")[1].isdigit()]
@@ -299,6 +303,7 @@ def _adopt_vision(key: str):
                       "choose a different goal")
         return
     _S["vision_key"] = key
+    anchor.config_set("vision_key", key)        # the adopted vision survives restarts
     _S["goal_met"] = False                      # re-open the drive toward the new goal
     for uid in _S["villagers"]:
         anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
