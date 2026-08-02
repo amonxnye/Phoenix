@@ -54,9 +54,33 @@ def init() -> None:
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, test TEXT UNIQUE, "
                   "title TEXT, status TEXT DEFAULT 'open', assigned_to TEXT DEFAULT '', "
                   "solved_by TEXT DEFAULT '')")
+        # first-sight snapshot of every module, so the training ground can be reset
+        c.execute("CREATE TABLE IF NOT EXISTS pristine(path TEXT PRIMARY KEY, content TEXT)")
+        for name in os.listdir(SANDBOX):
+            if name.endswith(".py"):
+                with open(os.path.join(SANDBOX, name)) as f:
+                    c.execute("INSERT OR IGNORE INTO pristine(path, content) VALUES(?,?)",
+                              (name, f.read()))
         c.commit()
     finally:
         c.close()
+
+
+def reset_sandbox() -> list[str]:
+    """Restore every module to its first-seen state — the training tasks reopen.
+    (Tests are untouched; they were never writable.)"""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT path, content FROM pristine").fetchall()
+    finally:
+        c.close()
+    restored = []
+    for path, content in rows:
+        with open(os.path.join(SANDBOX, path), "w") as f:
+            f.write(content)
+        restored.append(path)
+    sync_tasks()                                   # failing again → tasks reopen
+    return restored
 
 
 # ── the oracle ────────────────────────────────────────────────────────────────

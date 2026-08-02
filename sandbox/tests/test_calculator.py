@@ -32,6 +32,24 @@ class TestCalculator(unittest.TestCase):
         self.assertEqual(c.power(2, 10), 1024)
         self.assertEqual(c.power(5, 0), 1)
 
+    # ── second milestone: functions that do not exist yet ────────────────────
+
+    def test_average(self):
+        self.assertEqual(c.average([2, 4, 6]), 4)
+        with self.assertRaises(ValueError):
+            c.average([])
+
+    def test_factorial(self):
+        self.assertEqual(c.factorial(5), 120)
+        self.assertEqual(c.factorial(0), 1)
+        with self.assertRaises(ValueError):
+            c.factorial(-1)
+
+    def test_is_prime(self):
+        self.assertTrue(c.is_prime(13))
+        self.assertFalse(c.is_prime(1))
+        self.assertFalse(c.is_prime(15))
+
 
 if __name__ == "__main__":
     unittest.main()

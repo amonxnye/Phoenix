@@ -1636,6 +1636,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:300]}))
             return self._send(200, json.dumps(result))
+        if self.path == "/api/workreset":
+            import workspace as WS
+            WS.init()
+            restored = WS.reset_sandbox()
+            anchor.record(_S["turn"], "operator",
+                          f"sandbox reset — {', '.join(restored)} restored; training tasks reopen")
+            return self._send(200, json.dumps({"ok": True, "restored": restored}))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2446,6 +2453,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
   <div class=card><h2>Run a worker</h2><div class=p>
     Agent id <input id=agent value="dev-01">
     <button id=runbtn onclick=runWorker()>Run one work cycle</button>
+    <button onclick=resetSandbox() style="color:var(--gold);border-color:#5a4a1a;background:#241f0f">Reset sandbox (reopen tasks)</button>
     <div style="margin-top:10px" id=result>The worker reads the first open task and its failing test,
     proposes a fix through the live brain, applies it in the sandbox, and the oracle re-scores.
     A patch that breaks tests is auto-reverted. It cannot edit the tests.</div></div></div>
@@ -2466,6 +2474,11 @@ async function load(){
     <td>${esc(t.solved_by||'—')}</td></tr>`).join('')||'<tr><td colspan=3>no tasks</td></tr>';
   code.textContent=d.module;
   log.innerHTML=(d.recent||[]).map(e=>`<div>${esc(e)}</div>`).join('')||'<div>no work yet</div>';
+}
+async function resetSandbox(){
+  const r=await fetch('/api/workreset',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:'{}'});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return resetSandbox()}return}
+  result.textContent='sandbox restored — the training tasks are open again.'; load();
 }
 async function runWorker(){
   runbtn.disabled=true; result.textContent='working… (model call + test run, ~10-30s)';
