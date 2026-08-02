@@ -60,10 +60,14 @@ def init() -> None:
 
 
 def enlist(agent: str, tier: int = 0) -> None:
+    # Upsert: if an id is ever reused (it shouldn't be — ids are persisted-monotonic),
+    # the row is reset to a fresh living villager instead of silently staying dead.
     c = _conn()
     try:
-        c.execute("INSERT OR IGNORE INTO ledger(agent, tier, contribution, budget, alive) "
-                  "VALUES(?,?,0,?,1)", (agent, tier, TIERS[tier]["budget"]))
+        c.execute("INSERT INTO ledger(agent, tier, contribution, budget, alive) "
+                  "VALUES(?,?,0,?,1) ON CONFLICT(agent) DO UPDATE SET "
+                  "tier=excluded.tier, contribution=0, budget=excluded.budget, alive=1",
+                  (agent, tier, TIERS[tier]["budget"]))
         c.commit()
     finally:
         c.close()

@@ -45,16 +45,45 @@ _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
-if _FRESH_WORLD:
-    # A new world, same memory: the generation counter rises so agent ids stay unique
-    # in the permanent career records across world resets.
-    gen = anchor.new_generation()
-    anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
       "born": {}, "last_turn_ts": time.time()}
 START_TS = time.time()
+if _FRESH_WORLD:
+    # A new world, same memory: the generation counter rises so agent ids stay unique
+    # in the permanent career records across world resets.
+    gen = anchor.new_generation()
+    anchor.config_set("turn", "0")
+    anchor.config_set("seq", "0")
+    anchor.config_set("heralds", "0")
+    anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
+else:
+    # A RESTART (deploy, crash) is not a new world: restore the counters and re-adopt
+    # the living fleet, or agent ids collide, the turn clock jumps backwards in the
+    # permanent log, and working agents are abandoned as unreapable zombies.
+    _S["turn"] = anchor.counter_get("turn")
+    _S["seq"] = anchor.counter_get("seq")
+    _S["heralds"] = anchor.counter_get("heralds")
+    if _S["seq"] == 0:      # first boot on persisted counters: seed from history
+        _nums = [int(r["agent"].split("-")[1]) for r in economy.roster(alive_only=False)
+                 if r["agent"].startswith("vil-") and r["agent"].split("-")[1].isdigit()]
+        _S["seq"] = max(_nums, default=0)
+        anchor.config_set("seq", str(_S["seq"]))
+    if _S["heralds"] == 0:
+        _nums = [int(u.unit_id.split("-")[1]) for u in G.units(_GRAPH, _CP)
+                 if u.unit_id.startswith("herald-") and u.unit_id.split("-")[1].isdigit()]
+        _S["heralds"] = max(_nums, default=0)
+        anchor.config_set("heralds", str(_S["heralds"]))
+    anchor.CURRENT_TURN = _S["turn"]
+    _S["villagers"] = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
+    if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
+        G.TOKEN_CAP = anchor.counter_get("token_cap")
+    for _c in anchor.careers(200):                # rebuild birth turns for burn math
+        if _c["gen"] == anchor.generation() and _c["uid"] in _S["villagers"]:
+            for _e in _c["events"]:
+                if _e["event"] == "born":
+                    _S["born"][_c["uid"]] = _e["turn"]
 
 
 def _choose_gather(w: dict) -> tuple[str, str]:
@@ -120,7 +149,7 @@ def _propose_development():
         prop["source"] = "deepseek+knowledge"
     if not prop or prop.get("name") in existing:
         return
-    views = list(_by_uid().values())
+    views = _fleet_views()
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     bv = board.vote(f"development: {prop['name']}",
                     {"aligned": True, "affordable": True, "within_budget": sc["within_budget"],
@@ -137,9 +166,21 @@ def _propose_development():
 
 
 def _new_vid() -> str:
-    # monotonic id so a reaped agent's id is never reused (avoids resuming a dead thread)
+    # monotonic id so a reaped agent's id is never reused (avoids resuming a dead
+    # thread). Persisted, so a restart can't reset the counter and rebirth the dead.
     _S["seq"] += 1
+    anchor.config_set("seq", str(_S["seq"]))
     return f"vil-{_S['seq']:02d}"
+
+
+def _fleet_views(views=None):
+    """Views of the LIVING fleet only. The cap governs the outstanding compute of
+    active agents — bounded because Article II reaps them — NOT the lifetime total of
+    every thread ever, which only grows and would jam the cap shut forever."""
+    if views is None:
+        views = list(_by_uid().values())
+    live = {r["agent"] for r in economy.roster()}
+    return [u for u in views if u.unit_id in live]
 
 
 def _by_uid():
@@ -151,8 +192,12 @@ def _vision():
 
 
 def _target_villagers():
-    # bolder visions demand more hands; consolidating relaxes the fleet
-    return max(2, 3 + V.AGES.index(_vision().target_age))
+    # bolder visions demand more hands; consolidating relaxes the fleet. A board
+    # punishment (poor governor report) throttles births by a percentage for a while.
+    base = max(2, 3 + V.AGES.index(_vision().target_age))
+    if _S["turn"] < anchor.counter_get("throttle_until"):
+        base = max(1, int(base * float(anchor.config_get("birth_throttle", "1") or 1)))
+    return base
 
 
 def _adopt_vision(key: str):
@@ -170,7 +215,7 @@ def _adopt_vision(key: str):
 
 def _op_add(resource: str = "") -> tuple[bool, str]:
     """Operator adds an agent — a token-maxing power, so it goes through the Board."""
-    views = list(_by_uid().values())
+    views = _fleet_views()
     ok, reason = G.may_spawn(views)
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     uid = _new_vid()
@@ -180,6 +225,7 @@ def _op_add(resource: str = "") -> tuple[bool, str]:
     _S["last_vote"] = bv
     if not bv["approved"]:
         _S["seq"] -= 1
+        anchor.config_set("seq", str(_S["seq"]))
         anchor.record(_S["turn"], "board", f"[{bv['tally']}] BLOCKED operator add — {reason if not ok else 'no quorum'}")
         _narrate_vote(bv, reason if not ok else "no quorum")
         return False, f"board blocked ({bv['tally']})"
@@ -204,6 +250,8 @@ def _op_terminate(uid: str) -> None:
     _S["orders"].pop(uid, None)
     anchor.record(_S["turn"], "operator", f"terminated {uid} (human gate)")
     anchor.career_add(uid, _S["turn"], "terminated", "by operator at the human gate")
+    if u:
+        anchor.counter_add("lifetime_spend", u.tokens)
 
 
 def _op_order(uid: str, resource: str) -> bool:
@@ -227,6 +275,7 @@ def _op_cap(new_cap) -> bool:
     except (TypeError, ValueError):
         return False
     old, G.TOKEN_CAP = G.TOKEN_CAP, v
+    anchor.config_set("token_cap", str(v))            # survives restarts
     anchor.record(_S["turn"], "operator", f"cap updated {old:,} → {v:,}")
     return True
 
@@ -270,7 +319,7 @@ def _digest(trigger: str) -> dict:
         if m:
             kinds[m.group(1)] = kinds.get(m.group(1), 0) + 1
     s = anchor.summary()
-    views = list(_by_uid().values())
+    views = _fleet_views()
     return {
         "trigger": trigger, "turn": _S["turn"], "vision": _vision().name,
         "progress": sc["progress"], "side_effects": sc["side_effects"],
@@ -286,6 +335,7 @@ def _run_retrospective(trigger: str):
     """The Chief Governor distills lessons from the run into the skills store.
     Called OUTSIDE the lock — it's a model call."""
     d = _digest(trigger)
+    before = anchor.skills_count()
     lessons = brain.retrospective(d, anchor.skills_top(5))
     for lesson in lessons:
         anchor.skill_add(_S["turn"], lesson, source="chief-retrospective", trigger=trigger)
@@ -293,6 +343,67 @@ def _run_retrospective(trigger: str):
     if lessons:
         anchor.msg_send("internal", "Chief Governor",
                         f"Retrospective ({trigger}): " + " | ".join(lessons)[:400])
+    # Wisdom bonus: new lessons are minted from the fleet's experience — the top
+    # contributor supplied most of it, so skill creation pays, not just gathering.
+    new_n = anchor.skills_count() - before
+    if new_n:
+        roster = sorted(economy.roster(), key=lambda r: -r["contribution"])
+        if roster:
+            top = roster[0]["agent"]
+            economy.credit(top, 50 * new_n)
+            anchor.record(_S["turn"], "reward",
+                          f"{top} earns wisdom bonus +{50 * new_n} — its experience became "
+                          f"{new_n} new lesson(s)")
+            anchor.career_add(top, _S["turn"], "reward",
+                              f"wisdom bonus +{50 * new_n}: fleet experience distilled into "
+                              f"{new_n} lesson(s)")
+
+
+def _governor_report():
+    """Every reporting cycle the Chief Governor accounts for the work to the BOARD in
+    the general chat. The board scores it: good work is rewarded with more compute
+    (cap raised); poor work is punished by throttling births. Accountability runs
+    upward, not just downward. Called OUTSIDE the lock — may make a model call."""
+    t = _S["turn"]
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    d = _digest("report")
+    w = sim.world()
+    spent = G.spent(_fleet_views())
+    spend_pct = round(100 * spent / G.TOKEN_CAP) if G.TOKEN_CAP else 100
+    facts = (f"turn {t}: progress {sc['progress']}% toward '{_vision().name}'; "
+             f"stock food {w['food']:,}/wood {w['wood']:,}/gold {w['gold']:,}; "
+             f"{d['waste']} wasted builds, {sc['side_effects']} side-effects; "
+             f"fleet spend {spend_pct}% of cap")
+    body = brain.think("the Chief Governor", _situation(),
+                       f"Report your work to the Board in 1-2 sentences: {facts}") or facts
+    anchor.msg_send("all", "Chief Governor", f"WORK REPORT — {body}"[:480])
+
+    # The board scores the report on hard numbers, not the wording.
+    last = anchor.counter_get("last_report_progress")
+    score = 10
+    score -= min(3, d["waste"])                              # wasted builds
+    score -= 2 if not sc["within_budget"] else 0             # side-effect budget blown
+    score -= 1 if spend_pct > 90 else 0                      # burning hot
+    score -= 2 if sc["progress"] < last else 0               # going backwards
+    anchor.config_set("last_report_progress", str(sc["progress"]))
+    if score >= 7:
+        old = G.TOKEN_CAP
+        G.TOKEN_CAP = int(G.TOKEN_CAP * 1.05)
+        anchor.config_set("token_cap", str(G.TOKEN_CAP))
+        verdict = (f"score {score}/10 — good work: compute cap raised "
+                   f"{old:,} → {G.TOKEN_CAP:,} (+5%)")
+    elif score <= 4:
+        anchor.config_set("birth_throttle", "0.75")
+        anchor.config_set("throttle_until", str(t + 30))
+        verdict = (f"score {score}/10 — poor work: births throttled 25% until turn "
+                   f"{t + 30}")
+    else:
+        verdict = f"score {score}/10 — steady; no reward, no sanction"
+    anchor.msg_send("all", "Board", f"REVIEW of the Governor's report: {verdict}")
+    anchor.record(t, "board", f"governor report scored: {verdict}")
+    anchor.reason_add(t, "board", "score governor report",
+                      f"waste {d['waste']}, within_budget {sc['within_budget']}, "
+                      f"spend {spend_pct}%, progress {sc['progress']}% (prev {last}%) → {verdict}")
 
 
 def _chat_reply(key: str, body: str) -> str:
@@ -331,7 +442,7 @@ def _chat_reply_rules(key: str, body: str) -> str:
                     f"Noted. Spend and side-effects are in budget ({sc['side_effects']}/{sc['side_effect_budget']})."])
 
     if key in board.GOVERNORS:
-        ratio = round(100 * G.spent(list(_by_uid().values())) / G.TOKEN_CAP) if G.TOKEN_CAP else 100
+        ratio = round(100 * G.spent(_fleet_views()) / G.TOKEN_CAP) if G.TOKEN_CAP else 100
         base = {"Prudence": f"I weigh risk — spend is {ratio}% of cap; I'll block anything that pushes it too far.",
                 "Growth": f"I back the mission — at {sc['progress']}% I say press on toward '{_vision().name}'.",
                 "Ledger": f"I count the coin — food {w['food']}, gold {w['gold']}; I approve only what we can pay for."}[key]
@@ -431,6 +542,7 @@ def _peer_chatter():
     anchor.msg_send("internal", f"{sender} → {receiver}", line)
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
     anchor.career_add(receiver, _S["turn"], "message", f"from {sender}: {line[:140]}")
+    _S["peer_tip"] = {"from": sender, "to": receiver, "res": res}   # rewarded if followed
 
 
 def _fleet_speaks():
@@ -469,11 +581,12 @@ def _one_turn():
     _S["turn"] += 1
     t = _S["turn"]
     anchor.CURRENT_TURN = t
+    anchor.config_set("turn", str(t))     # the turn clock survives restarts
     _S["last_turn_ts"] = time.time()
     w = sim.world()
 
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
-    views = list(_by_uid().values())
+    views = _fleet_views()
     sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     while len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"]):
         ok, reason = G.may_spawn(views)
@@ -503,7 +616,7 @@ def _one_turn():
         anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
         anchor.career_add(uid, t, "born", f"enlisted by board {bv['tally']} → gather {res}; {why}")
         anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
-        views = list(_by_uid().values())
+        views = _fleet_views()
 
     # Article II: no immortal agents. An agent that has spent its budget is retired
     # (ending the permanent-overwork state) and the staffing loop enlists a fresh
@@ -526,6 +639,7 @@ def _one_turn():
             anchor.career_add(uid, t, "retired",
                               f"Article II: budget spent ({u.tokens:,}/{r['budget']:,}); "
                               f"rank {r['role']}, final contribution {r['contribution']:,}")
+            anchor.counter_add("lifetime_spend", u.tokens)   # burned forever, tracked forever
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -539,6 +653,19 @@ def _one_turn():
             if _S.setdefault("last_res", {}).get(uid) != res:  # career notes changes, not every turn
                 _S["last_res"][uid] = res
                 anchor.career_add(uid, t, "retask", f"gather {res} — {why}")
+                if "learned yield" in why:        # acting on stored wisdom pays
+                    economy.credit(uid, 5)
+            # Peer learning pays BOTH ways: the receiver who follows a colleague's tip
+            # earns a bonus, and so does the sender who taught it.
+            tip = _S.get("peer_tip")
+            if tip and tip["to"] == uid and tip["res"] == res:
+                economy.credit(uid, 25)
+                economy.credit(tip["from"], 25)
+                anchor.record(t, "reward", f"{uid} +25 for learning from {tip['from']}; "
+                                           f"{tip['from']} +25 for teaching")
+                anchor.career_add(uid, t, "reward", f"+25 learned from {tip['from']}: gather {res}")
+                anchor.career_add(tip["from"], t, "reward", f"+25 taught {uid}: gather {res}")
+                _S["peer_tip"] = None
             sim.resume(_GRAPH, uid, f"gather:{res}")
             got = sim.QUOTA * sim.effective_yield(res)
             economy.credit(uid, got)                                     # measured contribution
@@ -548,6 +675,26 @@ def _one_turn():
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
                 anchor.career_add(uid, t, "promote", f"earned promotion to {promo} by contribution")
+
+    # Responsibility escalation: a REVERSIBLE request parked >5 minutes on a silent
+    # human becomes the governor's to decide — workers must not idle on our absence.
+    # Anything token-increasing already routes through the board vote above, and
+    # irreversible gates (Age-up) remain human-only (Constitution IV).
+    for u in status.values():
+        p = u.pending
+        if not p or p.get("reversible") is False or u.age_s < 300:
+            continue
+        if u.unit_id in _S["villagers"]:
+            continue                              # the retask loop already covers these
+        res, why = _choose_gather(sim.world())
+        anchor.reason_add(t, "governor", f"escalation: decide for {u.unit_id}",
+                          f"human silent {int(u.age_s)}s > 5 min — governor takes "
+                          f"responsibility; {why}")
+        anchor.record(t, "governor",
+                      f"escalation: {u.unit_id} waited {int(u.age_s)}s — governor orders gather {res}")
+        anchor.career_add(u.unit_id, t, "escalation",
+                          f"governor decided after human silence: gather {res}")
+        sim.resume(_GRAPH, u.unit_id, f"gather:{res}")
 
     kind, build_why = _choose_build(sim.world(), len(_S["villagers"]))
     if kind:
@@ -572,6 +719,7 @@ def _one_turn():
     affordable = w["food"] >= sim.ADVANCE_COST["food"] and w["gold"] >= sim.ADVANCE_COST["gold"]
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         _S["heralds"] += 1
+        anchor.config_set("heralds", str(_S["heralds"]))
         hid = f"herald-{_S['heralds']:02d}"
         sim.spawn(_GRAPH, hid, "herald")
         anchor.career_add(hid, t, "born", "sent to the Age-up gate — irreversible, human decides")
@@ -582,7 +730,7 @@ def _one_turn():
         anchor.record(t, "gate", "herald parked at the gate — awaiting your approval to advance the Age")
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
-    views = list(_by_uid().values())
+    views = _fleet_views()
     spent = G.spent(views)
     anchor.record(t, "governor",
                   f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
@@ -607,6 +755,7 @@ def _one_turn():
                 _S["villagers"].remove(uid)
                 anchor.record(t, "reap", f"{uid} retired — vision met")
                 anchor.career_add(uid, t, "retired", "vision met — honourable discharge")
+                anchor.counter_add("lifetime_spend", u.tokens)
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
 
@@ -627,6 +776,8 @@ def _drive():
             _internal_voices()
             if _S["turn"] % 5 == 0:
                 _peer_chatter()                   # agents coordinating with each other
+            if _S["turn"] > 0 and _S["turn"] % 25 == 0:
+                _governor_report()                # accountability upward: board scores it
             if _S["turn"] % 6 == 0 and not _S["dev_proposal"]:
                 _propose_development()
             # Skill memory: distill lessons when a vision completes, and
@@ -643,9 +794,12 @@ def _snapshot() -> dict:
     with _LOCK:
         views = G.units(_GRAPH, _CP)
         sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
-        spend_ratio = G.spent(views) / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
-        proposal = board.propose_vision(sc, spend_ratio, _S["vision_key"])
         roster_by = {r["agent"]: r for r in economy.roster()}
+        # spend = the LIVING fleet's outstanding compute (what the cap governs);
+        # lifetime burn — every token ever spent, across restarts — is tracked apart
+        active_spent = sum(u.tokens for u in views if u.unit_id in roster_by)
+        spend_ratio = active_spent / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
+        proposal = board.propose_vision(sc, spend_ratio, _S["vision_key"])
         agents = []
         for u in views:
             r = roster_by.get(u.unit_id)
@@ -688,7 +842,14 @@ def _snapshot() -> dict:
             "fleet": len(agents),
             "avg_health": round(sum(a["health"] for a in agents) / len(agents)) if agents else 0,
             "fleet_burn_per_turn": sum(a["burn_per_turn"] for a in agents),
-            "spend_pct": round(100 * G.spent(views) / G.TOKEN_CAP) if G.TOKEN_CAP else 100,
+            "spend_pct": round(100 * active_spent / G.TOKEN_CAP) if G.TOKEN_CAP else 100,
+            "lifetime_burn": anchor.counter_get("lifetime_spend") + active_spent,
+            # value per compute: what the living fleet has produced per 1k tokens —
+            # THE number for "are we getting value for scarce compute"
+            "value_per_1k": round(sum(a["contribution"] for a in agents)
+                                  / max(1, active_spent / 1000), 2),
+            "birth_throttle": (anchor.config_get("birth_throttle", "1")
+                               if _S["turn"] < anchor.counter_get("throttle_until") else "1"),
             "errors_recent": errors_recent,
             "storage": "volume (persistent)" if persistent else "ephemeral (resets on redeploy)",
             # the anchor (skills, reasoning, chats, knowledge) lives in its own DB and
@@ -711,7 +872,7 @@ def _snapshot() -> dict:
             "dev_total_built": sum(d["built"] for d in sim.dev_catalog()),
             "dev_proposal": _S["dev_proposal"],
             "units": [asdict(u) for u in views],
-            "spent": G.spent(views), "cap": G.TOKEN_CAP,
+            "spent": active_spent, "cap": G.TOKEN_CAP,
             "events": anchor.event_log(300),
             "event_count": anchor.event_count(),
             "knowledge": anchor.summary(),
@@ -1244,7 +1405,8 @@ async function tick(){
     <div class=stat><span>brain</span><b>${esc(sy.brain||'—')}</b></div>
     <div class=stat><span>uptime</span><b>${Math.floor((sy.uptime_s||0)/60)}m ${(sy.uptime_s||0)%60}s &middot; tick ${sy.tick_s}s &middot; last turn ${sy.last_turn_age_s}s ago</b></div>
     <div class=stat><span>fleet</span><b>${sy.fleet} agents &middot; avg health ${sy.avg_health}%</b></div>
-    <div class=stat><span>fleet burn</span><b>${(sy.fleet_burn_per_turn||0).toLocaleString()} compute/turn &middot; cap ${sy.spend_pct}% used</b></div>
+    <div class=stat><span>fleet burn</span><b>${(sy.fleet_burn_per_turn||0).toLocaleString()} compute/turn &middot; cap ${sy.spend_pct}% used${sy.birth_throttle&&sy.birth_throttle!=='1'?` &middot; <span class=flag>births throttled &times;${sy.birth_throttle}</span>`:''}</b></div>
+    <div class=stat><span>lifetime burn</span><b>${(sy.lifetime_burn||0).toLocaleString()} compute ever &middot; value ${sy.value_per_1k} contribution per 1k</b></div>
     <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
     <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
     <div class=stat><span>memory</span><b>${esc(sy.memory||'—')}</b></div>

@@ -118,6 +118,16 @@ def _migrate_legacy(c: sqlite3.Connection) -> None:
         pass                                       # legacy busy/absent — start fresh
 
 
+def counter_get(key: str) -> int:
+    return int(config_get(key, "0") or 0)
+
+
+def counter_add(key: str, amount: int) -> int:
+    v = counter_get(key) + int(amount)
+    config_set(key, str(v))
+    return v
+
+
 def generation() -> int:
     """Which world this is. Rises by one on every world reset; never falls."""
     return int(config_get("generation", "1") or 1)
