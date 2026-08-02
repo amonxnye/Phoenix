@@ -72,6 +72,19 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS reasoning("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, actor TEXT, "
                   "decision TEXT, why TEXT)")
+        # Decisions as FIRST-CLASS objects (the lineage engine, LINEAGE.md): what was
+        # decided, why, derived from which inputs, authorized by whom, which event it
+        # produced, and what it measurably achieved. Supersedes `reasoning` (rows are
+        # migrated); the causal graph lives here + knowledge.caused_by.
+        c.execute("CREATE TABLE IF NOT EXISTS decisions("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, actor TEXT, "
+                  "decision TEXT, why TEXT, derived_from TEXT, authorized_by TEXT, "
+                  "effect_event INT, outcome TEXT, ts REAL)")
+        # every event gets identity + a causal parent — the provenance arrow
+        try:
+            c.execute("ALTER TABLE knowledge ADD COLUMN caused_by INTEGER")
+        except sqlite3.OperationalError:
+            pass
         # Careers: the permanent record of every agent that ever lived — what made it,
         # what it did, and how it ended. gen (generation) rises on each world reset so
         # a vil-01 from world 3 is never confused with a vil-01 from world 1.
@@ -88,6 +101,12 @@ def init() -> None:
                 pass                               # column already there
         c.commit()
         _migrate_legacy(c)
+        # one-time: lift the old reasoning stream into the decisions table
+        if (c.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+                and c.execute("SELECT COUNT(*) FROM reasoning").fetchone()[0] > 0):
+            c.execute("INSERT INTO decisions(turn, actor, decision, why, ts) "
+                      "SELECT turn, actor, decision, why, ts FROM reasoning")
+            c.commit()
     finally:
         c.close()
 
@@ -188,11 +207,36 @@ def careers_count() -> tuple[int, int]:
         c.close()
 
 
-def reason_add(turn: int, actor: str, decision: str, why: str) -> None:
+def reason_add(turn: int, actor: str, decision: str, why: str,
+               derived_from: list | None = None, authorized_by: str = "",
+               effect_event: int | None = None) -> int:
+    """Open a first-class decision: what, why, derived from which inputs (refs like
+    'skill:12', 'event:345', 'yield:food'), authorized by whom ('human', 'board:2/3',
+    'policy'). Returns the decision id so the caller can close it with its effect."""
     c = _conn()
     try:
-        c.execute("INSERT INTO reasoning(turn, actor, decision, why, ts) VALUES(?,?,?,?,?)",
-                  (turn, actor, decision[:160], why[:280], time.time()))
+        cur = c.execute(
+            "INSERT INTO decisions(turn, actor, decision, why, derived_from, "
+            "authorized_by, effect_event, outcome, ts) VALUES(?,?,?,?,?,?,?, '', ?)",
+            (turn, actor, decision[:160], why[:280],
+             json.dumps(derived_from or []), authorized_by, effect_event, time.time()))
+        c.commit()
+        return cur.lastrowid
+    finally:
+        c.close()
+
+
+def decision_close(decision_id: int, effect_event: int | None = None,
+                   outcome: str = "") -> None:
+    """Link a decision to the event it produced and/or the result it measurably had."""
+    c = _conn()
+    try:
+        if effect_event is not None:
+            c.execute("UPDATE decisions SET effect_event=? WHERE id=?",
+                      (effect_event, decision_id))
+        if outcome:
+            c.execute("UPDATE decisions SET outcome=? WHERE id=?",
+                      (outcome[:240], decision_id))
         c.commit()
     finally:
         c.close()
@@ -201,10 +245,20 @@ def reason_add(turn: int, actor: str, decision: str, why: str) -> None:
 def reasons_top(limit: int = 100) -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT turn, actor, decision, why, ts FROM reasoning "
-                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"turn": t, "actor": a, "decision": d, "why": w, "ts": ts}
-                for t, a, d, w, ts in rows]
+        rows = c.execute(
+            "SELECT id, turn, actor, decision, why, derived_from, authorized_by, "
+            "effect_event, outcome, ts FROM decisions ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
+        out = []
+        for i, t, a, d, w, df, ab, ee, oc, ts in rows:
+            try:
+                df = json.loads(df or "[]")
+            except json.JSONDecodeError:
+                df = []
+            out.append({"id": i, "turn": t, "actor": a, "decision": d, "why": w,
+                        "derived_from": df, "authorized_by": ab or "",
+                        "effect_event": ee, "outcome": oc or "", "ts": ts})
+        return out
     finally:
         c.close()
 
@@ -212,23 +266,94 @@ def reasons_top(limit: int = 100) -> list[dict]:
 def reasons_count() -> int:
     c = _conn()
     try:
-        return c.execute("SELECT COUNT(*) FROM reasoning").fetchone()[0]
+        return c.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
     finally:
         c.close()
 
 
-def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> None:
+def _resolve_ref(c: sqlite3.Connection, ref: str) -> str:
+    """Turn a derived_from ref into a human line."""
+    kind, _, key = ref.partition(":")
+    if kind == "skill" and key.isdigit():
+        row = c.execute("SELECT turn, lesson FROM skills WHERE id=?", (key,)).fetchone()
+        return f"lesson #{key} (t{row[0]}): {row[1]}" if row else f"lesson #{key} (gone)"
+    if kind == "event" and key.isdigit():
+        row = c.execute("SELECT turn, kind, note FROM knowledge WHERE id=?", (key,)).fetchone()
+        return f"event #{key} t{row[0]} [{row[1]}] {row[2]}" if row else f"event #{key} (gone)"
+    if kind == "yield":
+        row = c.execute("SELECT total, samples FROM observed_yield WHERE resource=?",
+                        (key,)).fetchone()
+        return (f"learned yield: {key} averages {round(row[0]/row[1], 1)}/round "
+                f"over {row[1]} samples" if row and row[1] else f"learned yield: {key}")
+    if kind == "external" and key.isdigit():
+        row = c.execute("SELECT topic, fact FROM external_knowledge WHERE id=?",
+                        (key,)).fetchone()
+        return f"ingested knowledge ({row[0]}): {row[1]}" if row else f"knowledge #{key}"
+    return ref
+
+
+def lineage(decision_id: int) -> dict:
+    """why(x): walk a decision BACKWARD to its roots — the inputs it derived from and
+    the causal chain of events above its effect. The machine-readable story."""
+    c = _conn()
+    try:
+        row = c.execute("SELECT turn, actor, decision, why, derived_from, authorized_by, "
+                        "effect_event, outcome FROM decisions WHERE id=?",
+                        (decision_id,)).fetchone()
+        if not row:
+            return {}
+        t, actor, dec, why, df, ab, ee, oc = row
+        try:
+            refs = json.loads(df or "[]")
+        except json.JSONDecodeError:
+            refs = []
+        back = [_resolve_ref(c, r) for r in refs]
+        chain = []                                 # effect event → its causal ancestors
+        eid, hops = ee, 0
+        while eid and hops < 12:
+            ev = c.execute("SELECT turn, kind, note, caused_by FROM knowledge WHERE id=?",
+                           (eid,)).fetchone()
+            if not ev:
+                break
+            chain.append(f"event #{eid} t{ev[0]} [{ev[1]}] {ev[2]}")
+            eid, hops = ev[3], hops + 1
+        forward = []                               # consequences: descendants of the effect
+        if ee:
+            frontier, seen = [ee], set()
+            while frontier and len(forward) < 20:
+                nxt = []
+                for pid in frontier:
+                    for i, tt, k, n in c.execute(
+                            "SELECT id, turn, kind, note FROM knowledge WHERE caused_by=?",
+                            (pid,)).fetchall():
+                        if i not in seen:
+                            seen.add(i)
+                            forward.append(f"event #{i} t{tt} [{k}] {n}")
+                            nxt.append(i)
+                frontier = nxt
+        return {"decision": {"id": decision_id, "turn": t, "actor": actor,
+                             "decision": dec, "why": why, "authorized_by": ab or "policy",
+                             "outcome": oc or ""},
+                "derived_from": back, "effect_chain": chain, "consequences": forward}
+    finally:
+        c.close()
+
+
+def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> int | None:
+    """Store a lesson; returns its id (citable as 'skill:<id>' in decision lineage),
+    or None if empty/duplicate."""
     lesson = (lesson or "").strip()[:280]
     if not lesson:
-        return
+        return None
     c = _conn()
     try:
         # de-dup: don't hoard the same lesson every retrospective
         if c.execute("SELECT 1 FROM skills WHERE lesson=?", (lesson,)).fetchone():
-            return
-        c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
-                  (turn, lesson, source, trigger, time.time()))
+            return None
+        cur = c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
+                        (turn, lesson, source, trigger, time.time()))
         c.commit()
+        return cur.lastrowid
     finally:
         c.close()
 
@@ -237,10 +362,10 @@ def skills_top(limit: int = 5) -> list[dict]:
     """Most recent distilled lessons — what the brain reads before deciding."""
     c = _conn()
     try:
-        rows = c.execute("SELECT turn, lesson, source, trigger, ts FROM skills "
+        rows = c.execute("SELECT id, turn, lesson, source, trigger, ts FROM skills "
                          "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
-                for t, l, s, tr, ts in rows]
+        return [{"id": i, "turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
+                for i, t, l, s, tr, ts in rows]
     finally:
         c.close()
 
@@ -276,13 +401,17 @@ CURRENT_TURN = 0                     # kept fresh by the driver so mirrored mess
                                      # land on the right turn
 
 
-def record(turn: int, kind: str, note: str) -> None:
+def record(turn: int, kind: str, note: str, caused_by: int | None = None) -> int:
+    """Record an event; returns its id so later events/decisions can chain to it.
+    caused_by links this event to the event that produced it (the provenance arrow)."""
     if turn < 0:
         turn = CURRENT_TURN
     c = _conn()
     try:
-        c.execute("INSERT INTO knowledge(turn, kind, note) VALUES(?,?,?)", (turn, kind, note))
+        cur = c.execute("INSERT INTO knowledge(turn, kind, note, caused_by) VALUES(?,?,?,?)",
+                        (turn, kind, note, caused_by))
         c.commit()
+        eid = cur.lastrowid
     finally:
         c.close()
     # mirror to the permanent append-only log — never truncated, survives a DB reset.
@@ -290,9 +419,11 @@ def record(turn: int, kind: str, note: str) -> None:
     try:
         with open(EVENTS_PATH, "a") as f:
             f.write(json.dumps({"turn": turn, "kind": kind, "note": note,
-                                "ts": round(time.time(), 2)}) + "\n")
+                                "ts": round(time.time(), 2),
+                                "id": eid, "caused_by": caused_by}) + "\n")
     except OSError:
         pass
+    return eid
 
 
 def event_log(limit: int = 200) -> list[str]:
@@ -380,9 +511,9 @@ def ingest(topic: str, source: str, fact: str) -> None:
 def external(limit: int = 20) -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT topic, source, fact FROM external_knowledge ORDER BY id DESC "
+        rows = c.execute("SELECT id, topic, source, fact FROM external_knowledge ORDER BY id DESC "
                          "LIMIT ?", (limit,)).fetchall()
-        return [{"topic": t, "source": s, "fact": f} for t, s, f in rows]
+        return [{"id": i, "topic": t, "source": s, "fact": f} for i, t, s, f in rows]
     finally:
         c.close()
 

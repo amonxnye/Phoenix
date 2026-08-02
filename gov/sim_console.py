@@ -159,8 +159,13 @@ def _propose_development():
     prop["board_approved"] = bv["approved"]
     _S["dev_proposal"] = prop
     _narrate_vote(bv, prop.get("why", ""))
-    anchor.reason_add(_S["turn"], "governor", f"propose development '{prop['name']}'",
-                      f"{prop.get('why', '')} (source {prop.get('source', '')}; board {bv['tally']})")
+    # lineage: the proposal derives from ingested knowledge and the current lessons
+    refs = [f"external:{k['id']}" for k in anchor.external(3) if "id" in k]
+    refs += [f"skill:{s['id']}" for s in anchor.skills_top(2) if s.get("id")]
+    prop["did"] = anchor.reason_add(
+        _S["turn"], "governor", f"propose development '{prop['name']}'",
+        f"{prop.get('why', '')} (source {prop.get('source', '')}; board {bv['tally']})",
+        derived_from=refs, authorized_by=f"board:{bv['tally']}")
     anchor.record(_S["turn"], "proposal",
                   f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
                   f"— board {bv['tally']}, awaiting the human")
@@ -611,12 +616,18 @@ def _one_turn():
         economy.credit(uid, got)
         _S["villagers"].append(uid)
         anchor.observe_yield(res, sim.effective_yield(res))
-        anchor.reason_add(t, "board", f"enlist {uid} on {res}",
-                          f"quorum {bv['tally']}; fleet below target; {why}")
-        anchor.record(t, "board", f"[{bv['tally']}] approved creation of {uid}")
-        anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
+        # lineage: vote event → decision (authorized by the board) → spawn → gather
+        vote_ev = anchor.record(t, "board", f"[{bv['tally']}] approved creation of {uid}")
+        did = anchor.reason_add(t, "board", f"enlist {uid} on {res}",
+                                f"quorum {bv['tally']}; fleet below target; {why}",
+                                derived_from=(["yield:" + res] if "learned yield" in why else []),
+                                authorized_by=f"board:{bv['tally']}")
+        spawn_ev = anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}",
+                                 caused_by=vote_ev)
+        anchor.decision_close(did, spawn_ev, outcome=f"first haul +{got} {res}")
         anchor.career_add(uid, t, "born", f"enlisted by board {bv['tally']} → gather {res}; {why}")
-        anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
+        anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})",
+                      caused_by=spawn_ev)
         views = _fleet_views()
 
     # Article II: no immortal agents. An agent that has spent its budget is retired
@@ -633,10 +644,14 @@ def _one_turn():
             _S["villagers"].remove(uid)
             _S["orders"].pop(uid, None)
             _S["born"].pop(uid, None)
-            anchor.reason_add(t, "director", f"retire {uid}",
-                              f"Article II lifecycle: compute {u.tokens:,} ≥ budget {r['budget']:,}")
-            anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
-                                     f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
+            did = anchor.reason_add(t, "director", f"retire {uid}",
+                                    f"Article II lifecycle: compute {u.tokens:,} ≥ budget {r['budget']:,}",
+                                    authorized_by="policy:Article II")
+            reap_ev = anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
+                                               f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
+            anchor.decision_close(did, reap_ev,
+                                  outcome=f"lifetime contribution {r['contribution']:,} "
+                                          f"for {u.tokens:,} compute")
             anchor.career_add(uid, t, "retired",
                               f"Article II: budget spent ({u.tokens:,}/{r['budget']:,}); "
                               f"rank {r['role']}, final contribution {r['contribution']:,}")
@@ -650,7 +665,9 @@ def _one_turn():
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
-            anchor.reason_add(t, "director", f"{uid} → gather {res}", why)
+            did = anchor.reason_add(t, "director", f"{uid} → gather {res}", why,
+                                    derived_from=(["yield:" + res] if "learned yield" in why else []),
+                                    authorized_by=("human" if "standing order" in why else "policy"))
             if _S.setdefault("last_res", {}).get(uid) != res:  # career notes changes, not every turn
                 _S["last_res"][uid] = res
                 anchor.career_add(uid, t, "retask", f"gather {res} — {why}")
@@ -671,7 +688,9 @@ def _one_turn():
             got = sim.QUOTA * sim.effective_yield(res)
             economy.credit(uid, got)                                     # measured contribution
             anchor.observe_yield(res, sim.effective_yield(res))
-            anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
+            gev = anchor.record(t, "gather",
+                                f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
+            anchor.decision_close(did, gev, outcome=f"+{got} {res}")     # measured result
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
@@ -700,9 +719,11 @@ def _one_turn():
     kind, build_why = _choose_build(sim.world(), len(_S["villagers"]))
     if kind:
         done, msg = sim.build_structure(kind)
+        bev = anchor.record(t, "build" if done else "waste", msg)
         if done:
-            anchor.reason_add(t, "director", f"build {kind}", build_why)
-        anchor.record(t, "build" if done else "waste", msg)
+            did = anchor.reason_add(t, "director", f"build {kind}", build_why,
+                                    authorized_by="policy")
+            anchor.decision_close(did, bev, outcome=msg)
         if not done:
             _S["side_effects"] += 1
     else:
@@ -742,12 +763,15 @@ def _one_turn():
             anchor.career_add(hid, t, "born",
                               f"board {bv['tally']} judged the treasury ready for {nxt} — "
                               "sent to the gate; irreversible, human decides")
-            anchor.reason_add(t, "director", "send herald to the Age-up gate",
-                              f"aligned with vision '{_vision().name}'; board {bv['tally']} judged "
-                              f"the treasury ready (food {w['food']:,}≥{acost['food']:,}, "
-                              f"gold {w['gold']:,}≥{acost['gold']:,}); irreversible, human decides")
-            anchor.record(t, "gate", f"herald parked at the gate — board {bv['tally']} approved; "
-                                     "awaiting YOUR approval to advance the Age")
+            did = anchor.reason_add(t, "director", "send herald to the Age-up gate",
+                                    f"aligned with vision '{_vision().name}'; board {bv['tally']} judged "
+                                    f"the treasury ready (food {w['food']:,}≥{acost['food']:,}, "
+                                    f"gold {w['gold']:,}≥{acost['gold']:,}); irreversible, human decides",
+                                    authorized_by=f"board:{bv['tally']}")
+            gate_ev = anchor.record(t, "gate", f"herald parked at the gate — board {bv['tally']} approved; "
+                                               "awaiting YOUR approval to advance the Age")
+            anchor.decision_close(did, gate_ev)
+            _S["herald_decision"] = did           # the human's verdict closes it
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
@@ -1002,6 +1026,14 @@ class Handler(BaseHTTPRequestHandler):
                           for x in economy.TIERS],
                 "brain": "deepseek" if brain.available() else "rule-based",
             }))
+        if self.path.startswith("/api/lineage"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                did = int(q.get("id", ["0"])[0])
+            except ValueError:
+                did = 0
+            return self._send(200, json.dumps(anchor.lineage(did)))
         if self.path == "/api/careers":
             ev_total, agents_ever = anchor.careers_count()
             return self._send(200, json.dumps({
@@ -1055,6 +1087,10 @@ class Handler(BaseHTTPRequestHandler):
                 sim.resume(_GRAPH, uid, decision)
             anchor.career_add(uid, _S["turn"], "gate",
                               f"human decided: {decision} at the irreversible gate")
+            if uid.startswith("herald") and _S.get("herald_decision"):
+                anchor.decision_close(_S["herald_decision"],
+                                      outcome=f"human decision: {decision} — age now {sim.world()['age']}")
+                _S["herald_decision"] = None
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/vision":
             key = self._read_json().get("vision")
@@ -1120,12 +1156,17 @@ class Handler(BaseHTTPRequestHandler):
                     ok, msg = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
                                           prop.get("value", 0), prop.get("resource", ""),
                                           prop.get("rank", 2), prop.get("source", ""))
-                    anchor.record(_S["turn"], "development",
-                                  f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                    dev_ev = anchor.record(_S["turn"], "development",
+                                           f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                    if prop.get("did"):
+                        anchor.decision_close(prop["did"], dev_ev,
+                                              outcome="human adopted" if ok else f"adopt failed: {msg}")
                     _S["dev_proposal"] = None
                 elif action == "reject":
                     ok, msg = True, f"rejected {prop['name']}"
-                    anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
+                    dev_ev = anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
+                    if prop.get("did"):
+                        anchor.decision_close(prop["did"], dev_ev, outcome="human rejected")
                     _S["dev_proposal"] = None
                 else:
                     return self._send(400, json.dumps({"error": "action must be adopt|reject"}))
@@ -1726,7 +1767,20 @@ async function tick(){
   rEmpty.style.display=rs.length?'none':'block';
   reasons.innerHTML=rs.map(r=>`<tr><td>t${r.turn}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
     <td class="actor-${esc(r.actor)}">${esc(r.actor)}</td>
-    <td>${esc(r.decision)}</td><td class=why>${esc(r.why)}</td></tr>`).join('');
+    <td>${esc(r.decision)}${r.authorized_by?`<div style="color:var(--dim);font-size:10px">auth: ${esc(r.authorized_by)}</div>`:''}</td>
+    <td class=why>${esc(r.why)}
+      ${r.outcome?`<div style="color:#a8e086;font-size:11px">&rArr; ${esc(r.outcome)}</div>`:''}
+      <div><a href="#" style="color:var(--gold);font-size:10px" onclick="trace(${r.id},this);return false">trace lineage</a><div id="tr-${r.id}"></div></div></td></tr>`).join('');
+}
+async function trace(id,el){
+  const box=document.getElementById('tr-'+id);
+  if(box.innerHTML){box.innerHTML='';return}
+  let d; try{ d=await (await fetch('/api/lineage?id='+id)).json() }catch(e){ return }
+  const lines=[...(d.derived_from||[]).map(x=>'&#8656; derived from '+esc(x)),
+               ...(d.effect_chain||[]).map(x=>'&#8658; effect: '+esc(x)),
+               ...(d.consequences||[]).map(x=>'&#8659; consequence: '+esc(x))];
+  box.innerHTML=lines.length?lines.map(l=>`<div style="color:var(--dim);font-size:10px;padding-left:8px">${l}</div>`).join('')
+    :'<div style="font-size:10px;color:var(--dim);padding-left:8px">no linked lineage yet (older decision)</div>';
 }
 tick(); setInterval(tick,3000);
 </script>

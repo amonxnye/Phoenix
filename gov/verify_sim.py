@@ -160,5 +160,26 @@ check("reasoning and careers survive the world wipe",
       A.reasons_count() == before_reasons
       and any(c["uid"] == "vil-test" for c in A.careers()))
 
+# ── 7. lineage: decisions are first-class and traceable both ways ────────────
+print("\n7. Lineage — why() walks to the roots, credit() walks to the value")
+stamp = int(time.time())
+sid = A.skill_add(9, f"Test lesson {stamp}: rebalance early", source="test", trigger="lineage")
+e1 = A.record(9, "board", "[3/3] approved test build")
+did = A.reason_add(9, "director", "build test_mill", "testing provenance",
+                   derived_from=[f"skill:{sid}"], authorized_by="board:3/3")
+e2 = A.record(9, "build", "built test_mill", caused_by=e1)
+A.decision_close(did, e2, outcome="food yield +50%")
+A.record(9, "gather", "vil-x gathered 30 food", caused_by=e2)
+lin = A.lineage(did)
+check("decision carries authorization and measured outcome",
+      lin["decision"]["authorized_by"] == "board:3/3"
+      and "yield" in lin["decision"]["outcome"])
+check("why() walks back to the lesson it derived from",
+      any(f"Test lesson {stamp}" in x for x in lin["derived_from"]))
+check("effect chain reaches the event that caused it",
+      any("approved test build" in x for x in lin["effect_chain"]))
+check("credit() walks forward to the value produced",
+      any("gathered 30 food" in x for x in lin["consequences"]))
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
