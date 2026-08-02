@@ -15,6 +15,7 @@ irreversible; the governor still gates every action that spends or can't be undo
 import json
 import os
 import sqlite3
+import time
 
 def _data_dir() -> str:
     d = os.environ.get("GOV_DATA_DIR", "").strip()
@@ -77,6 +78,14 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS careers("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, gen INT, uid TEXT, "
                   "turn INT, event TEXT, detail TEXT)")
+        # every message, skill, reasoning entry and career line carries a wall-clock
+        # timestamp (epoch seconds) — the permanent record is absolutely datable.
+        # Rows written before the column existed keep NULL and display as '—'.
+        for table in ("messages", "skills", "reasoning", "careers"):
+            try:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN ts REAL")
+            except sqlite3.OperationalError:
+                pass                               # column already there
         c.commit()
         _migrate_legacy(c)
     finally:
@@ -128,8 +137,8 @@ def career_add(uid: str, turn: int, event: str, detail: str = "") -> None:
         turn = CURRENT_TURN
     c = _conn()
     try:
-        c.execute("INSERT INTO careers(gen, uid, turn, event, detail) VALUES(?,?,?,?,?)",
-                  (generation(), uid, turn, event[:40], (detail or "")[:240]))
+        c.execute("INSERT INTO careers(gen, uid, turn, event, detail, ts) VALUES(?,?,?,?,?,?)",
+                  (generation(), uid, turn, event[:40], (detail or "")[:240], time.time()))
         c.commit()
     finally:
         c.close()
@@ -140,18 +149,18 @@ def careers(limit_agents: int = 40) -> list[dict]:
     story oldest-to-newest. [{gen, uid, events: [{turn, event, detail}, ...]}]"""
     c = _conn()
     try:
-        rows = c.execute("SELECT gen, uid, turn, event, detail FROM careers "
+        rows = c.execute("SELECT gen, uid, turn, event, detail, ts FROM careers "
                          "ORDER BY id DESC LIMIT 1200").fetchall()
     finally:
         c.close()
     agents: dict[tuple, dict] = {}
-    for g, uid, t, ev, det in rows:                # newest rows first
+    for g, uid, t, ev, det, ts in rows:            # newest rows first
         key = (g, uid)
         if key not in agents:
             if len(agents) >= limit_agents:
                 continue
             agents[key] = {"gen": g, "uid": uid, "events": []}
-        agents[key]["events"].append({"turn": t, "event": ev, "detail": det})
+        agents[key]["events"].append({"turn": t, "event": ev, "detail": det, "ts": ts})
     out = list(agents.values())                    # insertion order = newest agent first
     for a in out:
         a["events"].reverse()                      # each life told oldest → newest
@@ -172,8 +181,8 @@ def careers_count() -> tuple[int, int]:
 def reason_add(turn: int, actor: str, decision: str, why: str) -> None:
     c = _conn()
     try:
-        c.execute("INSERT INTO reasoning(turn, actor, decision, why) VALUES(?,?,?,?)",
-                  (turn, actor, decision[:160], why[:280]))
+        c.execute("INSERT INTO reasoning(turn, actor, decision, why, ts) VALUES(?,?,?,?,?)",
+                  (turn, actor, decision[:160], why[:280], time.time()))
         c.commit()
     finally:
         c.close()
@@ -182,9 +191,10 @@ def reason_add(turn: int, actor: str, decision: str, why: str) -> None:
 def reasons_top(limit: int = 100) -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT turn, actor, decision, why FROM reasoning "
+        rows = c.execute("SELECT turn, actor, decision, why, ts FROM reasoning "
                          "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"turn": t, "actor": a, "decision": d, "why": w} for t, a, d, w in rows]
+        return [{"turn": t, "actor": a, "decision": d, "why": w, "ts": ts}
+                for t, a, d, w, ts in rows]
     finally:
         c.close()
 
@@ -206,8 +216,8 @@ def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> No
         # de-dup: don't hoard the same lesson every retrospective
         if c.execute("SELECT 1 FROM skills WHERE lesson=?", (lesson,)).fetchone():
             return
-        c.execute("INSERT INTO skills(turn, lesson, source, trigger) VALUES(?,?,?,?)",
-                  (turn, lesson, source, trigger))
+        c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
+                  (turn, lesson, source, trigger, time.time()))
         c.commit()
     finally:
         c.close()
@@ -217,9 +227,10 @@ def skills_top(limit: int = 5) -> list[dict]:
     """Most recent distilled lessons — what the brain reads before deciding."""
     c = _conn()
     try:
-        rows = c.execute("SELECT turn, lesson, source, trigger FROM skills "
+        rows = c.execute("SELECT turn, lesson, source, trigger, ts FROM skills "
                          "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"turn": t, "lesson": l, "source": s, "trigger": tr} for t, l, s, tr in rows]
+        return [{"turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
+                for t, l, s, tr, ts in rows]
     finally:
         c.close()
 
@@ -264,10 +275,12 @@ def record(turn: int, kind: str, note: str) -> None:
         c.commit()
     finally:
         c.close()
-    # mirror to the permanent append-only log — never truncated, survives a DB reset
+    # mirror to the permanent append-only log — never truncated, survives a DB reset.
+    # ts = wall-clock epoch seconds, so the permanent record is absolutely datable.
     try:
         with open(EVENTS_PATH, "a") as f:
-            f.write(json.dumps({"turn": turn, "kind": kind, "note": note}) + "\n")
+            f.write(json.dumps({"turn": turn, "kind": kind, "note": note,
+                                "ts": round(time.time(), 2)}) + "\n")
     except OSError:
         pass
 
@@ -284,7 +297,10 @@ def event_log(limit: int = 200) -> list[str]:
     for ln in lines[-limit:]:
         try:
             d = json.loads(ln)
-            out.append(f"t{d['turn']} [{d['kind']}] {d['note']}")
+            stamp = ""
+            if d.get("ts"):
+                stamp = time.strftime("%b %d %H:%M:%S ", time.gmtime(d["ts"]))
+            out.append(f"{stamp}t{d['turn']} [{d['kind']}] {d['note']}")
         except (json.JSONDecodeError, KeyError):
             continue
     return list(reversed(out))
@@ -296,7 +312,8 @@ def msg_send(thread: str, sender: str, body: str) -> None:
     also mirrored into the event log — communications are observable, not hidden."""
     c = _conn()
     try:
-        c.execute("INSERT INTO messages(thread, sender, body) VALUES(?,?,?)", (thread, sender, body))
+        c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
+                  (thread, sender, body, time.time()))
         c.commit()
     finally:
         c.close()
@@ -310,9 +327,10 @@ def msg_send(thread: str, sender: str, body: str) -> None:
 def msg_thread(thread: str, limit: int = 100) -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT sender, body FROM messages WHERE thread=? ORDER BY id "
+        rows = c.execute("SELECT sender, body, ts FROM messages WHERE thread=? ORDER BY id "
                          "LIMIT ?", (thread, limit)).fetchall()
-        return [{"sender": s, "body": b, "mine": s == "operator"} for s, b in rows]
+        return [{"sender": s, "body": b, "ts": ts, "mine": s == "operator"}
+                for s, b, ts in rows]
     finally:
         c.close()
 

@@ -1281,7 +1281,7 @@ async function hallTick(){
     return `<div style="border-top:1px solid var(--line);padding:8px 2px">
       <b>g${c.gen}&middot;${esc(c.uid)}</b>
       <span style="color:var(--dim)"> — ${born?`born t${born.turn}`:''}${end?` &rarr; ${esc(end.event)} t${end.turn}`:' &middot; serving'}</span>
-      <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
+      <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} ${e.ts?new Date(e.ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
     </div>`}).join('')||'<div class=empty>No careers recorded yet — they begin at the next birth.</div>';
 }
 tick(); setInterval(tick,1000);
@@ -1338,8 +1338,9 @@ function render(){
       <div class=last>${esc(lastOf(p.key)||'—')}</div></div>`).join('');
   const msgs=sel==='internal'?(data.internal||[]):sel==='all'?data.broadcast:(data.threads[sel]||[]);
   const box=document.getElementById('msgs');
+  const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
   box.innerHTML=msgs.length?msgs.map(m=>`<div class="m ${m.mine?'mine':''}">
-    <div class=s>${m.mine?'You':esc(m.sender)}</div>${esc(m.body)}</div>`).join(''):'<div class=hint>No messages yet — say hello.</div>';
+    <div class=s>${m.mine?'You':esc(m.sender)} &middot; ${when(m.ts)}</div>${esc(m.body)}</div>`).join(''):'<div class=hint>No messages yet — say hello.</div>';
   box.scrollTop=box.scrollHeight;
 }
 function pick(k){ sel=k; render(); }
@@ -1521,18 +1522,19 @@ td.why{color:var(--blue);white-space:normal}
 </main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
 async function tick(){
   let d; try{ d=await (await fetch('/api/skillsdata')).json() }catch(e){ return }
   nsk.textContent=d.skills_count; nrs.textContent=d.reasons_count; br.textContent=d.brain;
   skills.innerHTML=(d.skills||[]).map(s=>`<div class=skill>&#x1F4D6; <b>${esc(s.lesson)}</b>
-      <div class=m>learned t${s.turn} &middot; ${esc(s.trigger)} &middot; ${esc(s.source)}</div></div>`).join('')
+      <div class=m>learned t${s.turn} &middot; ${when(s.ts)} &middot; ${esc(s.trigger)} &middot; ${esc(s.source)}</div></div>`).join('')
     || '<div class=empty>No lessons yet — the first retrospective fires when a vision completes or at turn 30.</div>';
   tiers.innerHTML=(d.tiers||[]).map((t,i)=>`<div class=skill><b>${i+1}. ${esc(t.name)}</b>
       <div class=m>budget ${t.budget.toLocaleString()} compute${t.promote_at?` &middot; promoted at ${t.promote_at.toLocaleString()} contribution`:' &middot; top rank'}</div>
       <div>${t.can.map(c=>`<span class=chip>${esc(c)}</span>`).join('')}</div></div>`).join('');
   const rs=d.reasons||[];
   rEmpty.style.display=rs.length?'none':'block';
-  reasons.innerHTML=rs.map(r=>`<tr><td>t${r.turn}</td>
+  reasons.innerHTML=rs.map(r=>`<tr><td>t${r.turn}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
     <td class="actor-${esc(r.actor)}">${esc(r.actor)}</td>
     <td>${esc(r.decision)}</td><td class=why>${esc(r.why)}</td></tr>`).join('');
 }
