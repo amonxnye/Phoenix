@@ -18,3 +18,5 @@ jobs:
         run: python3 gov/console_smoke.py
       - name: Run the Age of Empires MVP acceptance checks
         run: python3 gov/verify_sim.py
+      - name: Run the Workspace (real work) acceptance checks
+        run: python3 gov/verify_work.py

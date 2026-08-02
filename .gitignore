@@ -9,6 +9,9 @@ gov/aoe-anchor.sqlite
 gov/aoe-anchor.sqlite-wal
 gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
+gov/workspace.sqlite
+gov/scorecard.json
+scorecard.json
 
 # Python
 __pycache__/
