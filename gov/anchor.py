@@ -327,10 +327,12 @@ def msg_send(thread: str, sender: str, body: str) -> None:
 def msg_thread(thread: str, limit: int = 100) -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT sender, body, ts FROM messages WHERE thread=? ORDER BY id "
-                         "LIMIT ?", (thread, limit)).fetchall()
+        # newest N, then reversed to chronological — ORDER BY id LIMIT would pin the
+        # thread to its OLDEST messages once it outgrows the limit
+        rows = c.execute("SELECT sender, body, ts FROM messages WHERE thread=? "
+                         "ORDER BY id DESC LIMIT ?", (thread, limit)).fetchall()
         return [{"sender": s, "body": b, "ts": ts, "mine": s == "operator"}
-                for s, b, ts in rows]
+                for s, b, ts in reversed(rows)]
     finally:
         c.close()
 
