@@ -29,8 +29,14 @@ import governor as G
 import sim
 import vision as V
 
-G.TOKEN_CAP = 500_000            # generous cap so the settlement can develop
-TICK = 2.0                       # seconds per director turn
+# Performance tuning (from live behaviour review):
+# - cap 1M: a mature fleet of foremen/delegates carries real lifetime budgets; the
+#   old 500k jammed spawning permanently once agents matured.
+# - TICK 3s: the 2s pace saturated the process with model calls.
+# - idle threshold 2×TICK: "idle" now means genuinely stale, not "since last tick".
+G.TOKEN_CAP = 1_000_000
+TICK = 3.0
+G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
 _LOCK = threading.Lock()
@@ -283,12 +289,12 @@ def _internal_voices():
     driven when DeepSeek is alive, templated otherwise. The human observes on /chats."""
     t = _S["turn"]
     sit = _situation()
-    if t % 2 == 0:
+    if t % 4 == 0:                # tuned down from every 2nd turn — cost + load
         line = brain.think("the Chief Governor", sit,
                            "Issue one short directive to the fleet for this cycle.") \
             or f"Directive: press toward '{_vision().name}'; keep spend under cap and gather what's scarce."
         anchor.msg_send("internal", "Chief Governor", line)
-    if t % 3 == 0:
+    if t % 8 == 0:                # board debates less often; each round is 3 model calls
         for g in board.GOVERNORS:
             stance = {"Prudence": "watch the spend, block anything reckless",
                       "Growth": "push toward the vision",
@@ -361,6 +367,22 @@ def _one_turn():
         anchor.record(t, "spawn", f"{uid} enlisted → assigned to {res}")
         anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
         views = list(_by_uid().values())
+
+    # Article II: no immortal agents. An agent that has spent its budget is retired
+    # (ending the permanent-overwork state) and the staffing loop enlists a fresh
+    # replacement through the Board next turn — so fleet spend stays bounded and the
+    # cap can never jam shut on lifetime totals.
+    status = _by_uid()
+    roster_by = {r["agent"]: r for r in economy.roster()}
+    for uid in list(_S["villagers"]):
+        u, r = status.get(uid), roster_by.get(uid)
+        if u and r and r["budget"] and u.tokens >= r["budget"] and u.pending:
+            sim.resume(_GRAPH, uid, "dismiss")
+            economy.retire(uid)
+            _S["villagers"].remove(uid)
+            _S["orders"].pop(uid, None)
+            anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
+                                     f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -645,6 +667,20 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 ok = _op_cap(self._read_json().get("token_cap"))
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
+        if self.path == "/api/reset":
+            # Operator-ordered FULL RESET: wipe the world, economy, chats, knowledge
+            # and the permanent log, then exit — the platform restarts us fresh.
+            anchor.record(_S["turn"], "operator", "FULL RESET ordered — wiping DB and restarting")
+            def _wipe_and_restart():
+                time.sleep(0.7)                   # let the response flush first
+                for p in (sim.DB, sim.DB + "-wal", sim.DB + "-shm", anchor.EVENTS_PATH):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                os._exit(1)                        # supervisor restarts a clean process
+            threading.Thread(target=_wipe_and_restart, daemon=True).start()
+            return self._send(200, json.dumps({"ok": True, "restarting": True}))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
