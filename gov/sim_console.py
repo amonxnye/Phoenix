@@ -1327,6 +1327,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, SKILLS_PAGE, "text/html; charset=utf-8")
         if self.path == "/leaderboard":
             return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
+        if self.path == "/work":
+            return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/workdata":
+            import workspace as WS
+            WS.init()
+            wtasks = WS.sync_tasks()              # sync first so counts are current
+            return self._send(200, json.dumps({
+                "world": WS.world(),
+                "tasks": wtasks,
+                "module": WS.read_file("calculator.py"),
+                "brain": brain.brain_name(),
+                "recent": [e for e in anchor.event_log(200)
+                           if "[work]" in e or "[waste]" in e][:12],
+            }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
@@ -1607,6 +1621,21 @@ class Handler(BaseHTTPRequestHandler):
                 os._exit(1)                        # supervisor restarts a clean process
             threading.Thread(target=_wipe_and_restart, daemon=True).start()
             return self._send(200, json.dumps({"ok": True, "restarting": True}))
+        if self.path == "/api/work":
+            # one worker cycle against the live brain — the model call and the test
+            # subprocess run in-request, outside the game lock
+            import worker as WK
+            import workspace as WS
+            WS.init()
+            agent = (self._read_json().get("agent") or "dev-01").strip()[:24] or "dev-01"
+            if not brain.available():
+                return self._send(400, json.dumps(
+                    {"error": "no brain configured — the worker needs a model"}))
+            try:
+                result = WK.work_cycle(agent)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            return self._send(200, json.dumps(result))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2333,9 +2362,11 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <main>
+  <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
+    <div class=p id=telemetry>loading…</div></div>
   <div class=card><h2>Runs — same world, same constitution, different brains</h2>
     <table><thead><tr><th>Brain / label</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
       <th class=n>Progress</th><th class=n>Net worth</th><th class=n>Value/1k</th>
@@ -2351,6 +2382,11 @@ const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[
 async function load(){
   let d; try{ d=await (await fetch('/api/evaldata')).json() }catch(e){ return }
   br.textContent=d.brain;
+  const mc=d.model_calls||{};
+  telemetry.innerHTML=`<b>${(mc.calls||0).toLocaleString()}</b> calls &middot; `+
+    `<b>${((mc.prompt_tokens||0)+(mc.completion_tokens||0)).toLocaleString()}</b> real tokens `+
+    `(${(mc.prompt_tokens||0).toLocaleString()} in / ${(mc.completion_tokens||0).toLocaleString()} out) &middot; `+
+    `avg latency <b>${mc.avg_latency_ms||0}ms</b> &middot; errors <b>${mc.errors||0}</b>`;
   const rs=d.runs||[];
   empty.style.display=rs.length?'none':'block';
   const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);
@@ -2367,6 +2403,80 @@ async function load(){
     <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td></tr>`).join('');
 }
 load(); setInterval(load,5000);
+</script>
+</html>"""
+
+
+WORK_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Workboard — real work</title>
+<style>
+:root{--bg:#0b1210;--panel:#111c18;--line:#1e332b;--ink:#e8f0ec;--dim:#8fa89d;--gold:#e0b23a;--green:#7bd88f;--red:#f8837b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#12211c}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.p{padding:12px 14px}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.tag{padding:1px 9px;border:1px solid var(--line);border-radius:20px;font-size:11px}
+.t-open{color:var(--red)}.t-done{color:var(--green)}.t-assigned{color:var(--gold)}
+.bar{height:10px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
+.fill{height:100%;background:var(--green);transition:width .5s}
+pre{margin:0;padding:12px 14px;overflow:auto;max-height:420px;color:var(--dim);font-size:12px}
+button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
+button:disabled{opacity:.4;cursor:wait}
+input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:110px}
+#result{white-space:pre-wrap;color:var(--dim)}
+.log div{color:var(--dim);padding:1px 14px;font-size:12px}
+</style>
+<header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
+<main>
+  <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
+    <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
+    <div class=bar><div class=fill id=fill style="width:0%"></div></div></div></div>
+  <div class=card><h2>Tasks — derived from failing tests, closed only by the oracle</h2>
+    <table><thead><tr><th>Task</th><th>Status</th><th>Solved by</th></tr></thead><tbody id=tasks></tbody></table></div>
+  <div class=card><h2>Run a worker</h2><div class=p>
+    Agent id <input id=agent value="dev-01">
+    <button id=runbtn onclick=runWorker()>Run one work cycle</button>
+    <div style="margin-top:10px" id=result>The worker reads the first open task and its failing test,
+    proposes a fix through the live brain, applies it in the sandbox, and the oracle re-scores.
+    A patch that breaks tests is auto-reverted. It cannot edit the tests.</div></div></div>
+  <div class="card wide"><h2>The code under work — sandbox/calculator.py</h2><pre id=code></pre></div>
+  <div class="card wide"><h2>Recent work events</h2><div class=log id=log></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function load(){
+  let d; try{ d=await (await fetch('/api/workdata')).json() }catch(e){ return }
+  br.textContent=d.brain;
+  const w=d.world;
+  suite.textContent=`${w.tests_passing}/${w.tests_total}`;
+  taskmeta.textContent=`${w.tasks_open} open · ${w.tasks_done} done · progress ${w.progress_pct}%`;
+  fill.style.width=w.progress_pct+'%';
+  tasks.innerHTML=(d.tasks||[]).map(t=>`<tr><td>${esc(t.title)}</td>
+    <td><span class="tag t-${esc(t.status)}">${esc(t.status)}</span></td>
+    <td>${esc(t.solved_by||'—')}</td></tr>`).join('')||'<tr><td colspan=3>no tasks</td></tr>';
+  code.textContent=d.module;
+  log.innerHTML=(d.recent||[]).map(e=>`<div>${esc(e)}</div>`).join('')||'<div>no work yet</div>';
+}
+async function runWorker(){
+  runbtn.disabled=true; result.textContent='working… (model call + test run, ~10-30s)';
+  try{
+    const r=await fetch('/api/work',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({agent:agent.value})});
+    if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);runbtn.disabled=false;return runWorker()}}
+    result.textContent=JSON.stringify(await r.json(),null,2);
+  }catch(e){ result.textContent='error: '+e }
+  runbtn.disabled=false; load();
+}
+load(); setInterval(load,4000);
 </script>
 </html>"""
 

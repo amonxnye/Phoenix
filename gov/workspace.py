@@ -107,6 +107,10 @@ def sync_tasks() -> list[dict]:
         for name in o["failures"]:
             c.execute("INSERT OR IGNORE INTO tasks(test, title) VALUES(?,?)",
                       (name, f"make {name} pass"))
+            # a redeploy can reset the code while the task DB persists — a test that
+            # fails again REOPENS its task; the backlog tracks the oracle, always
+            c.execute("UPDATE tasks SET status='open', solved_by='' "
+                      "WHERE test=? AND status='done'", (name,))
         if o["failures"]:
             qmarks = ",".join("?" * len(o["failures"]))
             c.execute(f"UPDATE tasks SET status='done' WHERE status!='done' "
