@@ -208,6 +208,79 @@ def careers(limit_agents: int = 40) -> list[dict]:
     return out
 
 
+def model_call_log(provider: str, model: str, purpose: str, latency_ms: int,
+                   prompt_tokens: int, completion_tokens: int, ok: bool,
+                   error: str = "") -> None:
+    """Every brain call's real cost — provider tokens, latency, failures — logged
+    permanently. The eval reads this: governance quality per real dollar."""
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS model_calls("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, provider TEXT, "
+                  "model TEXT, purpose TEXT, latency_ms INT, prompt_tokens INT, "
+                  "completion_tokens INT, ok INT, error TEXT)")
+        c.execute("INSERT INTO model_calls(ts, provider, model, purpose, latency_ms, "
+                  "prompt_tokens, completion_tokens, ok, error) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (time.time(), provider, model, purpose, latency_ms,
+                   prompt_tokens, completion_tokens, 1 if ok else 0, error[:200]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def model_calls_stats() -> dict:
+    """Aggregate real-model telemetry: calls, tokens, latency, error rate."""
+    c = _conn()
+    try:
+        try:
+            row = c.execute(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), "
+                "COALESCE(SUM(completion_tokens),0), COALESCE(AVG(latency_ms),0), "
+                "COALESCE(SUM(1-ok),0) FROM model_calls").fetchone()
+        except sqlite3.OperationalError:
+            return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                    "avg_latency_ms": 0, "errors": 0}
+        n, pt, ct, lat, err = row
+        return {"calls": n, "prompt_tokens": pt, "completion_tokens": ct,
+                "avg_latency_ms": round(lat), "errors": err}
+    finally:
+        c.close()
+
+
+def eval_run_save(scorecard: dict) -> None:
+    """Store a finished eval run's scorecard, permanently — the leaderboard's data."""
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS eval_runs("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, data TEXT)")
+        c.execute("INSERT INTO eval_runs(ts, data) VALUES(?,?)",
+                  (time.time(), json.dumps(scorecard)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def eval_runs(limit: int = 50) -> list[dict]:
+    c = _conn()
+    try:
+        try:
+            rows = c.execute("SELECT ts, data FROM eval_runs ORDER BY id DESC LIMIT ?",
+                             (limit,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        out = []
+        for ts, data in rows:
+            try:
+                d = json.loads(data)
+                d["_ts"] = ts
+                out.append(d)
+            except json.JSONDecodeError:
+                continue
+        return out
+    finally:
+        c.close()
+
+
 def health_add_many(rows: list[dict]) -> None:
     """Batch-insert one telemetry sample per living agent. Called by the sampler."""
     if not rows:

@@ -717,7 +717,7 @@ def _chats_snapshot() -> dict:
         "threads": {p["key"]: anchor.msg_thread(p["key"]) for p in parts},
         "broadcast": anchor.msg_thread("all"),
         "internal": anchor.msg_thread("internal", 80),      # the system talking to itself
-        "brain": "deepseek" if brain.available() else "rule-based",
+        "brain": brain.brain_name(),
     }
 
 
@@ -1187,7 +1187,7 @@ def _snapshot() -> dict:
             "uptime_s": round(time.time() - START_TS),
             "last_turn_age_s": round(time.time() - _S["last_turn_ts"], 1),
             "driver_ok": (time.time() - _S["last_turn_ts"]) < 5 * TICK or _S["goal_met"],
-            "brain": "deepseek" if brain.available() else "rule-based",
+            "brain": brain.brain_name(),
             "fleet": len(agents),
             "avg_health": round(sum(a["health"] for a in agents) / len(agents)) if agents else 0,
             "fleet_burn_per_turn": sum(a["burn_per_turn"] for a in agents),
@@ -1235,7 +1235,7 @@ def _snapshot() -> dict:
             "skills": anchor.skills_top(5),
             "skills_count": anchor.skills_count(),
             "system": system,
-            "brain": "deepseek" if brain.available() else "rule-based",
+            "brain": brain.brain_name(),
             "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM,
                       "last": _S["last_vote"]},
             "cap_proposal": board.propose_cap(spend_ratio, sc, G.TOKEN_CAP),
@@ -1325,6 +1325,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, LOGS_PAGE, "text/html; charset=utf-8")
         if self.path == "/skills":
             return self._send(200, SKILLS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/leaderboard":
+            return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/evaldata":
+            return self._send(200, json.dumps({
+                "runs": anchor.eval_runs(50),
+                "model_calls": anchor.model_calls_stats(),
+                "brain": brain.brain_name(),
+            }))
         if self.path == "/api/skillsdata":
             return self._send(200, json.dumps({
                 "skills": anchor.skills_top(50),
@@ -1334,7 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tiers": [{"name": x["name"], "budget": x["budget"],
                            "promote_at": x["promote_at"], "can": list(x["can"])}
                           for x in economy.TIERS],
-                "brain": "deepseek" if brain.available() else "rule-based",
+                "brain": brain.brain_name(),
             }))
         if self.path.startswith("/api/lineage"):
             from urllib.parse import urlparse, parse_qs
@@ -1516,6 +1524,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
+        # Console auth: when CONSOLE_TOKEN is set, every mutating endpoint requires
+        # it. Pages stay readable; power needs the key. (Task: real-work prereq.)
+        tok = os.environ.get("CONSOLE_TOKEN", "")
+        if tok and self.headers.get("X-Console-Token", "") != tok:
+            return self._send(401, json.dumps({"error": "console token required"}))
         if self.path == "/api/resume":
             body = self._read_json()
             uid, decision = body.get("unit_id"), body.get("decision")
@@ -1862,7 +1875,10 @@ function renderLog(){
   log.innerHTML=evs.filter(e=>!f||e.indexOf('['+f+']')>=0).map(e=>{
     const m=e.match(/\\[([\\w-]+)\\]/);const k=m?m[1]:'';return `<div class="k-${k}">${esc(e)}</div>`}).join('');
 }
-async function post(url,body){await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});tick();}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify(body||{})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}}
+  tick();}
 function decide(unit_id,decision){post('/api/resume',{unit_id,decision});}
 function adopt(vision){post('/api/vision',{vision});}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
@@ -1968,7 +1984,10 @@ async function tick(){
       <button class=no onclick="term('${esc(x.uid)}')">Terminate</button>
     </div></div>`).join('') : '<div class=empty>No agents enlisted yet — the fleet is being staffed, or add one above.</div>';
 }
-async function post(u,b){await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});tick();}
+async function post(u,b){
+  const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify(b||{})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(u,b)}}
+  tick();}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
 function setCap(){const v=parseInt(capin.value);if(v)post('/api/cap',{token_cap:v});}
 function order(uid){const r=document.getElementById('ord-'+uid).value;post('/api/order',{unit_id:uid,resource:r});}
@@ -2048,7 +2067,9 @@ function render(){
 }
 function pick(k){ sel=k; render(); }
 async function send(){ const b=document.getElementById('box'); const t=b.value.trim(); if(!t) return; b.value='';
-  data=await (await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sel,body:t})})).json(); render(); }
+  const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({thread:sel,body:t})});
+  if(r.status===401){const tk=prompt('Console token required:');if(tk){localStorage.setItem('ctok',tk);b.value=t;return send()}return}
+  data=await r.json(); render(); }
 load(); setInterval(load,2000);
 </script>
 </html>"""
@@ -2126,10 +2147,13 @@ async function load(){
     </div></div></div>`;
 }
 async function saveCons(){const t=document.getElementById('cons').value;
-  await fetch('/api/constitution',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+  const rr=await fetch('/api/constitution',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({text:t})});
+  if(rr.status===401){const tk=prompt('Console token required:');if(tk){localStorage.setItem('ctok',tk);return saveCons()}return}
   const b=event.target;b.textContent='Saved ✓';setTimeout(()=>b.textContent='Save constitution',1500);}
 async function draftAmend(){const note=document.getElementById('amendnote').value;
-  const r=await (await fetch('/api/amend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})})).json();
+  const r0=await fetch('/api/amend',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({note})});
+  if(r0.status===401){const tk=prompt('Console token required:');if(tk){localStorage.setItem('ctok',tk);return draftAmend()}return}
+  const r=await r0.json();
   document.getElementById('cons').value+='\\n\\n'+(r.draft||'');}
 load();
 </script>
@@ -2285,6 +2309,64 @@ async function trace(id,el){
     :'<div style="font-size:10px;color:var(--dim);padding-left:8px">no linked lineage yet (older decision)</div>';
 }
 tick(); setInterval(tick,3000);
+</script>
+</html>"""
+
+
+LEADERBOARD_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Leaderboard — Phoenix Eval</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--green:#a8e086}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;margin-bottom:14px}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.n{text-align:right}.best{color:var(--green);font-weight:700}
+.empty{color:var(--dim);padding:24px;text-align:center}
+.p{padding:12px 14px;color:var(--dim);line-height:1.6}
+</style>
+<header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <span class=meta>current brain: <b id=br>—</b></span></header>
+<main>
+  <div class=card><h2>Runs — same world, same constitution, different brains</h2>
+    <table><thead><tr><th>Brain / label</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
+      <th class=n>Progress</th><th class=n>Net worth</th><th class=n>Value/1k</th>
+      <th class=n>Waste</th><th class=n>Spoil evts</th><th class=n>Stall turns</th>
+      <th class=n>Lessons</th><th class=n>Real tokens</th><th class=n>Errors</th><th class=n>Latency</th></tr></thead>
+      <tbody id=rows></tbody></table>
+    <div class=empty id=empty>No eval runs yet — run <b>python3 gov/evalrun.py --turns 120 --fresh</b> with a brain configured (BRAIN_BASE_URL / BRAIN_API_KEY / BRAIN_MODEL).</div>
+    <div class=p>Scorecards are stored permanently in the anchor. Fairness rules in EVAL.md &sect;5:
+      same seed, same turn budget, wipe memory between models, keep it between a model's own runs.</div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function load(){
+  let d; try{ d=await (await fetch('/api/evaldata')).json() }catch(e){ return }
+  br.textContent=d.brain;
+  const rs=d.runs||[];
+  empty.style.display=rs.length?'none':'block';
+  const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);
+  rows.innerHTML=rs.map(r=>`<tr>
+    <td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td>${r._ts?new Date(r._ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+    <td class=n>${r.turns}</td><td>${esc(r.age||'—')}</td>
+    <td class="n ${r.progress_pct===bestP&&bestP>0?'best':''}">${r.progress_pct}%</td>
+    <td class=n>${(r.net_worth||0).toLocaleString()}</td>
+    <td class="n ${r.value_per_1k===bestV&&bestV>0?'best':''}">${r.value_per_1k}</td>
+    <td class=n>${r.waste_builds}</td><td class=n>${r.spoilage_events}</td>
+    <td class=n>${r.stall_turns}</td><td class=n>${r.lessons_live}</td>
+    <td class=n>${((r.real_prompt_tokens||0)+(r.real_completion_tokens||0)).toLocaleString()}</td>
+    <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td></tr>`).join('');
+}
+load(); setInterval(load,5000);
 </script>
 </html>"""
 

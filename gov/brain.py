@@ -1,16 +1,24 @@
-"""The agent brain — where DeepSeek plugs in.
+"""The agent brain — the ONE seam where a model plugs in.
 
-Two decisions drive the game: what a villager should gather, and whether the herald
-should propose advancing the Age. Both go through this one interface so the policy can
-swap from rule-based to a real model without touching the sim or the governor.
+Every model call in the whole system goes through ``_chat`` here, so the brain can be
+swapped per deployment (the Phoenix Eval runs the same world under different frontier
+models) and every call's real cost — provider tokens, latency, failures — is logged
+to the anchor.
 
-Rule-based is the default and runs with no key. If ``DEEPSEEK_API_KEY`` is set, the
-DeepSeek policy is used (OpenAI-compatible API). The model only ever *proposes* — every
-irreversible action still stops at the human gate, so a bad decision here is capped and
-gated, never executed blindly.
+Provider selection (first match wins):
+  BRAIN_BASE_URL + BRAIN_API_KEY [+ BRAIN_MODEL]  — any OpenAI-compatible endpoint
+      (DeepSeek, OpenAI, GLM/Zhipu, Gemini's compat endpoint, ...), or the native
+      Anthropic API when the base URL contains 'anthropic'.
+  DEEPSEEK_API_KEY                                — the original default (DeepSeek).
+
+Rule-based is the fallback and runs with no key. The model only ever *proposes* —
+every irreversible action still stops at the human gate, so a bad decision here is
+capped and gated, never executed blindly.
 """
 
+import json as _json_mod
 import os
+import time as _time
 
 RESOURCES = ("food", "wood", "gold")
 
@@ -29,12 +37,91 @@ def _model() -> str:
     return raw
 
 
+def provider() -> dict | None:
+    """The configured provider, or None (rule-based). {kind, base_url, key, model}."""
+    base = os.environ.get("BRAIN_BASE_URL", "").strip()
+    key = os.environ.get("BRAIN_API_KEY", "").strip()
+    if base and key:
+        kind = "anthropic" if "anthropic" in base else "openai"
+        default_model = ("claude-sonnet-5" if kind == "anthropic" else _model())
+        return {"kind": kind, "base_url": base, "key": key,
+                "model": os.environ.get("BRAIN_MODEL", "").strip() or default_model}
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        return {"kind": "openai", "base_url": "https://api.deepseek.com",
+                "key": os.environ["DEEPSEEK_API_KEY"], "model": _model()}
+    return None
+
+
 def _deepseek_available() -> bool:
-    return bool(os.environ.get("DEEPSEEK_API_KEY"))
+    return provider() is not None
 
 
 def available() -> bool:
-    return _deepseek_available()
+    return provider() is not None
+
+
+def brain_name() -> str:
+    p = provider()
+    return p["model"] if p else "rule-based"
+
+
+def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""):
+    try:
+        import anchor
+        pt = getattr(usage, "prompt_tokens", 0) or (usage or {}).get("input_tokens", 0) \
+            if not hasattr(usage, "prompt_tokens") else usage.prompt_tokens
+        ct = getattr(usage, "completion_tokens", 0) or (usage or {}).get("output_tokens", 0) \
+            if not hasattr(usage, "completion_tokens") else usage.completion_tokens
+        anchor.model_call_log(p["base_url"], p["model"], purpose,
+                              round((_time.time() - t0) * 1000),
+                              int(pt or 0), int(ct or 0), ok, error)
+    except Exception:
+        pass                                       # telemetry must never break a call
+
+
+def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> str:
+    """THE model call. Routes to the configured provider, logs cost + latency +
+    errors to the anchor, returns the reply text. Raises on failure — callers keep
+    their own rule-based fallbacks."""
+    p = provider()
+    if not p:
+        raise RuntimeError("no model configured")
+    t0 = _time.time()
+    try:
+        if p["kind"] == "anthropic":
+            out, usage = _anthropic_chat(p, messages, max_tokens, temperature)
+        else:
+            from openai import OpenAI
+            client = OpenAI(api_key=p["key"], base_url=p["base_url"])
+            resp = client.chat.completions.create(
+                model=p["model"], messages=messages,
+                max_tokens=max_tokens, temperature=temperature)
+            out, usage = resp.choices[0].message.content.strip(), resp.usage
+        _log_call(p, purpose, t0, usage, True)
+        return out
+    except Exception as e:
+        _log_call(p, purpose, t0, None, False, str(e))
+        raise
+
+
+def _anthropic_chat(p: dict, messages: list, max_tokens: int,
+                    temperature: float) -> tuple[str, dict]:
+    """Native Anthropic Messages API via stdlib urllib — no extra dependency."""
+    import urllib.request
+    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    body = {"model": p["model"], "max_tokens": max_tokens, "temperature": temperature,
+            "messages": [m for m in messages if m["role"] != "system"]}
+    if system:
+        body["system"] = system
+    req = urllib.request.Request(
+        p["base_url"].rstrip("/") + "/v1/messages",
+        data=_json_mod.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "x-api-key": p["key"],
+                 "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        d = _json_mod.loads(r.read())
+    text = "".join(b.get("text", "") for b in d.get("content", [])).strip()
+    return text, d.get("usage", {})
 
 
 def reply(persona: str, situation: str, message: str) -> str | None:
@@ -51,13 +138,9 @@ def reply(persona: str, situation: str, message: str) -> str | None:
         "say why."
     )
     try:
-        client = _deepseek_client()
-        out = client.chat.completions.create(
-            model=_model(),
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
-            max_tokens=500, temperature=0.5,
-        ).choices[0].message.content.strip()
+        out = _chat([{"role": "system", "content": system},
+                     {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
+                    500, 0.5, "chat-reply")
         return out or None
     except Exception:
         return None                       # any API/SDK problem → fall back to rules
@@ -76,13 +159,9 @@ def think(persona: str, situation: str, task: str) -> str | None:
         "short sentence, in character."
     )
     try:
-        client = _deepseek_client()
-        return client.chat.completions.create(
-            model=_model(),
-            messages=[{"role": "system", "content": system},
+        return _chat([{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
-            max_tokens=400, temperature=0.6,
-        ).choices[0].message.content.strip() or None
+                     400, 0.6, "think") or None
     except Exception:
         return None
 
@@ -109,12 +188,7 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
         "\"rank\": int 2-4 (higher = grander), \"why\": one short sentence}"
     )
     try:
-        client = _deepseek_client()
-        out = client.chat.completions.create(
-            model=_model(),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=800, temperature=0.8,
-        ).choices[0].message.content.strip()
+        out = _chat([{"role": "user", "content": prompt}], 800, 0.8, "dev-proposal")
         if out.startswith("```"):
             out = out.strip("`").lstrip("json").strip()
         d = _json.loads(out)
@@ -142,12 +216,7 @@ def retrospective(digest: dict, prior_lessons: list) -> list[str]:
             "sentence, imperative voice. Reply with ONLY the lessons, one per line, no numbering."
         )
         try:
-            client = _deepseek_client()
-            out = client.chat.completions.create(
-                model=_model(),
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=500, temperature=0.4,
-            ).choices[0].message.content.strip()
+            out = _chat([{"role": "user", "content": prompt}], 500, 0.4, "retrospective")
             lessons = [ln.strip(" -•") for ln in out.splitlines() if ln.strip()]
             if lessons:
                 return lessons[:3]
@@ -182,13 +251,9 @@ def research(topic: str) -> str | None:
     if not _deepseek_available():
         return None
     try:
-        client = _deepseek_client()
-        return client.chat.completions.create(
-            model=_model(),
-            messages=[{"role": "user", "content":
+        return _chat([{"role": "user", "content":
                        f"In one sentence, give a useful factual note about: {topic}"}],
-            max_tokens=400, temperature=0.3,
-        ).choices[0].message.content.strip() or None
+                     400, 0.3, "research") or None
     except Exception:
         return None
 
@@ -217,25 +282,13 @@ def should_advance(world: dict, cost: dict) -> bool:
     return world["food"] >= cost["food"] and world["gold"] >= cost["gold"]
 
 
-# ── DeepSeek policy (used when DEEPSEEK_API_KEY is set) ───────────────────────
-# DeepSeek exposes an OpenAI-compatible API at https://api.deepseek.com. We keep the
-# calls behind these functions so the rest of the system never imports an SDK.
-
-def _deepseek_client():
-    from openai import OpenAI  # deferred; only needed when a key is present
-    return OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
-
+# ── model policy (used when a provider is configured) ─────────────────────────
 
 def _deepseek_choose_resource(index: int, world: dict) -> str:
-    client = _deepseek_client()
     prompt = (f"Age of Empires economy. Current stockpile: {world}. "
               f"You command villager #{index}. Reply with exactly one word — the resource "
               f"to gather: food, wood, or gold. Balance the economy toward advancing the Age.")
-    out = client.chat.completions.create(
-        model=_model(),
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=200, temperature=0.3,
-    ).choices[0].message.content.strip().lower()
+    out = _chat([{"role": "user", "content": prompt}], 200, 0.3, "choose-resource").lower()
     for r in RESOURCES:                     # tolerate prose around the answer
         if r in out.split() or out == r:
             return r
@@ -245,12 +298,7 @@ def _deepseek_choose_resource(index: int, world: dict) -> str:
 def _deepseek_should_advance(world: dict, cost: dict) -> bool:
     if world["food"] < cost["food"] or world["gold"] < cost["gold"]:
         return False  # never propose an advance we can't afford
-    client = _deepseek_client()
     prompt = (f"Age of Empires. Stockpile: {world}. Advancing costs {cost}. "
               f"Is now a good time to advance the Age? Reply yes or no.")
-    out = client.chat.completions.create(
-        model=_model(),
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=200, temperature=0.3,
-    ).choices[0].message.content.strip().lower()
+    out = _chat([{"role": "user", "content": prompt}], 200, 0.3, "should-advance").lower()
     return out.startswith("y") or ("yes" in out and "no" not in out.split())
