@@ -1031,11 +1031,13 @@ class QuietServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", download=None):
         payload = body.encode() if isinstance(body, str) else body
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            if download:                          # serve as a file download
+                self.send_header("Content-Disposition", f'attachment; filename="{download}"')
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -1092,6 +1094,74 @@ class Handler(BaseHTTPRequestHandler):
                 "agents_ever": agents_ever,
                 "generation": anchor.generation(),
             }))
+        if self.path.startswith("/api/logs/export"):
+            # Export the PERMANENT log as a downloadable file, filtered by kind,
+            # free text, and a UTC time window. Formats: txt (as displayed),
+            # jsonl (raw permanent records), csv.
+            from urllib.parse import urlparse, parse_qs
+            from datetime import datetime, timezone
+            q = parse_qs(urlparse(self.path).query)
+            kind_f = (q.get("kind", [""])[0] or "").strip()
+            text_f = (q.get("q", [""])[0] or "").strip().lower()
+            fmt = (q.get("format", ["txt"])[0] or "txt").lower()
+            if fmt not in ("txt", "jsonl", "csv"):
+                fmt = "txt"
+
+            def _parse_ts(key):
+                v = (q.get(key, [""])[0] or "").strip()
+                if not v:
+                    return None
+                try:      # datetime-local value, interpreted as UTC
+                    return datetime.fromisoformat(v).replace(tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    return None
+            since, until = _parse_ts("since"), _parse_ts("until")
+
+            rows = []
+            try:
+                with open(anchor.EVENTS_PATH) as f:
+                    for ln in f:
+                        try:
+                            d = json.loads(ln)
+                        except json.JSONDecodeError:
+                            continue
+                        if kind_f and d.get("kind") != kind_f:
+                            continue
+                        if text_f and text_f not in \
+                                f"[{d.get('kind', '')}] {d.get('note', '')}".lower():
+                            continue
+                        ts = d.get("ts")
+                        if since is not None and (ts is None or ts < since):
+                            continue
+                        if until is not None and (ts is None or ts > until):
+                            continue
+                        rows.append(d)
+            except OSError:
+                pass
+
+            def _stamp(d):
+                return (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(d["ts"]))
+                        if d.get("ts") else "")
+            if fmt == "jsonl":
+                body = "\n".join(json.dumps(d) for d in rows) + ("\n" if rows else "")
+                mime = "application/x-ndjson"
+            elif fmt == "csv":
+                import csv as _csv
+                import io as _io
+                buf = _io.StringIO()
+                wcsv = _csv.writer(buf)
+                wcsv.writerow(["utc_time", "turn", "kind", "note"])
+                for d in rows:
+                    wcsv.writerow([_stamp(d), d.get("turn", ""), d.get("kind", ""),
+                                   d.get("note", "")])
+                body, mime = buf.getvalue(), "text/csv"
+            else:
+                body = "\n".join(f"{_stamp(d)} t{d.get('turn', '?')} [{d.get('kind', '')}] "
+                                 f"{d.get('note', '')}" for d in rows) + ("\n" if rows else "")
+                mime = "text/plain; charset=utf-8"
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            return self._send(200, body, mime,
+                              download=f"phoenix-logs-{stamp}.{fmt}")
         if self.path.startswith("/api/logs"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1747,6 +1817,10 @@ mark{background:#5a4a1a;color:#fff}
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
   <button id=pauseBtn onclick=togglePause()>Pause</button>
+  <span style="color:var(--dim);font-size:11px">from</span><input id=tfrom type=datetime-local title="UTC" style="color-scheme:dark">
+  <span style="color:var(--dim);font-size:11px">to</span><input id=tto type=datetime-local title="UTC" style="color-scheme:dark">
+  <select id=fmt><option value=txt>txt</option><option value=csv>csv</option><option value=jsonl>jsonl</option></select>
+  <button class=on onclick=exportLogs()>Export file</button>
   <span class=meta><span id=shown>0</span> shown &middot; <span id=total>0</span> total (permanent)</span>
 </header>
 <div class=log id=log></div>
@@ -1760,7 +1834,7 @@ function render(){
   if(kinds.join()!==window._k){window._k=kinds.join();const cur=kind.value;
     kind.innerHTML='<option value="">all kinds</option>'+kinds.map(k=>`<option ${k===cur?'selected':''}>${k}</option>`).join('');}
   const f=kind.value, s=search.value.toLowerCase();
-  const rows=events.filter(e=>(!f||kindOf(e)===f)&&(!s||e.toLowerCase().includes(s)));
+  const rows=events.filter(e=>(!f||kindOf(e)===f)&&(!s||e.toLowerCase().includes(s))&&inWindow(e));
   shown.textContent=rows.length.toLocaleString();
   log.innerHTML=rows.map(e=>{let h=esc(e);
     if(s){const i=h.toLowerCase().indexOf(s);if(i>=0)h=h.slice(0,i)+'<mark>'+h.slice(i,i+s.length)+'</mark>'+h.slice(i+s.length);}
@@ -1771,7 +1845,29 @@ async function load(){
   try{const d=await (await fetch('/api/logs?limit='+limit.value)).json();
     events=d.events||[]; total.textContent=(d.total||0).toLocaleString(); render();}catch(e){}
 }
+function exportLogs(){
+  // exports the FULL permanent log (not just the lines loaded here), with the
+  // current kind/text filters and the UTC time window applied server-side
+  const p=new URLSearchParams();
+  if(kind.value)p.set('kind',kind.value);
+  if(search.value)p.set('q',search.value);
+  if(tfrom.value)p.set('since',tfrom.value);
+  if(tto.value)p.set('until',tto.value);
+  p.set('format',fmt.value);
+  location.href='/api/logs/export?'+p.toString();
+}
+function inWindow(e){
+  if(!tfrom.value&&!tto.value)return true;
+  const m=e.match(/^(\\w{3}) (\\d{2}) (\\d{2}:\\d{2}:\\d{2})/);
+  if(!m)return !tfrom.value&&!tto.value;
+  const months={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const now=new Date(), d=new Date(Date.UTC(now.getUTCFullYear(),months[m[1]],+m[2],...m[3].split(':').map(Number)));
+  if(tfrom.value&&d<new Date(tfrom.value+'Z'))return false;
+  if(tto.value&&d>new Date(tto.value+'Z'))return false;
+  return true;
+}
 kind.onchange=render; search.oninput=render; limit.onchange=load;
+tfrom.onchange=render; tto.onchange=render;
 load(); setInterval(load,2000);
 </script>
 </html>"""
