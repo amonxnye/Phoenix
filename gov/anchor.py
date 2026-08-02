@@ -91,6 +91,13 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS careers("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, gen INT, uid TEXT, "
                   "turn INT, event TEXT, detail TEXT)")
+        # Health telemetry: every agent's vitals sampled every few seconds, permanent —
+        # the medical chart behind the career record.
+        c.execute("CREATE TABLE IF NOT EXISTS health("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, gen INT, uid TEXT, turn INT, "
+                  "ts REAL, health INT, utilisation INT, tokens INT, "
+                  "contribution INT, status TEXT)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_health_agent ON health(gen, uid)")
         # every message, skill, reasoning entry and career line carries a wall-clock
         # timestamp (epoch seconds) — the permanent record is absolutely datable.
         # Rows written before the column existed keep NULL and display as '—'.
@@ -194,6 +201,68 @@ def careers(limit_agents: int = 40) -> list[dict]:
     for a in out:
         a["events"].reverse()                      # each life told oldest → newest
     return out
+
+
+def health_add_many(rows: list[dict]) -> None:
+    """Batch-insert one telemetry sample per living agent. Called by the sampler."""
+    if not rows:
+        return
+    now = time.time()
+    c = _conn()
+    try:
+        c.executemany(
+            "INSERT INTO health(gen, uid, turn, ts, health, utilisation, tokens, "
+            "contribution, status) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(r["gen"], r["uid"], r["turn"], now, r["health"], r["utilisation"],
+              r["tokens"], r["contribution"], r["status"]) for r in rows])
+        c.commit()
+    finally:
+        c.close()
+
+
+def health_summaries() -> dict:
+    """Per-agent vitals digest: {(gen, uid): {samples, min, avg, avg_util}}."""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT gen, uid, COUNT(*), MIN(health), AVG(health), "
+                         "AVG(utilisation) FROM health GROUP BY gen, uid").fetchall()
+        return {(g, u): {"samples": n, "min": mn, "avg": round(av or 0),
+                         "avg_util": round(au or 0)} for g, u, n, mn, av, au in rows}
+    finally:
+        c.close()
+
+
+def health_rows(gen: int | None = None, uid: str = "", limit: int = 200_000) -> list[tuple]:
+    """Raw telemetry for export, oldest first: (gen, uid, turn, ts, health,
+    utilisation, tokens, contribution, status)."""
+    c = _conn()
+    try:
+        q = ("SELECT gen, uid, turn, ts, health, utilisation, tokens, contribution, "
+             "status FROM health")
+        cond, args = [], []
+        if gen is not None:
+            cond.append("gen=?")
+            args.append(gen)
+        if uid:
+            cond.append("uid=?")
+            args.append(uid)
+        if cond:
+            q += " WHERE " + " AND ".join(cond)
+        q += " ORDER BY id LIMIT ?"
+        args.append(limit)
+        return c.execute(q, args).fetchall()
+    finally:
+        c.close()
+
+
+def careers_rows(limit: int = 100_000) -> list[tuple]:
+    """Raw career records for export, oldest first: (gen, uid, turn, ts, event, detail)."""
+    c = _conn()
+    try:
+        return c.execute("SELECT gen, uid, turn, ts, event, detail FROM careers "
+                         "ORDER BY id LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
 
 
 def careers_count() -> tuple[int, int]:

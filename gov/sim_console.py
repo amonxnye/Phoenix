@@ -833,6 +833,33 @@ def _one_turn():
         _S["goal_met"] = True
 
 
+def _health_sampler():
+    """Every 5 seconds, write one vitals sample per living agent into the PERMANENT
+    health table — the medical chart behind each career. Runs beside the driver."""
+    while True:
+        time.sleep(5.0)
+        try:
+            with _LOCK:
+                views = G.units(_GRAPH, _CP)
+                roster_by = {r["agent"]: r for r in economy.roster()}
+                turn = _S["turn"]
+            gen = anchor.generation()
+            rows = []
+            for u in views:
+                r = roster_by.get(u.unit_id)
+                if not r:
+                    continue
+                ratio = u.tokens / (r["budget"] or 1)
+                rows.append({"gen": gen, "uid": u.unit_id, "turn": turn,
+                             "health": max(0, round(100 * (1 - min(1, ratio)))),
+                             "utilisation": round(100 * min(1, ratio)),
+                             "tokens": u.tokens, "contribution": r["contribution"],
+                             "status": u.status})
+            anchor.health_add_many(rows)
+        except Exception:
+            pass                                  # telemetry must never hurt the sim
+
+
 def _drive():
     while True:
         time.sleep(TICK)
@@ -1090,10 +1117,70 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 did = 0
             return self._send(200, json.dumps(anchor.lineage(did)))
+        if self.path.startswith("/api/careers/export"):
+            # The Hall of Records as a file: every agent's full life, oldest first.
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            fmt = (q.get("format", ["csv"])[0] or "csv").lower()
+            rows = anchor.careers_rows()
+
+            def _iso(ts):
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)) if ts else ""
+            if fmt == "jsonl":
+                body = "\n".join(json.dumps({"gen": g, "uid": u, "turn": t, "ts": ts,
+                                             "event": ev, "detail": de})
+                                 for g, u, t, ts, ev, de in rows) + ("\n" if rows else "")
+                mime = "application/x-ndjson"
+            else:
+                import csv as _csv
+                import io as _io
+                buf = _io.StringIO()
+                wcsv = _csv.writer(buf)
+                wcsv.writerow(["gen", "uid", "turn", "utc_time", "event", "detail"])
+                for g, u, t, ts, ev, de in rows:
+                    wcsv.writerow([g, u, t, _iso(ts), ev, de])
+                body, mime, fmt = buf.getvalue(), "text/csv", "csv"
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            return self._send(200, body, mime, download=f"phoenix-careers-{stamp}.{fmt}")
+        if self.path.startswith("/api/health/export"):
+            # Per-agent (or full) health telemetry — the permanent 5-second vitals log.
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            uid = (q.get("uid", [""])[0] or "").strip()
+            gen_s = (q.get("gen", [""])[0] or "").strip()
+            gen = int(gen_s) if gen_s.isdigit() else None
+            fmt = (q.get("format", ["csv"])[0] or "csv").lower()
+            rows = anchor.health_rows(gen, uid)
+
+            def _iso(ts):
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)) if ts else ""
+            if fmt == "jsonl":
+                body = "\n".join(json.dumps({"gen": g, "uid": u, "turn": t, "ts": ts,
+                                             "health": h, "utilisation": ut, "tokens": tk,
+                                             "contribution": ct, "status": st})
+                                 for g, u, t, ts, h, ut, tk, ct, st in rows) + ("\n" if rows else "")
+                mime = "application/x-ndjson"
+            else:
+                import csv as _csv
+                import io as _io
+                buf = _io.StringIO()
+                wcsv = _csv.writer(buf)
+                wcsv.writerow(["gen", "uid", "turn", "utc_time", "health_pct",
+                               "utilisation_pct", "tokens", "contribution", "status"])
+                for g, u, t, ts, h, ut, tk, ct, st in rows:
+                    wcsv.writerow([g, u, t, _iso(ts), h, ut, tk, ct, st])
+                body, mime, fmt = buf.getvalue(), "text/csv", "csv"
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            name = f"phoenix-health-{uid or 'all'}-{stamp}.{fmt}"
+            return self._send(200, body, mime, download=name)
         if self.path == "/api/careers":
             ev_total, agents_ever = anchor.careers_count()
+            hs = anchor.health_summaries()
+            careers = anchor.careers(40)
+            for cr in careers:                    # vitals digest joins the career record
+                cr["health"] = hs.get((cr["gen"], cr["uid"]))
             return self._send(200, json.dumps({
-                "careers": anchor.careers(40),
+                "careers": careers,
                 "events_total": ev_total,
                 "agents_ever": agents_ever,
                 "generation": anchor.generation(),
@@ -1589,7 +1676,12 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
 <main id=grid></main>
 <div style="max-width:1200px;margin:0 auto 24px;padding:0 18px">
   <div class=a>
-    <h3>HALL OF RECORDS — every agent ever, permanently <span id=hallmeta style="color:var(--dim);font-weight:normal"></span></h3>
+    <h3>HALL OF RECORDS — every agent ever, permanently <span id=hallmeta style="color:var(--dim);font-weight:normal"></span>
+      <span style="float:right;font-weight:normal">
+        <a href="/api/careers/export?format=csv" style="color:var(--gold);font-size:11px">&#8681; careers csv</a> &middot;
+        <a href="/api/careers/export?format=jsonl" style="color:var(--gold);font-size:11px">jsonl</a> &middot;
+        <a href="/api/health/export?format=csv" style="color:var(--gold);font-size:11px">&#8681; health telemetry csv</a>
+      </span></h3>
     <div id=hall style="max-height:420px;overflow:auto"></div>
   </div>
 </div>
@@ -1641,9 +1733,11 @@ async function hallTick(){
   hall.innerHTML=(d.careers||[]).map(c=>{
     const born=c.events.find(e=>e.event==='born');
     const end=[...c.events].reverse().find(e=>e.event==='retired'||e.event==='terminated');
+    const hd=c.health;
     return `<div style="border-top:1px solid var(--line);padding:8px 2px">
       <b>g${c.gen}&middot;${esc(c.uid)}</b>
       <span style="color:var(--dim)"> — ${born?`born t${born.turn}`:''}${end?` &rarr; ${esc(end.event)} t${end.turn}`:' &middot; serving'}</span>
+      ${hd?`<span style="color:var(--dim);font-size:11px"> &middot; health log: ${hd.samples.toLocaleString()} samples &middot; min ${hd.min}% &middot; avg ${hd.avg}% &middot; avg load ${hd.avg_util}% &middot; <a href="/api/health/export?uid=${encodeURIComponent(c.uid)}&gen=${c.gen}&format=csv" style="color:var(--gold)">&#8681; telemetry</a></span>`:''}
       <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} ${e.ts?new Date(e.ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
     </div>`}).join('')||'<div class=empty>No careers recorded yet — they begin at the next birth.</div>';
 }
@@ -1951,6 +2045,7 @@ tick(); setInterval(tick,3000);
 
 def main(argv):
     threading.Thread(target=_drive, daemon=True).start()
+    threading.Thread(target=_health_sampler, daemon=True).start()
     port = int(os.environ.get("PORT", "8788"))
     host = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
     srv = QuietServer((host, port), Handler)
