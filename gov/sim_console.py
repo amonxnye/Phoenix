@@ -392,12 +392,16 @@ def _governor_report():
     score -= 1 if spend_pct > 90 else 0                      # burning hot
     score -= 2 if sc["progress"] < last else 0               # going backwards
     anchor.config_set("last_report_progress", str(sc["progress"]))
-    if score >= 7:
+    if score >= 7 and spend_pct >= 60:
+        # a raise only means something when the cap binds — no free headroom
         old = G.TOKEN_CAP
         G.TOKEN_CAP = int(G.TOKEN_CAP * 1.05)
         anchor.config_set("token_cap", str(G.TOKEN_CAP))
-        verdict = (f"score {score}/10 — good work: compute cap raised "
+        verdict = (f"score {score}/10 — good work under a binding cap: compute cap raised "
                    f"{old:,} → {G.TOKEN_CAP:,} (+5%)")
+    elif score >= 7:
+        verdict = (f"score {score}/10 — good work: commendation recorded "
+                   f"(cap unchanged at {G.TOKEN_CAP:,}; only {spend_pct}% used)")
     elif score <= 4:
         anchor.config_set("birth_throttle", "0.75")
         anchor.config_set("throttle_until", str(t + 30))
