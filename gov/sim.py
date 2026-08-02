@@ -111,6 +111,10 @@ def _world_init(c: sqlite3.Connection) -> None:
               "name TEXT PRIMARY KEY, food INT DEFAULT 0, wood INT DEFAULT 0, gold INT DEFAULT 0, "
               "kind TEXT, value INT, resource TEXT DEFAULT '', rank INT DEFAULT 2, "
               "source TEXT DEFAULT '', built INT DEFAULT 0)")
+    # Assets need upkeep: every built development has a condition (100 → 0) that decays
+    # and scales its effect. Lives with the world — a new world starts fresh.
+    c.execute("CREATE TABLE IF NOT EXISTS conditions("
+              "name TEXT PRIMARY KEY, condition INT DEFAULT 100)")
     c.commit()
 
 
@@ -134,19 +138,109 @@ def structures() -> dict:
 
 def effective_yield(resource: str, w: dict | None = None) -> int:
     """Yield grows as the settlement develops — camps, the wheelbarrow tech, and any
-    adopted custom developments."""
+    adopted custom developments. Every bonus scales with the asset's CONDITION: a mill
+    at 60% gives 60% of its bonus. Maintenance is real."""
     w = w or world()
-    camp = w[CAMP_FOR[resource]]
-    tech = w["wheelbarrow"]
+    cond = conditions()
+    camp = w[CAMP_FOR[resource]] * cond.get(CAMP_FOR[resource], 100) / 100
+    tech = w["wheelbarrow"] * cond.get("wheelbarrow", 100) / 100
     y = BASE[resource] * (1 + 0.5 * camp) * (1 + 0.25 * tech)
     for d in custom_devs():
         if not d["built"]:
             continue
+        eff = d["built"] * cond.get(d["name"], 100) / 100
         if d["kind"] == "yield_pct" and d["resource"] == resource:
-            y *= 1 + (d["value"] / 100) * d["built"]
+            y *= 1 + (d["value"] / 100) * eff
         elif d["kind"] == "all_yield_pct":
-            y *= 1 + (d["value"] / 100) * d["built"]
+            y *= 1 + (d["value"] / 100) * eff
     return int(y)
+
+
+# ── decay, repair & spoilage — assets cost upkeep, food rots ─────────────────
+
+DECAY_EVERY = 5          # decay tick cadence (turns)
+REPAIR_FRACTION = 0.25   # repair costs this share of the build price
+FOOD_SPOIL_PCT = 2       # % of overflow that rots per turn
+
+
+def conditions() -> dict:
+    c = _conn()
+    try:
+        return dict(c.execute("SELECT name, condition FROM conditions").fetchall())
+    finally:
+        c.close()
+
+
+def decay_tick(turn: int) -> list[tuple[str, int]]:
+    """Every DECAY_EVERY turns, each BUILT development loses `rank` condition points —
+    grander works cost more to keep. Returns [(name, new_condition), ...]."""
+    if turn % DECAY_EVERY:
+        return []
+    out = []
+    c = _conn()
+    try:
+        for d in dev_catalog():
+            if not d["built"]:
+                continue
+            c.execute("INSERT OR IGNORE INTO conditions(name, condition) VALUES(?, 100)",
+                      (d["name"],))
+            c.execute("UPDATE conditions SET condition=MAX(0, condition-?) WHERE name=?",
+                      (d["rank"], d["name"]))
+            out.append((d["name"],
+                        c.execute("SELECT condition FROM conditions WHERE name=?",
+                                  (d["name"],)).fetchone()[0]))
+        c.commit()
+        return out
+    finally:
+        c.close()
+
+
+def repair_cost(name: str) -> dict:
+    d = next((x for x in dev_catalog() if x["name"] == name), None)
+    if not d:
+        return {}
+    return {r: max(1, int(v * REPAIR_FRACTION)) for r, v in d["cost"].items()}
+
+
+def repair(name: str) -> tuple[bool, str]:
+    """Spend a fraction of the build price to restore an asset to full condition."""
+    cost = repair_cost(name)
+    if not cost:
+        return False, f"unknown development {name}"
+    c = _conn()
+    try:
+        have = dict(zip(("food", "wood", "gold"),
+                        c.execute("SELECT food, wood, gold FROM world WHERE id=1").fetchone()))
+        for r, amt in cost.items():
+            if have.get(r, 0) < amt:
+                return False, f"cannot afford repair of {name}: need {r} {amt}, have {have.get(r, 0)}"
+        sets = ", ".join(f"{r}={r}-{amt}" for r, amt in cost.items())
+        c.execute(f"UPDATE world SET {sets} WHERE id=1")
+        c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
+                  "ON CONFLICT(name) DO UPDATE SET condition=100", (name,))
+        c.commit()
+        return True, f"repaired {name} to 100% (" + ", ".join(f"{v} {r}" for r, v in cost.items()) + ")"
+    finally:
+        c.close()
+
+
+def food_cap(w: dict | None = None) -> int:
+    """Storage is finite: the settlement can bank ~1.2x the NEXT era's food price.
+    Anything above it rots — spoilage forces flow, not hoards."""
+    w = w or world()
+    return int(1.2 * advance_cost(w["age"])["food"])
+
+
+def spoil_tick() -> tuple[int, int]:
+    """Rot food above the storage cap. Returns (loss, cap)."""
+    w = world()
+    cap = food_cap(w)
+    over = w["food"] - cap
+    if over <= 0:
+        return 0, cap
+    loss = max(1, over * FOOD_SPOIL_PCT // 100)
+    _world_add("food", -loss)
+    return loss, cap
 
 
 def custom_devs() -> list[dict]:
@@ -221,6 +315,8 @@ def build_development(name: str) -> tuple[bool, str]:
             sets = ", ".join(f"{r}={r}-{amt}" for r, amt in d["cost"].items())
             c.execute(f"UPDATE world SET {sets} WHERE id=1")
         c.execute("UPDATE custom_devs SET built=built+1 WHERE name=?", (name,))
+        c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
+                  "ON CONFLICT(name) DO UPDATE SET condition=100", (name,))
         c.commit()
         return True, f"built {name} ({_custom_effect_text(d)})"
     finally:
@@ -253,6 +349,8 @@ def build_structure(kind: str) -> tuple[bool, str]:
         sets = ", ".join(f"{r}={r}-{amt}" for r, amt in cost.items())
         bump = "wheelbarrow=1" if kind == "wheelbarrow" else f"{kind}={kind}+1"
         c.execute(f"UPDATE world SET {sets}, {bump} WHERE id=1")
+        c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
+                  "ON CONFLICT(name) DO UPDATE SET condition=100", (kind,))
         c.commit()
         return True, f"built {kind} ({STRUCTURES[kind]['effect']})"
     finally:

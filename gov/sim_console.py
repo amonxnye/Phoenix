@@ -736,6 +736,31 @@ def _one_turn():
                     anchor.record(t, "build", msg)
                 break
 
+    # Upkeep: assets decay, the worst one gets repaired if affordable, surplus food rots.
+    for name, cond in sim.decay_tick(t):
+        if cond <= 40 and f"decay:{name}" not in _S["notified"]:
+            _S["notified"].add(f"decay:{name}")
+            anchor.record(t, "decay", f"{name} is falling into disrepair (condition {cond}%) — "
+                                      "its bonus is fading")
+    conds = sim.conditions()
+    worn = sorted((conds.get(d["name"], 100), d["name"])
+                  for d in sim.dev_catalog() if d["built"] and conds.get(d["name"], 100) < 70)
+    if worn:
+        cnd, wname = worn[0]
+        done, msg = sim.repair(wname)
+        if done:
+            did = anchor.reason_add(t, "director", f"repair {wname}",
+                                    f"condition {cnd}% degrades its effect; a quarter of the "
+                                    "build price restores full yield — maintenance beats rebuilding",
+                                    authorized_by="policy")
+            rev = anchor.record(t, "repair", msg)
+            anchor.decision_close(did, rev, outcome=f"condition {cnd}% → 100%")
+            _S["notified"].discard(f"decay:{wname}")
+    loss, fcap = sim.spoil_tick()
+    if loss:
+        anchor.record(t, "spoilage", f"{loss} food rotted — stores over capacity {fcap:,}; "
+                                     "spend it or advance the age")
+
     # Age development: exponential growth (each age costs 100x the one before), and the
     # herald only goes to the human gate once the BOARD judges the treasury ready —
     # advancing an era is a board sense, not a director reflex.
@@ -878,6 +903,30 @@ def _snapshot() -> dict:
                       if gate_unit else None)
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
+        # The settlement's balance sheet — assets on one side, upkeep and burn on the
+        # other. Deferred maintenance and a waiting human gate are LIABILITIES.
+        w0 = sim.world()
+        conds = sim.conditions()
+        fixed = disrepair = 0
+        for dv in sim.dev_catalog():
+            if dv["built"]:
+                v = sum(dv["cost"].values()) * dv["built"]
+                fixed += v
+                disrepair += round(v * (100 - conds.get(dv["name"], 100)) / 100)
+        current_total = sum(w0[r] for r in sim.RESOURCES)
+        balance = {
+            "current_assets": {r: w0[r] for r in sim.RESOURCES},
+            "current_total": current_total,
+            "fixed_assets": fixed,
+            "conditions": conds,
+            "disrepair_liability": disrepair,
+            "food_cap": sim.food_cap(w0),
+            "intangibles": {"lessons": anchor.skills_count(),
+                            "external_facts": anchor.external_count()},
+            "outstanding_compute": active_spent,
+            "waiting_on_human": human_gate,
+            "net_worth": current_total + fixed - disrepair,
+        }
         system = {
             "uptime_s": round(time.time() - START_TS),
             "last_turn_age_s": round(time.time() - _S["last_turn_ts"], 1),
@@ -916,6 +965,7 @@ def _snapshot() -> dict:
             "dev_total_built": sum(d["built"] for d in sim.dev_catalog()),
             "dev_proposal": _S["dev_proposal"],
             "units": [asdict(u) for u in views],
+            "balance": balance,
             "spent": active_spent, "cap": G.TOKEN_CAP,
             "events": anchor.event_log(300),
             "event_count": anchor.event_count(),
@@ -1298,6 +1348,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div class=card><h2>Development &mdash; ranked tree (<span id=devcount>0</span> built)</h2>
     <div id=devprop></div><div class=tech id=tech></div></div>
   <div class=card><h2>Knowledge (the anchor)</h2><div class=kv id=know></div></div>
+  <div class=card><h2>Balance sheet &mdash; assets &amp; liabilities</h2><div class=kv id=balance></div></div>
   <div class="card wide"><h2>Roster &mdash; status earned by measured contribution</h2>
     <table><thead><tr><th>Agent</th><th>Role</th><th class=num>Contribution</th><th>Progress to promotion</th><th class=num>Budget</th></tr></thead>
       <tbody id=roster></tbody></table></div>
@@ -1359,6 +1410,17 @@ async function tick(){
     ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}
     <div><span><b style=color:var(--gold)>skills (wisdom)</b></span><b>${d.skills_count||0}</b></div>
     ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">&#x1F4D6; ${esc(x.lesson)}</span></div>`).join('')}`;
+  const bs=d.balance||{};
+  balance.innerHTML=`
+    <div><span>current assets (stock)</span><b>${(bs.current_total||0).toLocaleString()}</b></div>
+    ${Object.entries(bs.current_assets||{}).map(([r,v])=>`<div><span>&nbsp;&nbsp;${r}${r==='food'&&bs.food_cap?` (cap ${bs.food_cap.toLocaleString()}, spoils above)`:''}</span><b>${v.toLocaleString()}</b></div>`).join('')}
+    <div><span>fixed assets (at build cost)</span><b>${(bs.fixed_assets||0).toLocaleString()}</b></div>
+    ${Object.entries(bs.conditions||{}).map(([n,c])=>`<div><span>&nbsp;&nbsp;${esc(n)} condition</span><b style="color:${c>70?'var(--ok,#a8e086)':c>40?'#e0b23a':'#fca5a5'}">${c}%</b></div>`).join('')}
+    <div><span>disrepair liability</span><b style="color:#fca5a5">-${(bs.disrepair_liability||0).toLocaleString()}</b></div>
+    <div><span>intangibles</span><b>${(bs.intangibles||{}).lessons||0} lessons &middot; ${(bs.intangibles||{}).external_facts||0} facts</b></div>
+    <div><span>outstanding compute</span><b>${(bs.outstanding_compute||0).toLocaleString()}</b></div>
+    ${bs.waiting_on_human?`<div><span style="color:var(--gold)">&#9888; frozen behind your gate</span><b style="color:var(--gold)">${esc(bs.waiting_on_human)}</b></div>`:''}
+    <div><span><b>NET WORTH</b></span><b>${(bs.net_worth||0).toLocaleString()}</b></div>`;
   brainmode.textContent='brain: '+d.brain; d_brain_rule=(d.brain==='rule-based');
   roster.innerHTML=(d.roster||[]).map(a=>{const pct=a.next_at?Math.min(100,Math.round(100*a.contribution/a.next_at)):100;
     return `<tr><td>${esc(a.agent)}</td><td><span class="badge t${a.tier}">${esc(a.role)}</span></td>

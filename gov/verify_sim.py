@@ -144,8 +144,26 @@ check("duplicate lessons are not hoarded", A.skills_count() == n)
 print("\n" + S.render_world())
 print(G.render(sorted(G.units(graph, cp), key=lambda u: u.unit_id)))
 
-# ── 6. permanent memory: the anchor survives a world reset ───────────────────
-print("\n6. Permanence — wiping the game world never touches the memory")
+# ── 6. upkeep: assets decay, repair restores, surplus food rots ──────────────
+print("\n6. Upkeep — decay, repair, spoilage")
+S._world_add("wood", 500)
+ok_b, _ = S.build_structure("mill")
+y_full = S.effective_yield("food")
+for k in range(1, 9):
+    S.decay_tick(S.DECAY_EVERY * k)
+cond = S.conditions().get("mill", 100)
+check("built assets decay over time", ok_b and cond < 100, f"mill condition {cond}%")
+y_worn = S.effective_yield("food")
+check("a worn asset gives a weaker bonus", y_worn <= y_full, f"{y_full} → {y_worn}")
+ok_r, msg = S.repair("mill")
+check("repair restores full condition", ok_r and S.conditions()["mill"] == 100, msg)
+cap_now = S.food_cap()
+S._world_add("food", max(0, cap_now + 2_000 - S.world()["food"]))
+loss, cap2 = S.spoil_tick()
+check("food above the storage cap rots", loss > 0, f"lost {loss} over cap {cap2:,}")
+
+# ── 7. permanent memory: the anchor survives a world reset ───────────────────
+print("\n7. Permanence — wiping the game world never touches the memory")
 check("anchor lives in its own DB, separate from the game world", A.DB != S.DB,
       os.path.basename(A.DB))
 A.career_add("vil-test", 9, "born", "enlisted for the permanence check")
@@ -160,8 +178,8 @@ check("reasoning and careers survive the world wipe",
       A.reasons_count() == before_reasons
       and any(c["uid"] == "vil-test" for c in A.careers()))
 
-# ── 7. lineage: decisions are first-class and traceable both ways ────────────
-print("\n7. Lineage — why() walks to the roots, credit() walks to the value")
+# ── 8. lineage: decisions are first-class and traceable both ways ────────────
+print("\n8. Lineage — why() walks to the roots, credit() walks to the value")
 stamp = int(time.time())
 sid = A.skill_add(9, f"Test lesson {stamp}: rebalance early", source="test", trigger="lineage")
 e1 = A.record(9, "board", "[3/3] approved test build")
