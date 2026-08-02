@@ -1516,10 +1516,25 @@ class Handler(BaseHTTPRequestHandler):
             uid, decision = body.get("unit_id"), body.get("decision")
             if not uid or decision not in ("approve", "reject", "dismiss", "back-to-work"):
                 return self._send(400, json.dumps({"error": "unit_id and a valid decision required"}))
+            age_before = sim.world()["age"]
             with _LOCK:
                 sim.resume(_GRAPH, uid, decision)
             anchor.career_add(uid, _S["turn"], "gate",
                               f"human decided: {decision} at the irreversible gate")
+            if (uid.startswith("herald") and decision == "approve"
+                    and sim.world()["age"] == age_before):
+                # The approval could not be executed — say so where the human is,
+                # never let a click silently do nothing (IV.6).
+                w2, cost2 = sim.world(), sim.advance_cost()
+                short = ", ".join(f"{r} short {max(0, cost2[r] - w2[r]):,}"
+                                  for r in cost2 if w2[r] < cost2[r]) or "unknown"
+                anchor.record(_S["turn"], "gate",
+                              f"your APPROVAL was received but the treasury cannot pay: {short} "
+                              f"(need food {cost2['food']:,} + gold {cost2['gold']:,})")
+                anchor.msg_send("chief", "Chief Governor",
+                                f"Your approval arrived, but the treasury is short: {short}. "
+                                f"The fleet is accumulating — a new herald will return to your "
+                                f"gate the moment we can pay.")
             if uid.startswith("herald"):
                 _S.pop("gate_since", None)        # the wait is over; stop pricing it
                 _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
