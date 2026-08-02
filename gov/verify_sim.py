@@ -199,5 +199,42 @@ check("effect chain reaches the event that caused it",
 check("credit() walks forward to the value produced",
       any("gathered 30 food" in x for x in lin["consequences"]))
 
+# ── 9. governance regressions (the constitutional audit, as tests) ───────────
+print("\n9. Governance — the audit's assertions, enforced")
+import board as BD
+
+# VIII.1: disjoint evidence — the same board must vote differently on different evidence
+bv_good = BD.vote("create x", {"affordable": True, "within_budget": True, "spent": 100_000,
+                               "cap": 1_000_000, "burn_per_turn": 10_000,
+                               "progress_delta": 10, "understaffed": True})
+bv_bad = BD.vote("create y", {"affordable": False, "within_budget": False, "spent": 990_000,
+                              "cap": 1_000_000, "burn_per_turn": 50_000,
+                              "progress_delta": 0, "understaffed": False})
+check("board approves on good evidence, blocks on bad",
+      bv_good["approved"] and not bv_bad["approved"])
+check("rationales carry live values, not constant labels",
+      "runway" in bv_good["reasons"]["Prudence"]
+      and bv_good["reasons"]["Prudence"] != bv_bad["reasons"]["Prudence"])
+check("growth votes NO when progress is flat with a full fleet",
+      bv_bad["ballots"]["Growth"] is False)
+
+# IV.5: the market converts overflow instead of letting it all rot
+S.connect()                                       # re-init the world (wiped in section 7)
+cap_now = S.food_cap()
+S._world_add("food", max(0, cap_now + 10_000 - S.world()["food"]))
+gold_before = S.world()["gold"]
+sold, got = S.trade_surplus()
+check("surplus food is traded for gold before it rots",
+      sold > 0 and S.world()["gold"] == gold_before + got, f"sold {sold} for {got} gold")
+
+# VI.4: knowledge expires — only a bounded set of lessons steers decisions
+for i in range(35):
+    A.skill_add(9, f"filler lesson {stamp}-{i} for the expiry check", source="test")
+A.skill_prune(30)
+live = A.skills_top(100)
+check("stale lessons stop steering (bounded live set)", len(live) <= 30,
+      f"{len(live)} live lessons")
+check("pruned lessons remain on the record (never deleted)", A.skills_count() > 30)
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

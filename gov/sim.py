@@ -231,6 +231,27 @@ def food_cap(w: dict | None = None) -> int:
     return int(1.2 * advance_cost(w["age"])["food"])
 
 
+TRADE_RATE = 5           # market rate: food per 1 gold
+
+
+def trade_surplus() -> tuple[int, int]:
+    """Article IV.5 — a gate may pause the Age, never the settlement. Instead of
+    letting all over-cap food rot, the market converts a slice of the overflow into
+    gold each turn (10% of overflow, 5 food → 1 gold). Returns (food_sold, gold_got)."""
+    w = world()
+    cap = food_cap(w)
+    over = w["food"] - cap
+    if over <= 0:
+        return 0, 0
+    amount = (over // 10) // TRADE_RATE * TRADE_RATE
+    if amount < TRADE_RATE:
+        return 0, 0
+    gold = amount // TRADE_RATE
+    _world_add("food", -amount)
+    _world_add("gold", gold)
+    return amount, gold
+
+
 def spoil_tick() -> tuple[int, int]:
     """Rot food above the storage cap. Returns (loss, cap)."""
     w = world()

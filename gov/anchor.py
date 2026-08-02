@@ -106,6 +106,11 @@ def init() -> None:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN ts REAL")
             except sqlite3.OperationalError:
                 pass                               # column already there
+        # Article VI.4 — knowledge expires: stale lessons are excluded from decisions
+        try:
+            c.execute("ALTER TABLE skills ADD COLUMN stale INT DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -174,7 +179,7 @@ def career_add(uid: str, turn: int, event: str, detail: str = "") -> None:
     c = _conn()
     try:
         c.execute("INSERT INTO careers(gen, uid, turn, event, detail, ts) VALUES(?,?,?,?,?,?)",
-                  (generation(), uid, turn, event[:40], (detail or "")[:240], time.time()))
+                  (generation(), uid, turn, event[:40], (detail or "")[:400], time.time()))
         c.commit()
     finally:
         c.close()
@@ -287,7 +292,7 @@ def reason_add(turn: int, actor: str, decision: str, why: str,
         cur = c.execute(
             "INSERT INTO decisions(turn, actor, decision, why, derived_from, "
             "authorized_by, effect_event, outcome, ts) VALUES(?,?,?,?,?,?,?, '', ?)",
-            (turn, actor, decision[:160], why[:280],
+            (turn, actor, decision[:240], why[:500],
              json.dumps(derived_from or []), authorized_by, effect_event, time.time()))
         c.commit()
         return cur.lastrowid
@@ -428,13 +433,30 @@ def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> in
 
 
 def skills_top(limit: int = 5) -> list[dict]:
-    """Most recent distilled lessons — what the brain reads before deciding."""
+    """Most recent LIVE lessons — what the brain reads before deciding. Stale
+    (expired) lessons are excluded: knowledge that outlived its evidence is history,
+    not guidance (Article VI.4)."""
     c = _conn()
     try:
         rows = c.execute("SELECT id, turn, lesson, source, trigger, ts FROM skills "
-                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                         "WHERE stale=0 ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [{"id": i, "turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
                 for i, t, l, s, tr, ts in rows]
+    finally:
+        c.close()
+
+
+def skill_prune(keep: int = 30) -> int:
+    """Expire all but the newest `keep` lessons (VI.4: knowledge expires; contradictory
+    old guidance ages out instead of coexisting forever). Returns how many were
+    newly marked stale — rows stay for the record, they just stop steering."""
+    c = _conn()
+    try:
+        cur = c.execute("UPDATE skills SET stale=1 WHERE stale=0 AND id NOT IN "
+                        "(SELECT id FROM skills WHERE stale=0 ORDER BY id DESC LIMIT ?)",
+                        (keep,))
+        c.commit()
+        return cur.rowcount
     finally:
         c.close()
 
@@ -529,7 +551,7 @@ def msg_send(thread: str, sender: str, body: str) -> None:
         c.close()
     kind = "comm" if thread == "internal" else "chat"
     try:
-        record(-1, kind, f"[{thread}] {sender}: {body[:180]}")
+        record(-1, kind, f"[{thread}] {sender}: {body[:400]}")   # VII.5: don't clip telemetry
     except Exception:
         pass
 

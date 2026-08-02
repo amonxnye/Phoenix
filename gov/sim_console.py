@@ -76,7 +76,26 @@ else:
         _S["heralds"] = max(_nums, default=0)
         anchor.config_set("heralds", str(_S["heralds"]))
     anchor.CURRENT_TURN = _S["turn"]
-    _S["villagers"] = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
+    # Re-adopt only agents whose threads can still WORK. A `done` thread can never be
+    # resumed — re-adopting it seats a zombie that blocks staffing and never gathers
+    # (the run-3 collapse). Unresumable roster entries are retired on the spot.
+    _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+    _S["villagers"] = []
+    for _r in economy.roster():
+        if not _r["agent"].startswith("vil-"):
+            continue
+        _u = _threads.get(_r["agent"])
+        if _u and _u.status != "done":
+            _S["villagers"].append(_r["agent"])
+        else:
+            economy.retire(_r["agent"])
+            anchor.record(_S["turn"], "reap",
+                          f"{_r['agent']} struck off at boot — thread "
+                          f"{'complete' if _u else 'missing'}, unresumable (zombie guard)")
+            anchor.career_add(_r["agent"], _S["turn"], "retired",
+                              "struck off at boot — thread could never work again")
+            if _u:
+                anchor.counter_add("lifetime_spend", _u.tokens)
     if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
         G.TOKEN_CAP = anchor.counter_get("token_cap")
     for _c in anchor.careers(200):                # rebuild birth turns for burn math
@@ -150,11 +169,7 @@ def _propose_development():
         prop["source"] = "deepseek+knowledge"
     if not prop or prop.get("name") in existing:
         return
-    views = _fleet_views()
-    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
-    bv = board.vote(f"development: {prop['name']}",
-                    {"aligned": True, "affordable": True, "within_budget": sc["within_budget"],
-                     "spent": G.spent(views), "cap": G.TOKEN_CAP})
+    bv = board.vote(f"development: {prop['name']}", _board_ctx(True))
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
     _S["dev_proposal"] = prop
@@ -189,6 +204,72 @@ def _fleet_views(views=None):
     return [u for u in views if u.unit_id in live]
 
 
+def _progress_delta(window: int = 25) -> int | None:
+    """Vision points moved over the last `window` turns — Growth's evidence."""
+    hist = _S.get("progress_hist") or []
+    if len(hist) < 2:
+        return None
+    cur_t, cur_p = hist[-1]
+    base = next((p for t, p in hist if t >= cur_t - window), hist[0][1])
+    return cur_p - base
+
+
+def _board_ctx(affordable: bool, views=None) -> dict:
+    """Disjoint evidence for the three board seats (Article VIII.1 as amended)."""
+    views = views if views is not None else _fleet_views()
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    return {"affordable": affordable, "within_budget": sc["within_budget"],
+            "spent": G.spent(views), "cap": G.TOKEN_CAP,
+            "burn_per_turn": _S.get("fleet_burn"),
+            "progress_delta": _progress_delta(),
+            "understaffed": len(_S["villagers"]) < _target_villagers()}
+
+
+def _breaker(key: str, escalate: str) -> bool:
+    """Circuit breaker (Articles III.1 / VIII.4): after 3 identical failures the
+    system stops retrying, escalates ONCE naming the blocking value, and stays muted
+    until that value changes (the value is part of the key, so change auto-unmutes).
+    Returns True when the action is muted."""
+    counts = _S.setdefault("breaker", {})
+    n = counts.get(key, 0) + 1
+    counts[key] = n
+    if n == 3:
+        anchor.record(_S["turn"], "escalation", f"blocked 3x — {escalate}")
+        anchor.msg_send("chief", "Board",
+                        f"ESCALATION (Article VIII.4): {escalate} "
+                        "Muted until the blocking value changes.")
+    return n >= 3
+
+
+def _set_cap(v: int, who: str) -> bool:
+    """The ONE writer for the compute cap (single-writer rule): logs the caller,
+    persists, and rejects a second mutation in the same turn."""
+    if _S.get("cap_set_turn") == _S["turn"] and who != "boot":
+        anchor.record(_S["turn"], "cap",
+                      f"cap change by {who} REJECTED — one mutation per turn")
+        return False
+    old, G.TOKEN_CAP = G.TOKEN_CAP, v
+    _S["cap_set_turn"] = _S["turn"]
+    anchor.config_set("token_cap", str(v))
+    anchor.record(_S["turn"], "cap", f"{who} set cap {old:,} → {v:,}")
+    return True
+
+
+def _binding_constraint() -> str:
+    """Name the first thing actually stopping the world — a stall must arrive with
+    its own diagnosis (Article IX.2)."""
+    views = _fleet_views()
+    if _pending_herald():
+        return "the human gate — a herald awaits your decision on the console"
+    ok, reason = G.may_spawn(views)
+    if not ok:
+        return f"the compute cap — {reason}"
+    w = sim.world()
+    if len(_S["villagers"]) >= min(_target_villagers(), w["pop_cap"]):
+        return "a full roster that is not producing — inspect agent states on /agents"
+    return "no single constraint detected — inspect /agents and the logs"
+
+
 def _by_uid():
     return {u.unit_id: u for u in G.units(_GRAPH, _CP)}
 
@@ -207,8 +288,15 @@ def _target_villagers():
 
 
 def _adopt_vision(key: str):
-    """The human adopts a new Vision — a fresh mental update cascades to every agent."""
+    """The human adopts a new Vision — a fresh mental update cascades to every agent.
+    Article I.6: a met Vision is consumed; a vision identical to the standing one is
+    rejected, so success can't be re-won and re-briefs are never no-ops."""
     if key not in V.VISIONS:
+        return
+    if key == _S["vision_key"]:
+        anchor.record(_S["turn"], "vision-change",
+                      f"REJECTED — '{V.get(key).name}' is already the standing vision (I.6); "
+                      "choose a different goal")
         return
     _S["vision_key"] = key
     _S["goal_met"] = False                      # re-open the drive toward the new goal
@@ -223,11 +311,8 @@ def _op_add(resource: str = "") -> tuple[bool, str]:
     """Operator adds an agent — a token-maxing power, so it goes through the Board."""
     views = _fleet_views()
     ok, reason = G.may_spawn(views)
-    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     uid = _new_vid()
-    ctx = {"aligned": True, "affordable": ok, "within_budget": sc["within_budget"],
-           "spent": G.spent(views), "cap": G.TOKEN_CAP}
-    bv = board.vote(f"operator add {uid}", ctx)
+    bv = board.vote(f"operator add {uid}", _board_ctx(ok, views))
     _S["last_vote"] = bv
     if not bv["approved"]:
         _S["seq"] -= 1
@@ -275,15 +360,13 @@ def _op_order(uid: str, resource: str) -> bool:
 
 
 def _op_cap(new_cap) -> bool:
-    """Operator updates the hard spend cap."""
+    """Operator updates the hard spend cap — through the single cap writer, so an
+    operator click and a board reward can't fight over it in the same turn."""
     try:
         v = max(1_000, int(new_cap))
     except (TypeError, ValueError):
         return False
-    old, G.TOKEN_CAP = G.TOKEN_CAP, v
-    anchor.config_set("token_cap", str(v))            # survives restarts
-    anchor.record(_S["turn"], "operator", f"cap updated {old:,} → {v:,}")
-    return True
+    return _set_cap(v, "operator")
 
 
 # ── chat: agents, board and the Chief Governor talk to the human ──────────────
@@ -343,12 +426,15 @@ def _run_retrospective(trigger: str):
     d = _digest(trigger)
     before = anchor.skills_count()
     lessons = brain.retrospective(d, anchor.skills_top(5))
+    stored = []
     for lesson in lessons:
-        anchor.skill_add(_S["turn"], lesson, source="chief-retrospective", trigger=trigger)
-        anchor.record(_S["turn"], "skill", f"lesson learned ({trigger}): {lesson[:180]}")
-    if lessons:
+        if anchor.skill_add(_S["turn"], lesson, source="chief-retrospective", trigger=trigger):
+            stored.append(lesson)                 # VI: only NEW knowledge makes the record
+            anchor.record(_S["turn"], "skill", f"lesson learned ({trigger}): {lesson[:300]}")
+    anchor.skill_prune(30)                        # VI.4: old guidance expires, never steers
+    if stored:
         anchor.msg_send("internal", "Chief Governor",
-                        f"Retrospective ({trigger}): " + " | ".join(lessons)[:400])
+                        f"Retrospective ({trigger}): " + " | ".join(stored)[:400])
     # Wisdom bonus: new lessons are minted from the fleet's experience — the top
     # contributor supplied most of it, so skill creation pays, not just gathering.
     new_n = anchor.skills_count() - before
@@ -376,44 +462,67 @@ def _governor_report():
     w = sim.world()
     spent = G.spent(_fleet_views())
     spend_pct = round(100 * spent / G.TOKEN_CAP) if G.TOKEN_CAP else 100
-    facts = (f"turn {t}: progress {sc['progress']}% toward '{_vision().name}'; "
-             f"stock food {w['food']:,}/wood {w['wood']:,}/gold {w['gold']:,}; "
-             f"{d['waste']} wasted builds, {sc['side_effects']} side-effects; "
-             f"fleet spend {spend_pct}% of cap")
+
+    # VIII.5: the report BEGINS with the Vision delta — a report that omits it is void.
+    last = anchor.counter_get("last_report_progress")
+    delta = sc["progress"] - last
+    anchor.config_set("last_report_progress", str(sc["progress"]))
+    life_now = anchor.counter_get("lifetime_spend") + spent
+    period_tokens = max(1, life_now - anchor.counter_get("last_report_burn"))
+    anchor.config_set("last_report_burn", str(life_now))
+    spoiled = _S.pop("spoil_since_report", 0)
+    failed = _S.pop("failed_since_report", 0)
+    facts = (f"VISION Δ {delta:+d}% this period · {period_tokens:,} compute spent · "
+             f"{spend_pct}% of cap in use · {spoiled:,} food spoiled · {failed} failed "
+             f"turns · {d['waste']} failed builds · stock food {w['food']:,}/"
+             f"wood {w['wood']:,}/gold {w['gold']:,}")
+    if _S.get("stall"):                           # IX.4: a stalled world may not be reported healthy
+        facts = f"STALLED — {_S['stall']} · " + facts
     body = brain.think("the Chief Governor", _situation(),
-                       f"Report your work to the Board in 1-2 sentences: {facts}") or facts
+                       f"Report your work to the Board in 1-2 sentences, leading with the "
+                       f"vision delta: {facts}") or facts
     anchor.msg_send("all", "Chief Governor", f"WORK REPORT — {body}"[:480])
 
-    # The board scores the report on hard numbers, not the wording.
-    last = anchor.counter_get("last_report_progress")
-    score = 10
-    score -= min(3, d["waste"])                              # wasted builds
-    score -= 2 if not sc["within_budget"] else 0             # side-effect budget blown
-    score -= 1 if spend_pct > 90 else 0                      # burning hot
-    score -= 2 if sc["progress"] < last else 0               # going backwards
-    anchor.config_set("last_report_progress", str(sc["progress"]))
+    # VIII.5: scored on Vision points gained per compute spent, less waste — never on
+    # capacity authorised. Zero movement caps the score at 3 (the load-bearing rule).
+    vppm = delta / (period_tokens / 1_000_000)               # vision points per M tokens
+    score = round(min(10, max(0, vppm * 2)))
+    score -= 2 if spend_pct < 30 else 0                      # idle budget is a penalty
+    score -= min(3, spoiled // 5_000)                        # rot is waste (I.2)
+    score -= min(3, failed // 5)                             # dead turns are waste
+    if delta <= 0:
+        score = min(score, 3)
+    score = max(0, score)
     if score >= 7 and spend_pct >= 60:
-        # a raise only means something when the cap binds — no free headroom
         old = G.TOKEN_CAP
-        G.TOKEN_CAP = int(G.TOKEN_CAP * 1.05)
-        anchor.config_set("token_cap", str(G.TOKEN_CAP))
-        verdict = (f"score {score}/10 — good work under a binding cap: compute cap raised "
-                   f"{old:,} → {G.TOKEN_CAP:,} (+5%)")
+        if _set_cap(int(G.TOKEN_CAP * 1.05), "board-reward"):
+            verdict = (f"score {score}/10 — {vppm:.1f} vision-pts/M tokens under a binding "
+                       f"cap: raised {old:,} → {G.TOKEN_CAP:,} (+5%)")
+        else:
+            verdict = f"score {score}/10 — good work (cap already changed this turn)"
     elif score >= 7:
-        verdict = (f"score {score}/10 — good work: commendation recorded "
-                   f"(cap unchanged at {G.TOKEN_CAP:,}; only {spend_pct}% used)")
+        verdict = (f"score {score}/10 — {vppm:.1f} vision-pts/M tokens: commendation "
+                   f"(cap unchanged; {spend_pct}% used)")
+    elif score <= 3 and (delta <= 0 or failed > 0):
+        # punishment must not deepen a stall: escalate to the human, don't throttle
+        binding = _binding_constraint()
+        verdict = (f"score {score}/10 — no vision movement. Escalating, not throttling: "
+                   f"binding constraint is {binding}")
+        anchor.msg_send("chief", "Board",
+                        f"POOR REVIEW ({score}/10): the vision has not moved. "
+                        f"The binding constraint is {binding}. Your decision needed.")
     elif score <= 4:
         anchor.config_set("birth_throttle", "0.75")
         anchor.config_set("throttle_until", str(t + 30))
-        verdict = (f"score {score}/10 — poor work: births throttled 25% until turn "
-                   f"{t + 30}")
+        verdict = f"score {score}/10 — wasteful work: births throttled 25% until turn {t + 30}"
     else:
         verdict = f"score {score}/10 — steady; no reward, no sanction"
     anchor.msg_send("all", "Board", f"REVIEW of the Governor's report: {verdict}")
     anchor.record(t, "board", f"governor report scored: {verdict}")
     anchor.reason_add(t, "board", "score governor report",
-                      f"waste {d['waste']}, within_budget {sc['within_budget']}, "
-                      f"spend {spend_pct}%, progress {sc['progress']}% (prev {last}%) → {verdict}")
+                      f"Δvision {delta:+d}% / {period_tokens:,} tokens = {vppm:.1f} pts/M; "
+                      f"spoiled {spoiled:,}, failed turns {failed}, spend {spend_pct}% → {verdict}",
+                      authorized_by="policy:VIII.5")
 
 
 def _chat_reply(key: str, body: str) -> str:
@@ -497,16 +606,22 @@ def _chat_send(key: str, body: str):
 
 
 def _narrate_vote(bv: dict, why: str = ""):
-    """Board votes are DECISIONS — put the tally and each governor's position into the
-    internal chat, so deliberation is visible on /chats instead of happening silently."""
-    stances = {"Prudence": "budget headroom", "Growth": "vision alignment",
-               "Ledger": "affordability"}
-    detail = ", ".join(f"{g}: {'yes' if ok else 'NO'} ({stances[g]})"
-                       for g, ok in bv["ballots"].items())
+    """Board votes are DECISIONS — put the tally and each governor's position AND
+    live reasoning into the internal chat. Rationales carry real values now (runway
+    turns, progress delta), not constant labels."""
+    word = {True: "yes", False: "NO", None: "abstain"}
+    detail = ", ".join(f"{g}: {word[v]} ({bv['reasons'][g]})"
+                       for g, v in bv["ballots"].items())
     verdict = "APPROVED" if bv["approved"] else "BLOCKED"
-    anchor.msg_send("internal", "Board vote",
-                    f"{bv['proposal']} — {detail} → {verdict} {bv['tally']}"
-                    + (f"; {why}" if why else ""))
+    line = f"{bv['proposal']} — {detail} → {verdict} {bv['tally']}" + (f"; {why}" if why else "")
+    anchor.msg_send("internal", "Board vote", line)
+    # degeneracy check (VIII.1): a member whose vote never varies is decoration
+    for g in bv.get("degenerate", []):
+        if f"degen:{g}" not in _S["notified"]:
+            _S["notified"].add(f"degen:{g}")
+            anchor.record(_S["turn"], "board",
+                          f"degeneracy warning: {g} has voted identically for "
+                          f"{board.DEGENERACY_WINDOW} consecutive decisions")
 
 
 def _internal_voices():
@@ -543,8 +658,12 @@ def _peer_chatter():
         return
     roster.sort(key=lambda r: (-r["tier"], -r["contribution"]))
     sender, s_role = roster[0]["agent"], roster[0]["role"]
-    receiver = roster[-1]["agent"]
+    others = [r["agent"] for r in roster[1:]]
+    receiver = others[(_S["turn"] // 5) % len(others)]      # rotate — no monologue treadmill
     res, why = _choose_gather(sim.world())
+    if _S.get("last_tip") == (sender, receiver, res):
+        return                                    # an unfollowed tip is not repeated verbatim
+    _S["last_tip"] = (sender, receiver, res)
     line = brain.think(f"{sender}, a {s_role} in the fleet", _situation(),
                        f"In one short line, coordinate with your colleague {receiver}: "
                        f"the settlement should gather {res} because {why}.") \
@@ -556,18 +675,32 @@ def _peer_chatter():
 
 
 def _fleet_speaks():
-    """Agents / governor raise messages to the human, each at most once per condition."""
+    """Agents / governor raise messages to the human, each at most once per condition.
+    IV.6: an unanswered gate request is escalated through a DIFFERENT channel, never
+    repeated into the same one. Distress always gets an answer — no dead queues."""
     seen = _S["notified"]
     roster_by = {r["agent"]: r for r in economy.roster()}
     for u in _by_uid().values():
-        if u.pending and u.pending.get("reversible") is False and f"gate:{u.unit_id}" not in seen:
-            anchor.msg_send("chief", "Chief Governor",
-                            f"Requesting your approval: {u.pending['action']}.")
-            seen.add(f"gate:{u.unit_id}")
+        if u.pending and u.pending.get("reversible") is False:
+            if f"gate:{u.unit_id}" not in seen:
+                anchor.msg_send("chief", "Chief Governor",
+                                f"Requesting your approval: {u.pending['action']}.")
+                seen.add(f"gate:{u.unit_id}")
+            waited = _S["turn"] - _S.get("gate_since", _S["turn"])
+            if waited >= 25 and f"gate2:{u.unit_id}" not in seen:   # re-route, don't repeat
+                anchor.msg_send("all", "Board",
+                                f"ESCALATION (IV.6): {u.unit_id} has waited {waited} turns at the "
+                                f"gate — {u.pending['action']}. The wait is costing "
+                                f"~{_S.get('last_spoil_loss', 0):,} food/turn in spoilage.")
+                seen.add(f"gate2:{u.unit_id}")
         r = roster_by.get(u.unit_id)
         if r and r["budget"] and u.tokens / r["budget"] > 0.8 and f"ow:{u.unit_id}" not in seen:
             anchor.msg_send(u.unit_id, u.unit_id,
                             "I'm overworking — compute is near my budget. Requesting relief or more budget.")
+            anchor.msg_send(u.unit_id, "Chief Governor",
+                            f"Acknowledged, {u.unit_id}. Your term ends at budget by design "
+                            "(Article II) and a successor will be enlisted — hold your post; "
+                            "your contribution is on the permanent record.")
             seen.add(f"ow:{u.unit_id}")
 
 
@@ -598,18 +731,37 @@ def _one_turn():
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
     views = _fleet_views()
     sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    # telemetry the board and the liveness check read: progress history + fleet burn
+    ph = _S.setdefault("progress_hist", [])
+    ph.append((t, sc_now["progress"]))
+    del ph[:-200]
+    spent_now = G.spent(views)
+    _S["fleet_burn"] = max(0, spent_now - _S.get("last_spent", spent_now)) or _S.get("fleet_burn")
+    _S["last_spent"] = spent_now
+    _S["_acted"] = False                          # set by gather/build/spawn/repair/trade
+    staff_key = f"staff|{G.TOKEN_CAP}"            # cap value in the key → auto-unmute on change
     while len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"]):
+        if _S.setdefault("breaker", {}).get(staff_key, 0) >= 3:
+            break                                 # muted after 3 identical blocks (III.1)
         ok, reason = G.may_spawn(views)
+        if not ok:
+            _breaker(staff_key, f"spawning is blocked by the compute cap ({reason}). "
+                                "Raising the cap or retiring agents unblocks it.")
+            break
         uid = _new_vid()
-        ctx = {"aligned": True, "affordable": ok, "within_budget": sc_now["within_budget"],
-               "spent": G.spent(views), "cap": G.TOKEN_CAP}
-        bv = board.vote(f"create {uid}", ctx)
+        bv = board.vote(f"create {uid}", _board_ctx(ok, views))
         _S["last_vote"] = bv
         if not bv["approved"]:
             _S["side_effects"] += 1
-            anchor.record(t, "board", f"[{bv['tally']}] BLOCKED {uid} — {reason if not ok else 'no quorum'}")
-            _narrate_vote(bv, reason if not ok else "no quorum")
+            anchor.record(t, "board", f"[{bv['tally']}] BLOCKED {uid} — no quorum")
+            _narrate_vote(bv, "no quorum")
+            _S["seq"] -= 1                        # id not used; don't burn the number
+            anchor.config_set("seq", str(_S["seq"]))
+            _breaker(staff_key, f"the board has blocked staffing three times ({bv['tally']}); "
+                     + "; ".join(f"{g}: {bv['reasons'][g]}"
+                                 for g, v in bv["ballots"].items() if v is not True))
             break
+        _S["breaker"].pop(staff_key, None)        # success resets the breaker
         if bv["yes"] < len(board.GOVERNORS):      # split approvals are debates worth seeing
             _narrate_vote(bv)
         res, why = _choose_gather(w)
@@ -632,33 +784,59 @@ def _one_turn():
         anchor.career_add(uid, t, "born", f"enlisted by board {bv['tally']} → gather {res}; {why}")
         anchor.record(t, "gather", f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})",
                       caused_by=spawn_ev)
+        _S["_acted"] = True
         views = _fleet_views()
 
-    # Article II: no immortal agents. An agent that has spent its budget is retired
-    # (ending the permanent-overwork state) and the staffing loop enlists a fresh
-    # replacement through the Board next turn — so fleet spend stays bounded and the
-    # cap can never jam shut on lifetime totals.
+    # Article II: no immortal agents — and no zombies. Three guards, in order:
+    #   1. an unresumable thread (status done / missing) is struck off — it holds a
+    #      seat, burns headcount, and can never work again (the run-3 collapse);
+    #   2. budget retirement checks BEFORE the next spend (III.3: the check precedes
+    #      the commit — no more discovering the limit by overrunning it);
+    #   3. fleet floor (II.5): below minimum staffing with replacement blocked,
+    #      reaping is suspended and the shortage escalates instead.
+    TURN_COST = 10_400                            # one work cycle's compute, observed
     status = _by_uid()
     roster_by = {r["agent"]: r for r in economy.roster()}
     for uid in list(_S["villagers"]):
         u, r = status.get(uid), roster_by.get(uid)
-        if u and r and r["budget"] and u.tokens >= r["budget"] and u.pending:
+        if u is None or u.status == "done":       # zombie guard
+            economy.retire(uid)
+            _S["villagers"].remove(uid)
+            _S["orders"].pop(uid, None)
+            _S["born"].pop(uid, None)
+            anchor.record(t, "reap", f"{uid} struck off — thread complete/unresumable "
+                                     "(zombie guard, Article IX)")
+            anchor.career_add(uid, t, "retired", "struck off the roster — thread was "
+                                                 "complete and could never work again")
+            if u:
+                anchor.counter_add("lifetime_spend", u.tokens)
+            continue
+        if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
+            if len(_S["villagers"]) <= 2 and not G.may_spawn(views)[0]:
+                if _breaker(f"floor|{G.TOKEN_CAP}",
+                            "the fleet is at its floor and replacements are blocked "
+                            "by the cap — reaping suspended (Article II.5); raise the "
+                            "cap to resume the lifecycle."):
+                    continue
+                continue                          # II.5: may run understaffed, never empty
             sim.resume(_GRAPH, uid, "dismiss")
             economy.retire(uid)
             _S["villagers"].remove(uid)
             _S["orders"].pop(uid, None)
             _S["born"].pop(uid, None)
             did = anchor.reason_add(t, "director", f"retire {uid}",
-                                    f"Article II lifecycle: compute {u.tokens:,} ≥ budget {r['budget']:,}",
+                                    f"Article II lifecycle: compute {u.tokens:,} + one more "
+                                    f"turn would exceed budget {r['budget']:,} — the check "
+                                    "precedes the commit (III.3)",
                                     authorized_by="policy:Article II")
-            reap_ev = anchor.record(t, "reap", f"{uid} retired with honours — budget spent "
+            reap_ev = anchor.record(t, "reap", f"{uid} retired with honours — budget "
                                                f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
             anchor.decision_close(did, reap_ev,
                                   outcome=f"lifetime contribution {r['contribution']:,} "
                                           f"for {u.tokens:,} compute")
             anchor.career_add(uid, t, "retired",
-                              f"Article II: budget spent ({u.tokens:,}/{r['budget']:,}); "
-                              f"rank {r['role']}, final contribution {r['contribution']:,}")
+                              f"Article II: budget {u.tokens:,}/{r['budget']:,} — retired "
+                              f"BEFORE overshoot; rank {r['role']}, contribution {r['contribution']:,}")
             anchor.counter_add("lifetime_spend", u.tokens)   # burned forever, tracked forever
 
     status = _by_uid()
@@ -695,6 +873,7 @@ def _one_turn():
             gev = anchor.record(t, "gather",
                                 f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
             anchor.decision_close(did, gev, outcome=f"+{got} {res}")     # measured result
+            _S["_acted"] = True
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
                 anchor.record(t, "promote", f"{uid} promoted -> {promo}")
@@ -728,6 +907,7 @@ def _one_turn():
             did = anchor.reason_add(t, "director", f"build {kind}", build_why,
                                     authorized_by="policy")
             anchor.decision_close(did, bev, outcome=msg)
+            _S["_acted"] = True
         if not done:
             _S["side_effects"] += 1
     else:
@@ -760,10 +940,20 @@ def _one_turn():
             rev = anchor.record(t, "repair", msg)
             anchor.decision_close(did, rev, outcome=f"condition {cnd}% → 100%")
             _S["notified"].discard(f"decay:{wname}")
+            _S["_acted"] = True
+    # Article IV.5: a gate pauses the Age, never the settlement — the market converts
+    # part of the overflow into gold before the rest rots.
+    sold, got_gold = sim.trade_surplus()
+    if sold:
+        anchor.record(t, "trade", f"market sold {sold:,} surplus food for {got_gold:,} gold "
+                                  "(overflow converted instead of rotting)")
+        _S["_acted"] = True
     loss, fcap = sim.spoil_tick()
     if loss:
         anchor.record(t, "spoilage", f"{loss} food rotted — stores over capacity {fcap:,}; "
                                      "spend it or advance the age")
+        _S["spoil_since_report"] = _S.get("spoil_since_report", 0) + loss
+        _S["last_spoil_loss"] = loss
 
     # Age development: exponential growth (each age costs 100x the one before), and the
     # herald only goes to the human gate once the BOARD judges the treasury ready —
@@ -775,9 +965,7 @@ def _one_turn():
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         nxt = sim.NEXT_AGE[w["age"]]
         bv = board.vote(f"advance to {nxt} (spend food {acost['food']:,} + gold {acost['gold']:,})",
-                        {"aligned": True, "affordable": True,
-                         "within_budget": sc_now["within_budget"],
-                         "spent": G.spent(_fleet_views()), "cap": G.TOKEN_CAP})
+                        _board_ctx(True))
         if not bv["approved"]:
             if f"advblock:{w['age']}" not in _S["notified"]:   # narrate the refusal once per age
                 _S["notified"].add(f"advblock:{w['age']}")
@@ -801,6 +989,33 @@ def _one_turn():
                                                "awaiting YOUR approval to advance the Age")
             anchor.decision_close(did, gate_ev)
             _S["herald_decision"] = did           # the human's verdict closes it
+            _S["gate_since"] = t                  # IV.4: the wait is priced from here
+
+    # Article IX — liveness: inaction is an action, and it is gated too. A turn with
+    # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
+    # vision score frozen for 25 turns, is a STALL: name the binding constraint and
+    # escalate — never continue quietly.
+    if _S.pop("_acted", False):
+        _S["failed_turns"] = 0
+    else:
+        _S["failed_turns"] = _S.get("failed_turns", 0) + 1
+        _S["failed_since_report"] = _S.get("failed_since_report", 0) + 1
+    frozen = (_progress_delta(25) == 0 and len(_S.get("progress_hist", [])) >= 25)
+    if (_S["failed_turns"] >= 10 or frozen) and not _S["goal_met"]:
+        binding = _binding_constraint()
+        _S["stall"] = (f"{_S['failed_turns']} consecutive failed turns; "
+                       f"binding constraint: {binding}") if _S["failed_turns"] >= 10 \
+            else f"vision score frozen for 25 turns; binding constraint: {binding}"
+        if f"stall:{binding}" not in _S["notified"]:
+            _S["notified"].add(f"stall:{binding}")
+            anchor.record(t, "stall", f"STALL (Article IX) — {_S['stall']}")
+            anchor.msg_send("chief", "Chief Governor",
+                            f"STALL (Article IX): {_S['stall']}. What unblocks it: {binding}")
+    else:
+        if _S.get("stall"):
+            anchor.record(t, "stall", "stall CLEARED — production resumed")
+            _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
+        _S["stall"] = None
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
@@ -930,8 +1145,13 @@ def _snapshot() -> dict:
         # Surface it loudly instead of letting it drown in the log.
         gate_unit = next((u for u in views
                           if u.pending and u.pending.get("reversible") is False), None)
-        human_gate = (f"{gate_unit.unit_id}: {gate_unit.pending.get('action', '')}"
-                      if gate_unit else None)
+        human_gate = None
+        if gate_unit:
+            waited = _S["turn"] - _S.get("gate_since", _S["turn"])
+            cost = _S.get("last_spoil_loss", 0)
+            human_gate = (f"{gate_unit.unit_id}: {gate_unit.pending.get('action', '')} — "
+                          f"waiting {waited} turns"
+                          + (f", costing ~{cost:,} food/turn in rot" if cost else ""))
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
@@ -980,6 +1200,8 @@ def _snapshot() -> dict:
             # is never deleted — not even by a world reset
             "memory": "permanent (own DB, survives world resets)",
             "human_gate": human_gate,
+            "stall": _S.get("stall"),
+            "failed_turns": _S.get("failed_turns", 0),
             "tick_s": TICK,
         }
         return {
@@ -1298,6 +1520,9 @@ class Handler(BaseHTTPRequestHandler):
                 sim.resume(_GRAPH, uid, decision)
             anchor.career_add(uid, _S["turn"], "gate",
                               f"human decided: {decision} at the irreversible gate")
+            if uid.startswith("herald"):
+                _S.pop("gate_since", None)        # the wait is over; stop pricing it
+                _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
             if uid.startswith("herald") and _S.get("herald_decision"):
                 anchor.decision_close(_S["herald_decision"],
                                       outcome=f"human decision: {decision} — age now {sim.world()['age']}")
@@ -1694,7 +1919,8 @@ async function tick(){
   if(document.activeElement!==capin) capin.value=d.cap;
   const sy=d.system||{};
   syshealth.innerHTML=`<div class=a style="border-color:${sy.driver_ok?'var(--line)':'var(--bad)'}">
-    <h3>SYSTEM HEALTH ${sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag>&#9888; DRIVER STALLED</span>'}</h3>
+    <h3>SYSTEM HEALTH ${sy.stall?'<span class=flag>&#9888; STALLED (Article IX)</span>':sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag>&#9888; DRIVER STALLED</span>'}</h3>
+    ${sy.stall?`<div class=stat><span>&#9888; stall</span><b style="color:#fca5a5">${esc(sy.stall)}</b></div>`:''}
     <div class=stat><span>brain</span><b>${esc(sy.brain||'—')}</b></div>
     <div class=stat><span>uptime</span><b>${Math.floor((sy.uptime_s||0)/60)}m ${(sy.uptime_s||0)%60}s &middot; tick ${sy.tick_s}s &middot; last turn ${sy.last_turn_age_s}s ago</b></div>
     <div class=stat><span>fleet</span><b>${sy.fleet} agents &middot; avg health ${sy.avg_health}%</b></div>
