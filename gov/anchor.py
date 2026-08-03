@@ -494,8 +494,16 @@ def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> in
         return None
     c = _conn()
     try:
-        # de-dup: don't hoard the same lesson every retrospective
-        if c.execute("SELECT 1 FROM skills WHERE lesson=?", (lesson,)).fetchone():
+        # de-dup: don't hoard a LIVE duplicate — but re-learning a STALE lesson is
+        # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row
+        row = c.execute("SELECT id, stale FROM skills WHERE lesson=?", (lesson,)).fetchone()
+        if row:
+            sid, stale = row
+            if stale:
+                c.execute("UPDATE skills SET stale=0, turn=?, ts=? WHERE id=?",
+                          (turn, time.time(), sid))
+                c.commit()
+                return sid
             return None
         cur = c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
                         (turn, lesson, source, trigger, time.time()))
@@ -512,7 +520,8 @@ def skills_top(limit: int = 5) -> list[dict]:
     c = _conn()
     try:
         rows = c.execute("SELECT id, turn, lesson, source, trigger, ts FROM skills "
-                         "WHERE stale=0 ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                         "WHERE stale=0 ORDER BY COALESCE(ts, 0) DESC, id DESC LIMIT ?",
+                         (limit,)).fetchall()
         return [{"id": i, "turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
                 for i, t, l, s, tr, ts in rows]
     finally:

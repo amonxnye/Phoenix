@@ -235,17 +235,16 @@ TRADE_RATE = 5           # market rate: food per 1 gold
 
 
 def trade_surplus() -> tuple[int, int]:
-    """Article IV.5 — a gate may pause the Age, never the settlement. Instead of
-    letting all over-cap food rot, the market converts a slice of the overflow into
-    gold each turn (10% of overflow, 5 food → 1 gold). Returns (food_sold, gold_got)."""
+    """Article IV.5 — a gate may pause the Age, never the settlement. The sink runs
+    LAST in the preference order (build → repair → sell — selling at 5:1 is the worst
+    deal except rotting at ∞:1) and is unbounded: the WHOLE remaining overflow sells,
+    so spoilage only ever eats the sub-trade remainder. Returns (food_sold, gold_got)."""
     w = world()
     cap = food_cap(w)
     over = w["food"] - cap
-    if over <= 0:
+    if over < TRADE_RATE:
         return 0, 0
-    amount = (over // 10) // TRADE_RATE * TRADE_RATE
-    if amount < TRADE_RATE:
-        return 0, 0
+    amount = over // TRADE_RATE * TRADE_RATE
     gold = amount // TRADE_RATE
     _world_add("food", -amount)
     _world_add("gold", gold)

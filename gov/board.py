@@ -98,10 +98,12 @@ def vote(proposal: str, ctx: dict) -> dict:
     else:
         growth, g_why = False, f"vision flat ({delta:+d}%) with a full fleet — more of the same won't move it"
 
-    # Ledger: cash. Can we afford this one action, right now?
+    # Ledger: cash. Can we afford this one action, right now? The rationale always
+    # carries the live numbers — a reason that never varies is a label, not a reason.
     ledger = bool(ctx.get("affordable"))
-    l_why = ("affordable within the cap" if ledger
-             else f"cannot afford it: {spent:,} spent against cap {cap:,}")
+    committed = round(100 * spent / cap) if cap else 100
+    l_why = (f"affordable — {spent:,}/{cap:,} committed ({committed}%)" if ledger
+             else f"cannot afford it — {spent:,}/{cap:,} committed ({committed}%)")
 
     ballots = {"Prudence": prudence, "Growth": growth, "Ledger": ledger}
     reasons = {"Prudence": p_why, "Growth": g_why, "Ledger": l_why}

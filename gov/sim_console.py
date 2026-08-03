@@ -208,6 +208,17 @@ def _fleet_views(views=None):
     return [u for u in views if u.unit_id in live]
 
 
+def _agent_health(ratio: float, efficiency: float, status: str) -> int:
+    """Health is NOT just remaining budget (that's utilisation's mirror — the
+    telemetry proved 42,993 identical rows). It composes budget headroom (60%),
+    productivity (40%, efficiency = contribution per 1k compute, saturating at 25),
+    and an activity penalty for sitting idle."""
+    h = 0.6 * (100 * (1 - min(1.0, ratio))) + 0.4 * min(100.0, efficiency * 4)
+    if status == "idle":
+        h -= 15
+    return max(0, round(h))
+
+
 def _progress_delta(window: int = 25) -> int | None:
     """Vision points moved over the last `window` turns — Growth's evidence."""
     hist = _S.get("progress_hist") or []
@@ -496,7 +507,13 @@ def _governor_report():
     score -= min(3, spoiled // 5_000)                        # rot is waste (I.2)
     score -= min(3, failed // 5)                             # dead turns are waste
     if delta <= 0:
-        score = min(score, 3)
+        # a gradient inside the failure band: a correctly-diagnosed, clean stall
+        # scores 3; thrashing (waste, heavy rot, undiagnosed dead turns) sinks lower
+        band = 3
+        band -= 1 if d["waste"] > 3 else 0
+        band -= 1 if spoiled > 10_000 else 0
+        band -= 1 if failed > 10 and not _S.get("stall") else 0   # dead + undiagnosed
+        score = min(score, max(0, band))
     score = max(0, score)
     if score >= 7 and spend_pct >= 60:
         old = G.TOKEN_CAP
@@ -745,7 +762,8 @@ def _one_turn():
     _S["last_spent"] = spent_now
     _S["_acted"] = False                          # set by gather/build/spawn/repair/trade
     staff_key = f"staff|{G.TOKEN_CAP}"            # cap value in the key → auto-unmute on change
-    while len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"]):
+    while (not _S["goal_met"]                     # stewardship: hold, don't grow
+           and len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"])):
         if _S.setdefault("breaker", {}).get(staff_key, 0) >= 3:
             break                                 # muted after 3 identical blocks (III.1)
         ok, reason = G.may_spawn(views)
@@ -817,7 +835,7 @@ def _one_turn():
                 anchor.counter_add("lifetime_spend", u.tokens)
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
-            if len(_S["villagers"]) <= 2 and not G.may_spawn(views)[0]:
+            if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
                 if _breaker(f"floor|{G.TOKEN_CAP}",
                             "the fleet is at its floor and replacements are blocked "
                             "by the cap — reaping suspended (Article II.5); raise the "
@@ -959,6 +977,9 @@ def _one_turn():
                                      "spend it or advance the age")
         _S["spoil_since_report"] = _S.get("spoil_since_report", 0) + loss
         _S["last_spoil_loss"] = loss
+        # the LESSON pays net of spoilage: rot debits food's learned yield, so the
+        # anchor stops recommending the resource it is simultaneously losing
+        anchor.observe_yield("food", -loss)
 
     # Age development: exponential growth (each age costs 100x the one before), and the
     # herald only goes to the human gate once the BOARD judges the treasury ready —
@@ -1022,6 +1043,25 @@ def _one_turn():
             _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
         _S["stall"] = None
 
+    # IV.4 timeout: a herald that has waited 50 turns STANDS DOWN — logged as a
+    # timeout, never as an approval or a refusal. The board re-dispatches while the
+    # treasury still allows, so the human gets fresh windows instead of one eternal one.
+    gate_wait = t - _S.get("gate_since", t)
+    if gate_wait >= 50:
+        for u in _by_uid().values():
+            if u.pending and u.pending.get("reversible") is False:
+                sim.resume(_GRAPH, u.unit_id, "reject")
+                anchor.record(t, "gate", f"{u.unit_id} stood down by TIMEOUT after {gate_wait} "
+                                         "turns — taken by timeout, not decided by you")
+                anchor.career_add(u.unit_id, t, "gate",
+                                  f"stood down by timeout ({gate_wait} turns unanswered)")
+        if _S.get("herald_decision"):
+            anchor.decision_close(_S["herald_decision"],
+                                  outcome=f"timeout after {gate_wait} turns — no human decision")
+            _S["herald_decision"] = None
+        _S.pop("gate_since", None)
+        _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
+
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
     spent = G.spent(views)
@@ -1038,9 +1078,11 @@ def _one_turn():
             anchor.record(t, "board", f"proposes: {p['action']} — {p['why']}")
             _S["notified"].add(f"prop:{p['why']}")
 
-    if sc["goal_met"]:
+    if sc["goal_met"] and not _S["goal_met"]:     # the TRANSITION, once
         status = _by_uid()
         for uid in list(_S["villagers"]):
+            if len(_S["villagers"]) <= 2:
+                break                             # stewardship keeps a floor crew
             u = status.get(uid)
             if u and u.status in ("awaiting_approval", "idle"):
                 sim.resume(_GRAPH, uid, "dismiss")
@@ -1051,6 +1093,15 @@ def _one_turn():
                 anchor.counter_add("lifetime_spend", u.tokens)
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
+    if _S["goal_met"] and f"steward:{t // 25}" not in _S["notified"]:
+        # IV.4: the queued decision shows its running cost, on a different channel
+        # each cycle boundary — never a repeat into the void
+        _S["notified"].add(f"steward:{t // 25}")
+        anchor.record(t, "goal", "stewardship: vision met — holding operations; "
+                                 "awaiting YOUR next goal (see the strategy panel)")
+        anchor.msg_send("chief", "Chief Governor",
+                        f"The vision is met. A floor crew of {len(_S['villagers'])} stewards the "
+                        "settlement. Adopt the next goal on the console to resume growth.")
 
 
 def _health_sampler():
@@ -1070,8 +1121,9 @@ def _health_sampler():
                 if not r:
                     continue
                 ratio = u.tokens / (r["budget"] or 1)
+                eff = r["contribution"] / max(1, u.tokens / 1000)
                 rows.append({"gen": gen, "uid": u.unit_id, "turn": turn,
-                             "health": max(0, round(100 * (1 - min(1, ratio)))),
+                             "health": _agent_health(ratio, eff, u.status),
                              "utilisation": round(100 * min(1, ratio)),
                              "tokens": u.tokens, "contribution": r["contribution"],
                              "status": u.status})
@@ -1083,8 +1135,6 @@ def _health_sampler():
 def _drive():
     while True:
         time.sleep(TICK)
-        if _S["goal_met"]:
-            continue
         try:
             was_met = _S["goal_met"]
             with _LOCK:
@@ -1092,13 +1142,17 @@ def _drive():
             # Slow work — DeepSeek calls — happens OUTSIDE the lock, so /api/*
             # requests never queue behind the model (that starvation caused the
             # BrokenPipe floods: pollers hung up before the lock freed).
+            # Stewardship mode (IV.5): a met vision queues the DECISION with the
+            # human — it does not stop the settlement, and chatter goes quiet to
+            # save tokens while we hold.
             _fleet_speaks()
-            _internal_voices()
-            if _S["turn"] % 5 == 0:
+            if not _S["goal_met"]:
+                _internal_voices()
+            if _S["turn"] % 5 == 0 and not _S["goal_met"]:
                 _peer_chatter()                   # agents coordinating with each other
             if _S["turn"] > 0 and _S["turn"] % 25 == 0:
                 _governor_report()                # accountability upward: board scores it
-            if _S["turn"] % 6 == 0 and not _S["dev_proposal"]:
+            if _S["turn"] % 6 == 0 and not _S["dev_proposal"] and not _S["goal_met"]:
                 _propose_development()
             # Skill memory: distill lessons when a vision completes, and
             # periodically during long runs — future generations read them.
@@ -1130,18 +1184,19 @@ def _snapshot() -> dict:
             born = _S["born"].get(u.unit_id, _S["turn"])
             age_turns = max(1, _S["turn"] - born + 1)
             burn = u.tokens // age_turns                  # compute per turn
+            eff = r["contribution"] / max(1, u.tokens / 1000)
             agents.append({
                 "uid": u.unit_id, "role": r["role"], "tier": r["tier"],
                 "task": u.task, "node": u.node, "status": u.status,
                 "tokens": u.tokens, "budget": r["budget"], "contribution": r["contribution"],
-                "health": max(0, round(100 * (1 - min(1, ratio)))),
+                "health": _agent_health(ratio, eff, u.status),
                 "overwork": ratio > 0.8, "pending": bool(u.pending),
                 "order": _S["orders"].get(u.unit_id),
                 # token math / compute utilisation, per agent
                 "age_turns": age_turns,
                 "burn_per_turn": burn,
                 "utilisation_pct": round(100 * min(1, ratio)),
-                "efficiency": round(r["contribution"] / max(1, u.tokens / 1000), 2),
+                "efficiency": round(eff, 2),
                 "eta_turns": (max(0, budget - u.tokens) // burn) if burn else None,
             })
         errors_recent = sum(1 for e in anchor.event_log(300) if "[error]" in e)
