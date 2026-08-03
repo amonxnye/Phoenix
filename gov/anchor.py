@@ -208,6 +208,37 @@ def careers(limit_agents: int = 40) -> list[dict]:
     return out
 
 
+def metric_bump(key: str, n: int = 1) -> None:
+    """Platform analytics, permanent, by UTC day: pageviews, unique visitors, chats.
+    Same anchor, same ethos — a counter, not a tracking pixel."""
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS analytics("
+                  "day TEXT, key TEXT, value INT DEFAULT 0, PRIMARY KEY(day, key))")
+        c.execute("INSERT INTO analytics(day, key, value) VALUES(?,?,?) "
+                  "ON CONFLICT(day, key) DO UPDATE SET value=value+?", (day, key, n, n))
+        c.commit()
+    finally:
+        c.close()
+
+
+def metrics_summary() -> dict:
+    """{key: {'today': n, 'total': n}} across all recorded days."""
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    c = _conn()
+    try:
+        try:
+            rows = c.execute("SELECT key, SUM(value), "
+                             "SUM(CASE WHEN day=? THEN value ELSE 0 END) "
+                             "FROM analytics GROUP BY key", (day,)).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {k: {"total": tot or 0, "today": tod or 0} for k, tot, tod in rows}
+    finally:
+        c.close()
+
+
 def model_call_log(provider: str, model: str, purpose: str, latency_ms: int,
                    prompt_tokens: int, completion_tokens: int, ok: bool,
                    error: str = "") -> None:

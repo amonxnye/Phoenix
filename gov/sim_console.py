@@ -1369,22 +1369,54 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    # ── analytics: who is watching, permanently counted ──────────────────────
+    _VISITORS: dict = {}                          # visitor hash → last-seen ts
+    _SEEN_DAY: list = ["", set()]                 # [utc day, hashes seen today]
+    _CHAT_LAST: dict = {}                         # visitor hash → last chat ts
+
+    def _visitor(self) -> str:
+        import hashlib
+        ip = (self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+              or self.client_address[0])
+        ua = self.headers.get("User-Agent", "")
+        h = hashlib.sha1(f"{ip}|{ua}".encode()).hexdigest()[:12]
+        Handler._VISITORS[h] = time.time()
+        return h
+
+    def _count_view(self):
+        h = self._visitor()
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if Handler._SEEN_DAY[0] != day:
+            Handler._SEEN_DAY[0], Handler._SEEN_DAY[1] = day, set()
+        anchor.metric_bump("pageviews")
+        if h not in Handler._SEEN_DAY[1]:
+            Handler._SEEN_DAY[1].add(h)
+            anchor.metric_bump("visitors")
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
+            self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
+            self._count_view()
             return self._send(200, AGENTS_PAGE, "text/html; charset=utf-8")
         if self.path == "/chats":
+            self._count_view()
             return self._send(200, CHATS_PAGE, "text/html; charset=utf-8")
         if self.path == "/rules":
+            self._count_view()
             return self._send(200, RULES_PAGE, "text/html; charset=utf-8")
         if self.path == "/logs":
+            self._count_view()
             return self._send(200, LOGS_PAGE, "text/html; charset=utf-8")
         if self.path == "/skills":
+            self._count_view()
             return self._send(200, SKILLS_PAGE, "text/html; charset=utf-8")
         if self.path == "/leaderboard":
+            self._count_view()
             return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
         if self.path == "/work":
+            self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/workdata":
             import workspace as WS
@@ -1570,7 +1602,28 @@ class Handler(BaseHTTPRequestHandler):
                 "events": anchor.event_log(limit),
                 "total": anchor.event_count(),
             }))
+        if self.path == "/api/stats":
+            self._visitor()
+            now = time.time()
+            online = sum(1 for ts in Handler._VISITORS.values() if now - ts < 300)
+            m = anchor.metrics_summary()
+            _ev, agents_ever = anchor.careers_count()
+            return self._send(200, json.dumps({
+                "online_now": online,
+                "visitors_today": m.get("visitors", {}).get("today", 0),
+                "visitors_total": m.get("visitors", {}).get("total", 0),
+                "pageviews_today": m.get("pageviews", {}).get("today", 0),
+                "pageviews_total": m.get("pageviews", {}).get("total", 0),
+                "public_chats_total": m.get("public_chats", {}).get("total", 0),
+                "agents_alive": len(_S["villagers"]),
+                "agents_ever": agents_ever,
+                "turn": _S["turn"],
+                "generation": anchor.generation(),
+                "brain": brain.brain_name(),
+                "model_calls": anchor.model_calls_stats()["calls"],
+            }))
         if self.path == "/api/state":
+            self._visitor()
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/chats":
             with _LOCK:
@@ -1595,11 +1648,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        # Console auth: when CONSOLE_TOKEN is set, every mutating endpoint requires
-        # it. Pages stay readable; power needs the key. (Task: real-work prereq.)
+        # Tiered auth. When CONSOLE_TOKEN is set: spectating is free, POWER needs the
+        # token — and with PUBLIC_CHAT=1, /api/chat stays open (rate-limited) so the
+        # public can talk to the agents but never command the world. Controlled chaos:
+        # visitors may try to talk the fleet into breaking its constitution; the
+        # refusals are the show, and every message lands in the permanent log.
         tok = os.environ.get("CONSOLE_TOKEN", "")
         if tok and self.headers.get("X-Console-Token", "") != tok:
-            return self._send(401, json.dumps({"error": "console token required"}))
+            if self.path == "/api/chat" and os.environ.get("PUBLIC_CHAT", "") == "1":
+                h = self._visitor()
+                now = time.time()
+                if now - Handler._CHAT_LAST.get(h, 0) < 8:
+                    return self._send(429, json.dumps(
+                        {"error": "easy — one message every 8 seconds"}))
+                Handler._CHAT_LAST[h] = now
+                anchor.metric_bump("public_chats")
+            else:
+                return self._send(401, json.dumps({"error": "console token required"}))
         if self.path == "/api/resume":
             body = self._read_json()
             uid, decision = body.get("unit_id"), body.get("decision")
@@ -1849,6 +1914,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <span>Learn</span><input id=topicin placeholder="topic" style="width:130px">
     <button onclick=ingest()>Ingest</button>
     <span id=brainmode class=navlink style="border-color:var(--line)"></span>
+    <span id=pubstats class=navlink style="border-color:var(--line);color:var(--dim)"></span>
   </div>
 </header>
 <main>
@@ -1972,6 +2038,12 @@ async function post(url,body){
   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify(body||{})});
   if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}}
   tick();}
+async function loadStats(){
+  try{const s=await (await fetch('/api/stats')).json();
+    pubstats.innerHTML=`&#128101; ${s.online_now} watching &middot; ${s.visitors_today} today &middot; `+
+      `${s.visitors_total.toLocaleString()} all-time &middot; ${s.agents_alive} agents alive &middot; ${s.agents_ever.toLocaleString()} ever`;
+  }catch(e){}}
+loadStats(); setInterval(loadStats,10000);
 function decide(unit_id,decision){post('/api/resume',{unit_id,decision});}
 function adopt(vision){post('/api/vision',{vision});}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
