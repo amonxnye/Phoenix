@@ -275,5 +275,4 @@ not try to make agents smarter. It tries to make an organization of them account
 
 ## License
 
-Not yet chosen — pick one before public launch (MIT/Apache-2.0 are the usual
-candidates for this kind of project).
+[MIT](LICENSE).

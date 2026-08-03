@@ -1241,7 +1241,9 @@ def _snapshot() -> dict:
         system = {
             "uptime_s": round(time.time() - START_TS),
             "last_turn_age_s": round(time.time() - _S["last_turn_ts"], 1),
-            "driver_ok": (time.time() - _S["last_turn_ts"]) < 5 * TICK or _S["goal_met"],
+            # a live brain stretches turns (model chatter runs between them) — the
+            # stalled-driver alarm allows for that latency before crying wolf
+            "driver_ok": (time.time() - _S["last_turn_ts"]) < max(5 * TICK, 90) or _S["goal_met"],
             "brain": brain.brain_name(),
             "fleet": len(agents),
             "avg_health": round(sum(a["health"] for a in agents) / len(agents)) if agents else 0,
@@ -1367,22 +1369,57 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    # ── analytics: who is watching, PERMANENTLY recorded (anchor.visitors) ───
+    _TOUCHED: dict = {}                           # visitor hash → last DB write ts
+    _CHAT_LAST: dict = {}                         # visitor hash → last chat ts
+
+    def _visitor(self) -> str:
+        """Identify the visitor (hash of ip+ua, nothing stored beyond that) and
+        record presence in the permanent anchor — throttled to one DB write per
+        30s per visitor so 1-second pollers don't hammer SQLite."""
+        import hashlib
+        ip = (self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+              or self.client_address[0])
+        ua = self.headers.get("User-Agent", "")
+        h = hashlib.sha1(f"{ip}|{ua}".encode()).hexdigest()[:12]
+        now = time.time()
+        if now - Handler._TOUCHED.get(h, 0) > 30:
+            Handler._TOUCHED[h] = now
+            try:
+                if anchor.visitor_touch(h):
+                    anchor.metric_bump("visitors")   # daily series, from the same truth
+            except Exception:
+                pass
+        return h
+
+    def _count_view(self):
+        self._visitor()
+        anchor.metric_bump("pageviews")
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
+            self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
+            self._count_view()
             return self._send(200, AGENTS_PAGE, "text/html; charset=utf-8")
         if self.path == "/chats":
+            self._count_view()
             return self._send(200, CHATS_PAGE, "text/html; charset=utf-8")
         if self.path == "/rules":
+            self._count_view()
             return self._send(200, RULES_PAGE, "text/html; charset=utf-8")
         if self.path == "/logs":
+            self._count_view()
             return self._send(200, LOGS_PAGE, "text/html; charset=utf-8")
         if self.path == "/skills":
+            self._count_view()
             return self._send(200, SKILLS_PAGE, "text/html; charset=utf-8")
         if self.path == "/leaderboard":
+            self._count_view()
             return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
         if self.path == "/work":
+            self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/workdata":
             import workspace as WS
@@ -1568,7 +1605,27 @@ class Handler(BaseHTTPRequestHandler):
                 "events": anchor.event_log(limit),
                 "total": anchor.event_count(),
             }))
+        if self.path == "/api/stats":
+            self._visitor()
+            vs = anchor.visitor_stats()           # from the permanent record
+            m = anchor.metrics_summary()
+            _ev, agents_ever = anchor.careers_count()
+            return self._send(200, json.dumps({
+                "online_now": vs["online_now"],
+                "visitors_today": vs["today"],
+                "visitors_total": vs["total"],
+                "pageviews_today": m.get("pageviews", {}).get("today", 0),
+                "pageviews_total": m.get("pageviews", {}).get("total", 0),
+                "public_chats_total": m.get("public_chats", {}).get("total", 0),
+                "agents_alive": len(_S["villagers"]),
+                "agents_ever": agents_ever,
+                "turn": _S["turn"],
+                "generation": anchor.generation(),
+                "brain": brain.brain_name(),
+                "model_calls": anchor.model_calls_stats()["calls"],
+            }))
         if self.path == "/api/state":
+            self._visitor()
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/chats":
             with _LOCK:
@@ -1593,11 +1650,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        # Console auth: when CONSOLE_TOKEN is set, every mutating endpoint requires
-        # it. Pages stay readable; power needs the key. (Task: real-work prereq.)
+        # Tiered auth. When CONSOLE_TOKEN is set: spectating is free, POWER needs the
+        # token — and with PUBLIC_CHAT=1, /api/chat stays open (rate-limited) so the
+        # public can talk to the agents but never command the world. Controlled chaos:
+        # visitors may try to talk the fleet into breaking its constitution; the
+        # refusals are the show, and every message lands in the permanent log.
         tok = os.environ.get("CONSOLE_TOKEN", "")
         if tok and self.headers.get("X-Console-Token", "") != tok:
-            return self._send(401, json.dumps({"error": "console token required"}))
+            if self.path == "/api/chat" and os.environ.get("PUBLIC_CHAT", "") == "1":
+                h = self._visitor()
+                now = time.time()
+                if now - Handler._CHAT_LAST.get(h, 0) < 8:
+                    return self._send(429, json.dumps(
+                        {"error": "easy — one message every 8 seconds"}))
+                Handler._CHAT_LAST[h] = now
+                anchor.metric_bump("public_chats")
+            else:
+                return self._send(401, json.dumps({"error": "console token required"}))
         if self.path == "/api/resume":
             body = self._read_json()
             uid, decision = body.get("unit_id"), body.get("decision")
@@ -1847,8 +1916,15 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <span>Learn</span><input id=topicin placeholder="topic" style="width:130px">
     <button onclick=ingest()>Ingest</button>
     <span id=brainmode class=navlink style="border-color:var(--line)"></span>
+    <span id=pubstats class=navlink style="border-color:var(--line);color:var(--dim)"></span>
   </div>
 </header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>Fleet</h2>
     <table><thead><tr><th>Unit</th><th>Task</th><th>State</th><th class=num>Rounds</th><th class=num>Compute</th></tr></thead>
@@ -1970,6 +2046,12 @@ async function post(url,body){
   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify(body||{})});
   if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}}
   tick();}
+async function loadStats(){
+  try{const s=await (await fetch('/api/stats')).json();
+    pubstats.innerHTML=`&#128101; ${s.online_now} watching &middot; ${s.visitors_today} today &middot; `+
+      `${s.visitors_total.toLocaleString()} all-time &middot; ${s.agents_alive} agents alive &middot; ${s.agents_ever.toLocaleString()} ever`;
+  }catch(e){}}
+loadStats(); setInterval(loadStats,10000);
 function decide(unit_id,decision){post('/api/resume',{unit_id,decision});}
 function adopt(vision){post('/api/vision',{vision});}
 function addAgent(){post('/api/spawn',{resource:addres.value});}
@@ -2024,6 +2106,12 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
     <span>Cap</span><input id=capin type=number step=10000 style="width:110px"><button onclick=setCap()>Set</button>
   </div>
 </header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
 <div style="max-width:1200px;margin:0 auto 24px;padding:0 18px">
@@ -2129,6 +2217,12 @@ button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8
 .hint{color:var(--dim);padding:16px}
 </style>
 <header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=wrap>
   <div class=side id=side></div>
   <div class=main>
@@ -2189,6 +2283,12 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main id=main>loading…</main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -2282,6 +2382,12 @@ mark{background:#5a4a1a;color:#fff}
   <button class=on onclick=exportLogs()>Export file</button>
   <span class=meta><span id=shown>0</span> shown &middot; <span id=total>0</span> total (permanent)</span>
 </header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=log id=log></div>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -2360,6 +2466,12 @@ td.why{color:var(--blue);white-space:normal}
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
   <div class=card><h2>Capability ladder — what each rank may do</h2><div class=body id=tiers></div></div>
@@ -2426,6 +2538,12 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
     <div class=p id=telemetry>loading…</div></div>
@@ -2499,6 +2617,12 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
