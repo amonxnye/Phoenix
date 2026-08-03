@@ -1,92 +1,138 @@
 # Project Phoenix
 
-An operator control plane for LangGraph agent fleets — **The Governor** — plus the
-design record that produced it.
+**A governed organization of AI agents — with a constitution, an economy, a board of
+governors, permanent memory, and a human gate on everything irreversible.**
 
-> Everyone has a loop. The scarce things are an **oracle** that tells you whether the
-> loop is working and an **undo** that makes iterating safe. Coding agents work
-> because git and the test suite give them both.
+Phoenix started as one question: *how do you let AI agents run autonomously without
+burning tokens or trust?* The answer became a working civilization: agents that are
+born by quorum, earn promotion by measured contribution, learn lessons that outlive
+them, decay if unmaintained, stand down at budget, and stop at a human gate for
+anything that can't be undone — all observable down to the single decision, forever.
+
+The whole system reduces to two laws (see [`CONSTITUTION.md`](CONSTITUTION.md)):
+
+> **No autonomous action without an oracle or an undo.**
+> **No indefinite inaction without an escalation.**
+
+It runs in two worlds with the same machinery:
+
+- **The settlement** — an Age-of-Empires-style economy where villager agents gather,
+  build, trade and advance eras (each era costs 100× the last). The game state is the
+  oracle; the Age-up is the gate.
+- **The workspace** — real software development. The test suite is the oracle;
+  failing tests are the open tasks; a sandboxed worker agent patches code and is paid
+  only for tests it turns green. *(First live cycle: the model fixed 3 bugs, wrote 3
+  new functions, went 9/9, and earned a promotion.)*
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-python3 gov/verify.py          # → 16/16 checks passed
-python3 gov/console.py --seed  # → live operator console at http://127.0.0.1:8787
-python3 gov/verify_sim.py      # → 15/15 — the Age of Empires MVP
-python3 gov/sim_console.py --seed  # → live AoE console at http://127.0.0.1:8788
-python3 gov/director.py 14          # → the fleet drives a Vision to 100%, alive & learning
+
+# the acceptance suites (run in CI on every push)
+python3 gov/verify.py          # 16 checks — runtime, gate, governor, durability
+python3 gov/verify_sim.py      # 36 checks — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py     # 12 checks — the real-work oracle, sandbox, worker loop
+python3 gov/console_smoke.py   # headless smoke test of the console API
+
+# the live console
+python3 gov/sim_console.py --seed    # → http://127.0.0.1:8788
 ```
 
-Deploying the console (Railway): see [`DEPLOY.md`](DEPLOY.md). The console reads `$PORT`
-and binds `0.0.0.0`, and a `Procfile` is included, so it runs on Railway as-is.
-
-### MVP: the Governor over an Age of Empires economy
-
-Villagers gather food/wood/gold — reversible and cheap, so it runs free. Advancing to
-the next Age spends resources you can't get back — the irreversible action, so it stops
-at the human gate. The game state (the World) is the oracle: objective, instant, and
-resettable. The DeepSeek brain (`brain.py`) decides what to gather and when to advance;
-a rule-based policy runs with no key. To use DeepSeek: `pip install openai` and set
-`DEEPSEEK_API_KEY` in the environment (its API is OpenAI-compatible).
-
-No credentials, no network, no model calls — work nodes are deterministic so the
-control plane is testable on its own. The console is standard-library only (no web
-framework) and renders live from the checkpointer — the spend meter, the idle-villager
-alert, and a working approve/reject queue, no fixtures.
-
-## What's here
-
-| Path | What it is |
-|---|---|
-| `gov/runtime.py` | The agent runtime: a LangGraph graph whose irreversible step pauses for a human |
-| `gov/governor.py` | The control plane: a read view over the checkpointer + hard cap + idle detection |
-| `gov/verify.py` | 16 acceptance checks, including durability across a real process boundary |
-| `gov/console.py` | Live operator console (stdlib HTTP): fleet grid, spend meter, idle alert, approval queue |
-| `gov/console_smoke.py` | Headless smoke test of the console's HTTP layer (runs in CI) |
-| `gov/sim.py` | **MVP** — Age of Empires economy: villagers gather (reversible), advancing the Age is the irreversible gated action, the World is the oracle |
-| `gov/brain.py` | The agent brain: rule-based by default, DeepSeek when `DEEPSEEK_API_KEY` is set |
-| `gov/verify_sim.py` | 15 acceptance checks for the MVP, reusing `governor.py` unchanged |
-| `gov/sim_console.py` | Live AoE operator console: World meters, Age, idle alert, command queue, gated Age-up |
-| `gov/vision.py` | The organization's goal-setter — target, 0-100% progress, side-effect budget, value created |
-| `gov/anchor.py` | The knowledge base that grows — records decisions/outcomes, learns yields, feeds the next choice |
-| `gov/director.py` | The play loop — staffs, re-tasks, develops, advances toward the Vision, reaps agents when done |
-| `CONSTITUTION.md` | The rule book — the invariants the fleet obeys, each mapped to enforcing code |
-| `SRS-Project-Phoenix-v2.md` | The specification — requirements, 12 acceptance criteria, open questions, roadmap |
-| `GOVERNOR.md` | Build doc: the architectural bet, results, and rationale (narrative) |
-| `PROJECT-RECORD.md` | Session record: the eight insights and decisions behind the design |
-
-## The bet
-
-The LangGraph checkpointer database *is* the backend. Every unit's state, position,
-and pending interrupt already persist there, so there is no separate state store,
-event bus, or polling daemon — the governor is a read view over
-`checkpointer.list(None)` + `graph.get_state()`, plus a resume call. That is why the
-control plane is ~106 lines.
-
-Swap SQLite for Postgres by changing one function (`runtime.connect`) — the
-checkpointer interface is identical.
-
-## Observability
-
-State observability is free — `governor.units()` reads every agent's status, position,
-and pending decision from the checkpointer, and the anchor + event log record every
-decision. For deep traces (per-node timings, tokens, inputs/outputs), point LangGraph at
-**LangSmith** — no code changes, just environment variables:
+No key needed — a rule-based brain runs everything. To bring the organization to
+life with a model, set ONE provider (all calls flow through a single instrumented
+seam, `gov/brain.py`):
 
 ```bash
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY=ls-...      # from smith.langchain.com
-export LANGCHAIN_PROJECT=phoenix     # optional
+export DEEPSEEK_API_KEY=sk-...                     # simplest: DeepSeek
+# or any OpenAI-compatible endpoint / native Anthropic:
+export BRAIN_BASE_URL=https://api.deepseek.com     # or api.openai.com, api.anthropic.com, ...
+export BRAIN_API_KEY=...
+export BRAIN_MODEL=deepseek-v4-flash
 ```
 
-LangGraph then traces every node and interrupt automatically. The rule (Constitution
-Article VII): the tracer *watches*, the governor *acts* — keep them separate.
+Optional: `GOV_DATA_DIR=/data` (durable volume — memory survives redeploys),
+`CONSOLE_TOKEN=...` (locks every mutating endpoint). Deploying: [`DEPLOY.md`](DEPLOY.md)
+(a `Procfile` is included; the console reads `$PORT` and binds `0.0.0.0`).
+
+## The console
+
+| Page | What you govern there |
+|---|---|
+| `/` | The settlement: vision & progress, world meters, fleet, **balance sheet** (assets, disrepair liability, net worth), command queue (the human gate), ranked development tree, board proposals, permanent event log |
+| `/agents` | System health (stalls, burn, lifetime compute, value per 1k), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent that ever lived, permanently, with downloadable careers & 5-second health telemetry |
+| `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, and a button that sends a live agent to fix the code — oracle-scored, auto-reverting, unable to edit the tests |
+| `/chats` | Talk to any agent, the board, or the Chief Governor; watch them debate each other (votes are narrated with live evidence: runway, momentum, affordability) |
+| `/skills` | Lessons learned across generations, the capability ladder, and every decision's **reasoning with a "trace lineage" link** — why() back to its inputs, credit() forward to its outcomes |
+| `/leaderboard` | The **Phoenix Eval**: same world, different frontier models, scorecards side by side + real per-call token/latency telemetry |
+| `/logs` | The permanent log — filter by kind, text, and UTC time window; export as txt/csv/jsonl |
+| `/rules` | The constitution (editable — only the human adopts), world rules, era prices, tiers |
+
+## How it's governed
+
+- **The Vision** (Article I) — one measurable goal; the board proposes, only the human
+  adopts; a met vision is consumed and the world holds in stewardship, never frozen.
+- **The economy** (Article II) — agents enlist at villager tier and climb by measured
+  contribution; budgets end careers *before* the overshooting turn; no zombies, no
+  immortals, and never reaped to empty.
+- **Limits** (Article III) — a compute cap on the living fleet with a single writer;
+  blocked actions escalate **once**, naming the blocking value, then mute until it changes.
+- **The gate** (Article IV) — irreversible actions stop for the human, priced by the
+  cost of waiting; unanswered requests re-route, time out ("taken by timeout", never
+  "approved"), and never pause the reversible work around them.
+- **The sandbox** (Article V) — workers run with no credentials, no network, and
+  cannot edit the tests that judge them.
+- **Memory** (Article VI) — the anchor never forgets and never hoards: lessons dedup,
+  expire, revive on re-confirmation, and pay their authors.
+- **Observability** (Article VII) — every decision carries its why, its inputs, its
+  authorizer, and its measured outcome (`decisions` + `caused_by`); invariants are
+  asserted in code, not just visible.
+- **The board** (Article VIII) — three governors with disjoint evidence and a duty to
+  escalate what they block; the Governor is scored on **vision points per compute** —
+  zero movement caps the score at 3/10, good work under a binding cap earns +5%.
+- **Liveness** (Article IX) — a turn where nothing happens is a failed turn; ten in a
+  row is a stall that names its binding constraint and escalates. Inaction is an
+  action, and it is gated too.
+
+## The Phoenix Eval
+
+Because the rules are code and the brain is one env var, Phoenix doubles as a
+benchmark no leaderboard covers: **can your model run an organisation?**
+
+```bash
+python3 gov/evalrun.py --turns 120 --fresh --label my-model
+```
+
+Headless, reproducible, identical auto-human policy for every model; scorecards
+(economy, governance discipline, stalls, learning, real token cost) stored
+permanently and ranked at `/leaderboard`. Design: [`EVAL.md`](EVAL.md).
+
+## The documents
+
+| File | What it is |
+|---|---|
+| [`CONSTITUTION.md`](CONSTITUTION.md) | The nine articles, each naming the code that enforces it |
+| [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) | The specification and roadmap |
+| [`EVAL.md`](EVAL.md) | The multi-provider benchmark design |
+| [`REALWORK.md`](REALWORK.md) | The game→software translation table and build order |
+| [`LINEAGE.md`](LINEAGE.md) | The decision-provenance engine (why/credit walks) |
+| [`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) | Decay, balance sheet, threats & defence design |
+| [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md) | The build narrative and session record |
+
+## The architecture bet
+
+The LangGraph checkpointer database **is** the backend — every agent's state and
+pending interrupt already persist there, so the governor is a read view plus a resume
+call, and the whole console is standard-library HTTP with no framework. Auditability
+is a feature: the code that governs the agents is small enough to read in one
+sitting, and the constitution demands it stays that way. Two databases: the game
+world (resettable) and the anchor (permanent — knowledge, skills, careers, lineage,
+telemetry survive every reset and redeploy).
 
 ## Status
 
-`gov/` is a working spike: **AC-1..12 pass** — `gov/verify.py` (16 checks) covers the
-runtime, read layer, approval gate, and governor; `gov/console_smoke.py` covers the
-live console. The next increment is swapping the simulated work nodes for real agent
-work against a repo-with-tests (the domain that already owns the oracle). See the
-roadmap in the SRS.
+All four suites green in CI. The settlement runs live with a real model brain; the
+first real-work agent has shipped oracle-verified code and been promoted for it.
+Next: the merge gate (heralds carrying git diffs), the multi-model eval race, and
+raids & defence for the settlement. The roadmap lives in the SRS and the tracked
+tasks in the session record.
