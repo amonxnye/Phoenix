@@ -1241,7 +1241,9 @@ def _snapshot() -> dict:
         system = {
             "uptime_s": round(time.time() - START_TS),
             "last_turn_age_s": round(time.time() - _S["last_turn_ts"], 1),
-            "driver_ok": (time.time() - _S["last_turn_ts"]) < 5 * TICK or _S["goal_met"],
+            # a live brain stretches turns (model chatter runs between them) — the
+            # stalled-driver alarm allows for that latency before crying wolf
+            "driver_ok": (time.time() - _S["last_turn_ts"]) < max(5 * TICK, 90) or _S["goal_met"],
             "brain": brain.brain_name(),
             "fleet": len(agents),
             "avg_health": round(sum(a["health"] for a in agents) / len(agents)) if agents else 0,
