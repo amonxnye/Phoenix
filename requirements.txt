@@ -1,0 +1,6 @@
+# The Governor — runtime dependencies
+# Pinned to the versions the 16/16 acceptance suite is verified against.
+langgraph==1.2.10
+langgraph-checkpoint-sqlite==3.1.1
+# For the DeepSeek brain (OpenAI-compatible API). Only used when DEEPSEEK_API_KEY is set.
+openai>=1.30,<2
