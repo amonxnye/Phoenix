@@ -208,6 +208,50 @@ def careers(limit_agents: int = 40) -> list[dict]:
     return out
 
 
+def visitor_touch(h: str) -> bool:
+    """Record a visitor's presence PERMANENTLY (hash only — no ip, no cookie).
+    Returns True when this is the visitor's first appearance today (UTC)."""
+    import calendar
+    now = time.time()
+    g = time.gmtime(now)
+    day_start = calendar.timegm((g.tm_year, g.tm_mon, g.tm_mday, 0, 0, 0))
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS visitors("
+                  "hash TEXT PRIMARY KEY, first_seen REAL, last_seen REAL, "
+                  "views INT DEFAULT 0)")
+        row = c.execute("SELECT last_seen FROM visitors WHERE hash=?", (h,)).fetchone()
+        new_today = row is None or row[0] < day_start
+        c.execute("INSERT INTO visitors(hash, first_seen, last_seen, views) "
+                  "VALUES(?,?,?,1) ON CONFLICT(hash) DO UPDATE SET last_seen=?, "
+                  "views=views+1", (h, now, now, now))
+        c.commit()
+        return new_today
+    finally:
+        c.close()
+
+
+def visitor_stats() -> dict:
+    """Presence from the permanent record — survives every restart and redeploy."""
+    import calendar
+    now = time.time()
+    g = time.gmtime(now)
+    day_start = calendar.timegm((g.tm_year, g.tm_mon, g.tm_mday, 0, 0, 0))
+    c = _conn()
+    try:
+        try:
+            online = c.execute("SELECT COUNT(*) FROM visitors WHERE last_seen > ?",
+                               (now - 300,)).fetchone()[0]
+            today = c.execute("SELECT COUNT(*) FROM visitors WHERE last_seen >= ?",
+                              (day_start,)).fetchone()[0]
+            total = c.execute("SELECT COUNT(*) FROM visitors").fetchone()[0]
+        except sqlite3.OperationalError:
+            return {"online_now": 0, "today": 0, "total": 0}
+        return {"online_now": online, "today": today, "total": total}
+    finally:
+        c.close()
+
+
 def metric_bump(key: str, n: int = 1) -> None:
     """Platform analytics, permanent, by UTC day: pageviews, unique visitors, chats.
     Same anchor, same ethos — a counter, not a tracking pixel."""

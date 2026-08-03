@@ -1369,29 +1369,32 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    # ── analytics: who is watching, permanently counted ──────────────────────
-    _VISITORS: dict = {}                          # visitor hash → last-seen ts
-    _SEEN_DAY: list = ["", set()]                 # [utc day, hashes seen today]
+    # ── analytics: who is watching, PERMANENTLY recorded (anchor.visitors) ───
+    _TOUCHED: dict = {}                           # visitor hash → last DB write ts
     _CHAT_LAST: dict = {}                         # visitor hash → last chat ts
 
     def _visitor(self) -> str:
+        """Identify the visitor (hash of ip+ua, nothing stored beyond that) and
+        record presence in the permanent anchor — throttled to one DB write per
+        30s per visitor so 1-second pollers don't hammer SQLite."""
         import hashlib
         ip = (self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
               or self.client_address[0])
         ua = self.headers.get("User-Agent", "")
         h = hashlib.sha1(f"{ip}|{ua}".encode()).hexdigest()[:12]
-        Handler._VISITORS[h] = time.time()
+        now = time.time()
+        if now - Handler._TOUCHED.get(h, 0) > 30:
+            Handler._TOUCHED[h] = now
+            try:
+                if anchor.visitor_touch(h):
+                    anchor.metric_bump("visitors")   # daily series, from the same truth
+            except Exception:
+                pass
         return h
 
     def _count_view(self):
-        h = self._visitor()
-        day = time.strftime("%Y-%m-%d", time.gmtime())
-        if Handler._SEEN_DAY[0] != day:
-            Handler._SEEN_DAY[0], Handler._SEEN_DAY[1] = day, set()
+        self._visitor()
         anchor.metric_bump("pageviews")
-        if h not in Handler._SEEN_DAY[1]:
-            Handler._SEEN_DAY[1].add(h)
-            anchor.metric_bump("visitors")
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
@@ -1604,14 +1607,13 @@ class Handler(BaseHTTPRequestHandler):
             }))
         if self.path == "/api/stats":
             self._visitor()
-            now = time.time()
-            online = sum(1 for ts in Handler._VISITORS.values() if now - ts < 300)
+            vs = anchor.visitor_stats()           # from the permanent record
             m = anchor.metrics_summary()
             _ev, agents_ever = anchor.careers_count()
             return self._send(200, json.dumps({
-                "online_now": online,
-                "visitors_today": m.get("visitors", {}).get("today", 0),
-                "visitors_total": m.get("visitors", {}).get("total", 0),
+                "online_now": vs["online_now"],
+                "visitors_today": vs["today"],
+                "visitors_total": vs["total"],
                 "pageviews_today": m.get("pageviews", {}).get("today", 0),
                 "pageviews_total": m.get("pageviews", {}).get("total", 0),
                 "public_chats_total": m.get("public_chats", {}).get("total", 0),
