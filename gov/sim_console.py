@@ -36,6 +36,9 @@ import vision as V
 # - idle threshold 2×TICK: "idle" now means genuinely stale, not "since last tick".
 G.TOKEN_CAP = 1_000_000
 TICK = 3.0
+# Article IV.7 — tacit consent: a decision queued for the human this long goes back
+# to the Board for a final vote; quorum yes proceeds AS IF approved, loudly logged.
+TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
@@ -177,6 +180,7 @@ def _propose_development():
     bv = board.vote(f"development: {prop['name']}", _board_ctx(True))
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
+    prop["born_ts"] = time.time()                 # IV.7: tacit consent clocks from here
     _S["dev_proposal"] = prop
     _narrate_vote(bv, prop.get("why", ""))
     # lineage: the proposal derives from ingested knowledge and the current lessons
@@ -324,10 +328,10 @@ def _target_villagers():
     return base
 
 
-def _adopt_vision(key: str):
-    """The human adopts a new Vision — a fresh mental update cascades to every agent.
+def _adopt_vision(key: str, actor: str = "operator"):
+    """A new Vision is adopted — a fresh mental update cascades to every agent.
     Article I.6: a met Vision is consumed; a vision identical to the standing one is
-    rejected, so success can't be re-won and re-briefs are never no-ops."""
+    rejected. Normally the human's power; IV.7 lets tacit consent exercise it."""
     if key not in V.VISIONS:
         return
     if key == _S["vision_key"]:
@@ -336,11 +340,13 @@ def _adopt_vision(key: str):
                       "choose a different goal")
         return
     _S["vision_key"] = key
+    _S["_vision_actor"] = actor
     anchor.config_set("vision_key", key)        # the adopted vision survives restarts
     _S["goal_met"] = False                      # re-open the drive toward the new goal
     for uid in _S["villagers"]:
         anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
-    anchor.record(_S["turn"], "vision-change", f"operator adopted vision → {V.get(key).name}")
+    anchor.record(_S["turn"], "vision-change",
+                  f"{_S.pop('_vision_actor', 'operator')} adopted vision → {V.get(key).name}")
 
 
 # ── operator controls (every action is logged so the Board & governor see it) ──
@@ -736,7 +742,8 @@ def _fleet_speaks():
                 anchor.msg_send("all", "Board",
                                 f"ESCALATION (IV.6): {u.unit_id} has waited {waited} turns at the "
                                 f"gate — {u.pending['action']}. The wait is costing "
-                                f"~{_S.get('last_spoil_loss', 0):,} food/turn in spoilage.")
+                                f"~{_S.get('last_spoil_loss', 0):,} food/turn in spoilage. At the "
+                                f"one-hour mark we proceed by tacit consent (IV.7).")
                 seen.add(f"gate2:{u.unit_id}")
         r = roster_by.get(u.unit_id)
         if r and r["budget"] and u.tokens / r["budget"] > 0.8 and f"ow:{u.unit_id}" not in seen:
@@ -1041,6 +1048,7 @@ def _one_turn():
             anchor.decision_close(did, gate_ev)
             _S["herald_decision"] = did           # the human's verdict closes it
             _S["gate_since"] = t                  # IV.4: the wait is priced from here
+            _S["gate_since_ts"] = time.time()     # IV.7: tacit consent clocks from here
 
     # Article IX — liveness: inaction is an action, and it is gated too. A turn with
     # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
@@ -1068,24 +1076,86 @@ def _one_turn():
             _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
         _S["stall"] = None
 
-    # IV.4 timeout: a herald that has waited 50 turns STANDS DOWN — logged as a
-    # timeout, never as an approval or a refusal. The board re-dispatches while the
-    # treasury still allows, so the human gets fresh windows instead of one eternal one.
-    gate_wait = t - _S.get("gate_since", t)
-    if gate_wait >= 50:
+    # Article IV.7 — TACIT CONSENT: a decision queued for the human for more than an
+    # hour goes back to the Board for a final vote with live evidence. Quorum yes →
+    # the Governor proceeds as approved-by-tacit-consent, loudly logged and messaged;
+    # a blocked vote stands the request down. The human can decide any time before
+    # the hour, and every tacit action is unmistakably labelled — never silent.
+    now_ts = time.time()
+    if _S.get("gate_since_ts") and now_ts - _S["gate_since_ts"] > TACIT_CONSENT_S:
+        waited_m = int((now_ts - _S["gate_since_ts"]) / 60)
         for u in _by_uid().values():
             if u.pending and u.pending.get("reversible") is False:
-                sim.resume(_GRAPH, u.unit_id, "reject")
-                anchor.record(t, "gate", f"{u.unit_id} stood down by TIMEOUT after {gate_wait} "
-                                         "turns — taken by timeout, not decided by you")
-                anchor.career_add(u.unit_id, t, "gate",
-                                  f"stood down by timeout ({gate_wait} turns unanswered)")
-        if _S.get("herald_decision"):
-            anchor.decision_close(_S["herald_decision"],
-                                  outcome=f"timeout after {gate_wait} turns — no human decision")
-            _S["herald_decision"] = None
+                bv = board.vote(f"TACIT CONSENT: {u.pending.get('action', '')[:80]}",
+                                _board_ctx(True))
+                _narrate_vote(bv, f"human silent {waited_m} min — Article IV.7 final vote")
+                if bv["approved"]:
+                    sim.resume(_GRAPH, u.unit_id, "approve")
+                    anchor.record(t, "gate", f"{u.unit_id} APPROVED BY TACIT CONSENT — human "
+                                             f"silent {waited_m} min, board {bv['tally']} "
+                                             f"(Article IV.7): {u.pending.get('action', '')[:100]}")
+                    anchor.career_add(u.unit_id, t, "gate",
+                                      f"approved by tacit consent after {waited_m} min "
+                                      f"(board {bv['tally']}, Article IV.7)")
+                    anchor.msg_send("chief", "Chief Governor",
+                                    f"You were silent for {waited_m} minutes, so under Article "
+                                    f"IV.7 the board voted {bv['tally']} and we proceeded: "
+                                    f"{u.pending.get('action', '')[:120]}")
+                    if _S.get("herald_decision"):
+                        anchor.decision_close(_S["herald_decision"],
+                                              outcome=f"tacit consent after {waited_m} min — "
+                                                      f"board {bv['tally']}, age now "
+                                                      f"{sim.world()['age']}")
+                else:
+                    sim.resume(_GRAPH, u.unit_id, "reject")
+                    anchor.record(t, "gate", f"{u.unit_id} stood down — tacit-consent vote "
+                                             f"BLOCKED {bv['tally']} after {waited_m} min")
+                    anchor.career_add(u.unit_id, t, "gate",
+                                      f"stood down: tacit-consent vote blocked {bv['tally']}")
+                    if _S.get("herald_decision"):
+                        anchor.decision_close(_S["herald_decision"],
+                                              outcome=f"tacit-consent vote blocked {bv['tally']}")
+        _S["herald_decision"] = None
         _S.pop("gate_since", None)
+        _S.pop("gate_since_ts", None)
         _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
+
+    # IV.7 for a board-approved development proposal awaiting the human
+    prop = _S.get("dev_proposal")
+    if (prop and prop.get("born_ts") and prop.get("board_approved")
+            and now_ts - prop["born_ts"] > TACIT_CONSENT_S):
+        waited_m = int((now_ts - prop["born_ts"]) / 60)
+        ok2, msg2 = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
+                                prop.get("value", 0), prop.get("resource", ""),
+                                prop.get("rank", 2), prop.get("source", ""))
+        dev_ev = anchor.record(t, "development",
+                               f"'{prop['name']}' ADOPTED BY TACIT CONSENT — human silent "
+                               f"{waited_m} min, board had approved {prop.get('board', '')} "
+                               f"(Article IV.7)" if ok2 else f"tacit adopt failed: {msg2}")
+        if prop.get("did"):
+            anchor.decision_close(prop["did"], dev_ev,
+                                  outcome=f"tacit consent after {waited_m} min"
+                                  if ok2 else f"tacit adopt failed: {msg2}")
+        anchor.msg_send("chief", "Chief Governor",
+                        f"Under Article IV.7 (you were silent {waited_m} min) we adopted the "
+                        f"board-approved development '{prop['name']}'.")
+        _S["dev_proposal"] = None
+
+    # IV.7 for the next Vision after a goal is met: silence delegates the adoption
+    # of the BOARD'S proposed vision (never an invented one)
+    if (_S["goal_met"] and _S.get("goal_met_ts")
+            and now_ts - _S["goal_met_ts"] > TACIT_CONSENT_S):
+        waited_m = int((now_ts - _S["goal_met_ts"]) / 60)
+        nxt_key = V.MORE_AMBITIOUS.get(_S["vision_key"])
+        if nxt_key:
+            anchor.record(t, "vision-change",
+                          f"TACIT CONSENT (IV.7): human silent {waited_m} min after the vision "
+                          f"was met — adopting the board's proposal '{V.get(nxt_key).name}'")
+            anchor.msg_send("chief", "Chief Governor",
+                            f"The vision was met and you were silent {waited_m} min; under "
+                            f"Article IV.7 we adopted the board's proposal: {V.get(nxt_key).name}")
+            _adopt_vision(nxt_key, actor="tacit consent (board proposal)")
+        _S.pop("goal_met_ts", None)
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
@@ -1119,6 +1189,7 @@ def _one_turn():
                 _forget_thread(uid)
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
+        _S["goal_met_ts"] = time.time()           # IV.7: tacit consent clocks from here
     if _S["goal_met"] and f"steward:{t // 25}" not in _S["notified"]:
         # IV.4: the queued decision shows its running cost, on a different channel
         # each cycle boundary — never a repeat into the void
@@ -1264,6 +1335,9 @@ def _snapshot_build(now: float) -> dict:
             human_gate = (f"{gate_unit.unit_id}: {gate_unit.pending.get('action', '')} — "
                           f"waiting {waited} turns"
                           + (f", costing ~{cost:,} food/turn in rot" if cost else ""))
+            if _S.get("gate_since_ts"):
+                left = max(0, TACIT_CONSENT_S - (time.time() - _S["gate_since_ts"]))
+                human_gate += f" · tacit consent in {int(left // 60)}m (IV.7)"
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
@@ -1747,6 +1821,7 @@ class Handler(BaseHTTPRequestHandler):
                                 f"gate the moment we can pay.")
             if uid.startswith("herald"):
                 _S.pop("gate_since", None)        # the wait is over; stop pricing it
+                _S.pop("gate_since_ts", None)
                 _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
             if uid.startswith("herald") and _S.get("herald_decision"):
                 anchor.decision_close(_S["herald_decision"],
