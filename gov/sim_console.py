@@ -87,6 +87,10 @@ else:
     _cand = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
     _cand += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
     _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_cand)}
+    for _u in _threads.values():                  # an inherited gate gets its IV.7 clock
+        if _u.pending and _u.pending.get("reversible") is False:
+            _S["gate_since"] = _S["turn"]
+            _S["gate_since_ts"] = time.time()
     _S["villagers"] = []
     for _r in economy.roster():
         if not _r["agent"].startswith("vil-"):
