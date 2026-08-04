@@ -100,6 +100,7 @@ else:
                               "struck off at boot — thread could never work again")
             if _u:
                 anchor.counter_add("lifetime_spend", _u.tokens)
+            _forget_thread(_r["agent"])
     if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
         G.TOKEN_CAP = anchor.counter_get("token_cap")
     for _c in anchor.careers(200):                # rebuild birth turns for burn math
@@ -188,6 +189,19 @@ def _propose_development():
     anchor.record(_S["turn"], "proposal",
                   f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
                   f"— board {bv['tally']}, awaiting the human")
+
+
+def _forget_thread(uid: str) -> None:
+    """Drop a DEAD thread's checkpoint history. The permanent record of the agent —
+    career, lineage, telemetry — lives in the anchor; the checkpointer history of the
+    dead serves nothing and grew without bound (888 lifetime agents = a fat game DB
+    and the memory climb Railway's charts showed). Best-effort: skipped silently on
+    checkpointers without delete support."""
+    try:
+        if hasattr(_CP, "delete_thread"):
+            _CP.delete_thread(uid)
+    except Exception:
+        pass
 
 
 def _live_ids() -> list:
@@ -367,6 +381,7 @@ def _op_terminate(uid: str) -> None:
     anchor.career_add(uid, _S["turn"], "terminated", "by operator at the human gate")
     if u:
         anchor.counter_add("lifetime_spend", u.tokens)
+    _forget_thread(uid)
 
 
 def _op_order(uid: str, resource: str) -> bool:
@@ -841,6 +856,7 @@ def _one_turn():
                                                  "complete and could never work again")
             if u:
                 anchor.counter_add("lifetime_spend", u.tokens)
+            _forget_thread(uid)
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
             if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
@@ -869,6 +885,7 @@ def _one_turn():
                               f"Article II: budget {u.tokens:,}/{r['budget']:,} — retired "
                               f"BEFORE overshoot; rank {r['role']}, contribution {r['contribution']:,}")
             anchor.counter_add("lifetime_spend", u.tokens)   # burned forever, tracked forever
+            _forget_thread(uid)
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -1099,6 +1116,7 @@ def _one_turn():
                 anchor.record(t, "reap", f"{uid} retired — vision met")
                 anchor.career_add(uid, t, "retired", "vision met — honourable discharge")
                 anchor.counter_add("lifetime_spend", u.tokens)
+                _forget_thread(uid)
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
     if _S["goal_met"] and f"steward:{t // 25}" not in _S["notified"]:
