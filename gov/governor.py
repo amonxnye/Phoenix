@@ -29,9 +29,13 @@ def _thread_ids(checkpointer) -> list[str]:
     return list(seen)
 
 
-def units(graph, checkpointer) -> list[UnitView]:
+def units(graph, checkpointer, only=None) -> list[UnitView]:
+    """Read unit views. `only` narrows the read to the given thread ids — the live
+    console MUST use this: a full `checkpointer.list(None)` scan walks every thread
+    that ever existed and grows without bound (at ~700 lifetime agents it wedged the
+    server). Full scans are for boot recovery and offline tools."""
     out = []
-    for tid in _thread_ids(checkpointer):
+    for tid in (list(only) if only is not None else _thread_ids(checkpointer)):
         snap = graph.get_state({"configurable": {"thread_id": tid}})
         v = snap.values
         if not v:

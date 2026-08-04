@@ -74,16 +74,16 @@ else:
                  if r["agent"].startswith("vil-") and r["agent"].split("-")[1].isdigit()]
         _S["seq"] = max(_nums, default=0)
         anchor.config_set("seq", str(_S["seq"]))
-    if _S["heralds"] == 0:
-        _nums = [int(u.unit_id.split("-")[1]) for u in G.units(_GRAPH, _CP)
-                 if u.unit_id.startswith("herald-") and u.unit_id.split("-")[1].isdigit()]
-        _S["heralds"] = max(_nums, default=0)
-        anchor.config_set("heralds", str(_S["heralds"]))
+    # (the herald counter is persisted; no full-scan recovery — a scan of all history
+    # at boot is exactly the stall we're avoiding)
     anchor.CURRENT_TURN = _S["turn"]
     # Re-adopt only agents whose threads can still WORK. A `done` thread can never be
     # resumed — re-adopting it seats a zombie that blocks staffing and never gathers
-    # (the run-3 collapse). Unresumable roster entries are retired on the spot.
-    _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+    # (the run-3 collapse). Read ONLY the roster's candidates — a full checkpointer
+    # scan at boot walks every thread ever and stalls startup as history grows.
+    _cand = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
+    _cand += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
+    _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_cand)}
     _S["villagers"] = []
     for _r in economy.roster():
         if not _r["agent"].startswith("vil-"):
@@ -190,6 +190,14 @@ def _propose_development():
                   f"— board {bv['tally']}, awaiting the human")
 
 
+def _live_ids() -> list:
+    """Thread ids worth reading live: the enlisted fleet plus the last few heralds.
+    NEVER full-scan the checkpointer on a hot path — history only grows."""
+    ids = list(_S["villagers"])
+    ids += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
+    return ids
+
+
 def _new_vid() -> str:
     # monotonic id so a reaped agent's id is never reused (avoids resuming a dead
     # thread). Persisted, so a restart can't reset the counter and rebirth the dead.
@@ -286,7 +294,7 @@ def _binding_constraint() -> str:
 
 
 def _by_uid():
-    return {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+    return {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_live_ids())}
 
 
 def _vision():
@@ -1111,7 +1119,7 @@ def _health_sampler():
         time.sleep(5.0)
         try:
             with _LOCK:
-                views = G.units(_GRAPH, _CP)
+                views = G.units(_GRAPH, _CP, only=_live_ids())
                 roster_by = {r["agent"]: r for r in economy.roster()}
                 turn = _S["turn"]
             gen = anchor.generation()
@@ -1164,9 +1172,35 @@ def _drive():
             anchor.record(_S["turn"], "error", str(e)[:300])
 
 
+_SNAP_CACHE = {"ts": 0.0, "data": None}
+_SNAP_LOCK = threading.Lock()
+
+
 def _snapshot() -> dict:
+    # One computation serves every viewer for a second — N pollers used to mean N
+    # full snapshots per second, which is how popularity became an outage. Stale-
+    # while-revalidate: exactly one request rebuilds; everyone else gets the last
+    # snapshot instantly.
+    now = time.time()
+    if _SNAP_CACHE["data"] is not None and now - _SNAP_CACHE["ts"] < 1.0:
+        return _SNAP_CACHE["data"]
+    if not _SNAP_LOCK.acquire(blocking=False):
+        if _SNAP_CACHE["data"] is not None:
+            return _SNAP_CACHE["data"]
+        _SNAP_LOCK.acquire()                       # first-ever build: wait for it
+        try:
+            return _SNAP_CACHE["data"] or {}
+        finally:
+            _SNAP_LOCK.release()
+    try:
+        return _snapshot_build(now)
+    finally:
+        _SNAP_LOCK.release()
+
+
+def _snapshot_build(now: float) -> dict:
     with _LOCK:
-        views = G.units(_GRAPH, _CP)
+        views = G.units(_GRAPH, _CP, only=_live_ids())
         sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
         roster_by = {r["agent"]: r for r in economy.roster()}
         # spend = the LIVING fleet's outstanding compute (what the cap governs);
@@ -1266,7 +1300,7 @@ def _snapshot() -> dict:
             "failed_turns": _S.get("failed_turns", 0),
             "tick_s": TICK,
         }
-        return {
+        out = {
             "vision": {"name": _vision().name, **sc},
             "strategy": {
                 "current_key": _S["vision_key"], "current": _vision().name,
@@ -1299,6 +1333,8 @@ def _snapshot() -> dict:
             "resources": list(sim.RESOURCES),
             "turn": _S["turn"], "goal_met": _S["goal_met"],
         }
+    _SNAP_CACHE["data"], _SNAP_CACHE["ts"] = out, now
+    return out
 
 
 def _constitution_text() -> str:

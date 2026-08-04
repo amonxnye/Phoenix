@@ -669,18 +669,28 @@ def record(turn: int, kind: str, note: str, caused_by: int | None = None) -> int
             f.write(json.dumps({"turn": turn, "kind": kind, "note": note,
                                 "ts": round(time.time(), 2),
                                 "id": eid, "caused_by": caused_by}) + "\n")
+        global _EVENT_COUNT
+        if _EVENT_COUNT is not None:
+            _EVENT_COUNT += 1
     except OSError:
         pass
     return eid
 
 
 def event_log(limit: int = 200) -> list[str]:
-    """The permanent event log, newest first. Read from the append-only file so it
-    survives even if the game DB is reset."""
+    """The permanent event log, newest first. TAIL-read: seek near the end and parse
+    only what's needed — reading the whole multi-MB file per poller per second is
+    what wedged the live server at turn ~7,000."""
     try:
-        with open(EVENTS_PATH) as f:
-            lines = f.readlines()
-    except OSError:
+        with open(EVENTS_PATH, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(size, max(64_000, limit * 400))
+            f.seek(size - chunk)
+            lines = f.read().decode(errors="replace").splitlines()
+            if size > chunk and lines:
+                lines = lines[1:]                  # drop the partial first line
+    except (OSError, ValueError):
         return []
     out = []
     for ln in lines[-limit:]:
@@ -774,13 +784,20 @@ def external_count() -> int:
         c.close()
 
 
+_EVENT_COUNT: int | None = None                    # cached; record() keeps it fresh
+
+
 def event_count() -> int:
-    """Total events ever recorded in the permanent log."""
-    try:
-        with open(EVENTS_PATH) as f:
-            return sum(1 for _ in f)
-    except OSError:
-        return 0
+    """Total events ever recorded in the permanent log. Counted ONCE per process,
+    then maintained incrementally — never re-scanned per poll."""
+    global _EVENT_COUNT
+    if _EVENT_COUNT is None:
+        try:
+            with open(EVENTS_PATH, "rb") as f:
+                _EVENT_COUNT = sum(1 for _ in f)
+        except OSError:
+            _EVENT_COUNT = 0
+    return _EVENT_COUNT
 
 
 def observe_yield(resource: str, amount: int) -> None:
