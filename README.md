@@ -252,6 +252,12 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
+- [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
+      requests, stalls and tacit-consent countdowns to Slack/Discord/Telegram
+      (outbound-only, stdlib, no third-party relay in the approval path); later,
+      two-way approve/reject via our own token-gated API. Revisit the AG-UI /
+      Channels-SDK ecosystem when it matures — the *idea* is adopted, the hosted
+      middleman is not.
 - [ ] Merit decoupled from budget — agent quality measurable independently of survival
 - [ ] Disputed-knowledge flag — contradictory facts quarantined at write time
 - [ ] Raids & defence — adversarial pressure for the settlement ([`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md))
