@@ -153,7 +153,7 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
-| `LANGCHAIN_TRACING_V2` / `LANGCHAIN_API_KEY` | deep traces via LangSmith (Article VII) |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |
 
 Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console reads
 `$PORT` and binds `0.0.0.0`.
