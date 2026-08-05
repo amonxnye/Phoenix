@@ -276,7 +276,7 @@ not try to make agents smarter. It tries to make an organization of them account
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
 [`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
-[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`DEPLOY.md`](DEPLOY.md) ·
+[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 
 ## License
