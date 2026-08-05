@@ -35,7 +35,7 @@ import vision as V
 # - TICK 3s: the 2s pace saturated the process with model calls.
 # - idle threshold 2×TICK: "idle" now means genuinely stale, not "since last tick".
 G.TOKEN_CAP = 1_000_000
-TICK = 3.0
+TICK = float(os.environ.get("WORLD_TICK", "3"))
 # Article IV.7 — tacit consent: a decision queued for the human this long goes back
 # to the Board for a final vote; quorum yes proceeds AS IF approved, loudly logged.
 TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
@@ -798,9 +798,14 @@ def _one_turn():
     staff_key = f"staff|{G.TOKEN_CAP}"            # cap value in the key → auto-unmute on change
     while (not _S["goal_met"]                     # stewardship: hold, don't grow
            and len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"])):
-        if _S.setdefault("breaker", {}).get(staff_key, 0) >= 3:
-            break                                 # muted after 3 identical blocks (III.1)
         ok, reason = G.may_spawn(views)
+        muted = _S.setdefault("breaker", {}).get(staff_key, 0) >= 3
+        if muted and ok:
+            _S["breaker"].pop(staff_key, None)    # the blocker cleared → unmute NOW
+        elif muted and t % 10:
+            break                                 # probe sparsely while genuinely blocked
+        elif muted:
+            break
         if not ok:
             _breaker(staff_key, f"spawning is blocked by the compute cap ({reason}). "
                                 "Raising the cap or retiring agents unblocks it.")
@@ -906,11 +911,12 @@ def _one_turn():
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
-            did = anchor.reason_add(t, "director", f"{uid} → gather {res}", why,
-                                    derived_from=(["yield:" + res] if "learned yield" in why else []),
-                                    authorized_by=("human" if "standing order" in why else "policy"))
-            if _S.setdefault("last_res", {}).get(uid) != res:  # career notes changes, not every turn
-                _S["last_res"][uid] = res
+            did = None
+            if _S.setdefault("last_res", {}).get(uid) != res:  # a CHANGE is a decision;
+                _S["last_res"][uid] = res                      # repetition is not
+                did = anchor.reason_add(t, "director", f"{uid} → gather {res}", why,
+                                        derived_from=(["yield:" + res] if "learned yield" in why else []),
+                                        authorized_by=("human" if "standing order" in why else "policy"))
                 anchor.career_add(uid, t, "retask", f"gather {res} — {why}")
                 if "learned yield" in why:        # acting on stored wisdom pays
                     economy.credit(uid, 5)
@@ -931,7 +937,8 @@ def _one_turn():
             anchor.observe_yield(res, sim.effective_yield(res))
             gev = anchor.record(t, "gather",
                                 f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
-            anchor.decision_close(did, gev, outcome=f"+{got} {res}")     # measured result
+            if did:
+                anchor.decision_close(did, gev, outcome=f"+{got} {res}")  # measured result
             _S["_acted"] = True
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
@@ -1004,18 +1011,24 @@ def _one_turn():
     # part of the overflow into gold before the rest rots.
     sold, got_gold = sim.trade_surplus()
     if sold:
-        anchor.record(t, "trade", f"market sold {sold:,} surplus food for {got_gold:,} gold "
-                                  "(overflow converted instead of rotting)")
+        _S["trade_accum"] = [_S.get("trade_accum", [0, 0])[0] + sold,
+                             _S.get("trade_accum", [0, 0])[1] + got_gold]
         _S["_acted"] = True
     loss, fcap = sim.spoil_tick()
     if loss:
-        anchor.record(t, "spoilage", f"{loss} food rotted — stores over capacity {fcap:,}; "
-                                     "spend it or advance the age")
+        _S["spoil_accum"] = _S.get("spoil_accum", 0) + loss
         _S["spoil_since_report"] = _S.get("spoil_since_report", 0) + loss
         _S["last_spoil_loss"] = loss
-        # the LESSON pays net of spoilage: rot debits food's learned yield, so the
-        # anchor stops recommending the resource it is simultaneously losing
-        anchor.observe_yield("food", -loss)
+        anchor.observe_yield("food", -loss)       # lessons pay net of spoilage
+    if t % 5 == 0:                                # aggregate lines — data follows activity,
+        ta = _S.pop("trade_accum", None)          # but the log needn't be a metronome
+        if ta and ta[0]:
+            anchor.record(t, "trade", f"market sold {ta[0]:,} surplus food for {ta[1]:,} gold "
+                                      "over the last 5 turns (converted, not rotted)")
+        sp = _S.pop("spoil_accum", 0)
+        if sp:
+            anchor.record(t, "spoilage", f"{sp:,} food rotted over the last 5 turns — stores "
+                                         f"over capacity {fcap:,}; spend it or advance the age")
 
     # Age development: exponential growth (each age costs 100x the one before), and the
     # herald only goes to the human gate once the BOARD judges the treasury ready —
@@ -1164,9 +1177,10 @@ def _one_turn():
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
     spent = G.spent(views)
-    anchor.record(t, "governor",
-                  f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
-                  f"cap {'OK' if spent < G.TOKEN_CAP else 'REACHED'}")
+    if t % 5 == 0 or spent >= G.TOKEN_CAP:        # a heartbeat, not a metronome
+        anchor.record(t, "governor",
+                      f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
+                      f"cap {'OK' if spent < G.TOKEN_CAP else 'REACHED'}")
 
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     spend_ratio = spent / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
@@ -1206,10 +1220,19 @@ def _one_turn():
 
 
 def _health_sampler():
-    """Every 5 seconds, write one vitals sample per living agent into the PERMANENT
-    health table — the medical chart behind each career. Runs beside the driver."""
+    """Every 30 seconds, write one vitals sample per living agent into the PERMANENT
+    health table. Raw samples older than 48h are rolled into per-hour aggregates —
+    the record stays permanent, at sane resolution (the 5s firehose was ~70k
+    rows/day). Runs beside the driver."""
+    beat = 0
     while True:
-        time.sleep(5.0)
+        time.sleep(30.0)
+        beat += 1
+        if beat % 120 == 0:                       # ~hourly: roll up old raw samples
+            try:
+                anchor.health_rollup()
+            except Exception:
+                pass
         try:
             with _LOCK:
                 views = G.units(_GRAPH, _CP, only=_live_ids())

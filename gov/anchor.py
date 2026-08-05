@@ -356,6 +356,36 @@ def eval_runs(limit: int = 50) -> list[dict]:
         c.close()
 
 
+def health_rollup(keep_raw_s: int = 48 * 3600) -> int:
+    """Telemetry has resolution tiers: raw samples stay for `keep_raw_s`, then are
+    rolled into per-agent-per-hour aggregates (min/avg/max health, avg load, samples)
+    and the raw rows are deleted. The permanent record keeps every hour of every
+    agent's life forever — at 1 row/agent/hour instead of 120. Returns rows rolled."""
+    cutoff = time.time() - keep_raw_s
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS health_hourly("
+                  "gen INT, uid TEXT, hour INT, samples INT, "
+                  "h_min INT, h_avg INT, h_max INT, util_avg INT, "
+                  "PRIMARY KEY(gen, uid, hour))")
+        rows = c.execute(
+            "SELECT gen, uid, CAST(ts/3600 AS INT), COUNT(*), MIN(health), "
+            "ROUND(AVG(health)), MAX(health), ROUND(AVG(utilisation)) "
+            "FROM health WHERE ts < ? GROUP BY gen, uid, CAST(ts/3600 AS INT)",
+            (cutoff,)).fetchall()
+        for r in rows:
+            c.execute("INSERT INTO health_hourly VALUES(?,?,?,?,?,?,?,?) "
+                      "ON CONFLICT(gen, uid, hour) DO UPDATE SET "
+                      "samples=samples+excluded.samples, "
+                      "h_min=MIN(h_min, excluded.h_min), h_avg=excluded.h_avg, "
+                      "h_max=MAX(h_max, excluded.h_max), util_avg=excluded.util_avg", r)
+        cur = c.execute("DELETE FROM health WHERE ts < ?", (cutoff,))
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
 def health_add_many(rows: list[dict]) -> None:
     """Batch-insert one telemetry sample per living agent. Called by the sampler."""
     if not rows:
