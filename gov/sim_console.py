@@ -906,6 +906,9 @@ def _one_turn():
     status = _by_uid()
     for uid in _S["villagers"]:
         u = status.get(uid)
+        if _S["goal_met"] and t % 5:
+            break                                 # stewardship: maintain, don't grind —
+                                                  # a met world needs no 24/7 harvest
         if u and u.status in ("awaiting_approval", "idle"):
             if _S["orders"].get(uid):
                 res, why = _S["orders"][uid], "operator standing order"
@@ -1233,6 +1236,24 @@ def _health_sampler():
                 anchor.health_rollup()
             except Exception:
                 pass
+        # WATCHDOG: if no turn has completed for 5 minutes, the driver is dead or
+        # wedged. Dump every thread's stack to the data dir (so the next boot can
+        # tell us where), record it, and exit — the platform restarts us clean.
+        try:
+            stale = time.time() - _S.get("last_turn_ts", time.time())
+            if stale > max(20 * TICK, 300):
+                import faulthandler
+                dump_path = os.path.join(os.path.dirname(anchor.EVENTS_PATH),
+                                         "driver-wedge-stacks.txt")
+                with open(dump_path, "w") as fh:
+                    fh.write(f"driver wedged: no turn for {stale:.0f}s at "
+                             f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC\n")
+                    faulthandler.dump_traceback(file=fh)
+                anchor.record(_S["turn"], "error",
+                              f"WATCHDOG: driver wedged {stale:.0f}s — stacks dumped, restarting")
+                os._exit(1)
+        except Exception:
+            pass
         try:
             with _LOCK:
                 views = G.units(_GRAPH, _CP, only=_live_ids())
@@ -1258,8 +1279,9 @@ def _health_sampler():
 
 def _drive():
     while True:
-        time.sleep(TICK)
         try:
+            time.sleep(TICK)
+            _S["driver_beat"] = time.time()       # the watchdog reads this pulse
             was_met = _S["goal_met"]
             with _LOCK:
                 _one_turn()                       # fast game mechanics only
@@ -1285,7 +1307,12 @@ def _drive():
             elif _S["turn"] > 0 and _S["turn"] % 30 == 0:
                 _run_retrospective("periodic")
         except Exception as e:                    # never let the loop die silently
-            anchor.record(_S["turn"], "error", str(e)[:300])
+            import traceback
+            traceback.print_exc()
+            try:
+                anchor.record(_S["turn"], "error", str(e)[:300])
+            except Exception:
+                pass                              # even a broken anchor can't kill the loop
 
 
 _SNAP_CACHE = {"ts": 0.0, "data": None}
