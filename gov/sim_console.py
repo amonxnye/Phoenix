@@ -42,6 +42,36 @@ TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
+def _build_version() -> dict:
+    """The running build's commit — so a stale deployment is self-diagnosing. Prefers a
+    deploy-time env var (platforms set one of these), else reads .git, else 'unknown'."""
+    for k in ("PHOENIX_BUILD", "SOURCE_VERSION", "RENDER_GIT_COMMIT",
+              "HEROKU_SLUG_COMMIT", "GIT_COMMIT", "GIT_SHA"):
+        v = os.environ.get(k, "").strip()
+        if v:
+            return {"sha": v[:12], "source": k}
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        head = open(os.path.join(root, ".git", "HEAD")).read().strip()
+        if head.startswith("ref:"):
+            ref = head[5:].strip()
+            p = os.path.join(root, ".git", ref)
+            if os.path.exists(p):
+                return {"sha": open(p).read().strip()[:12], "source": "git"}
+            pr = os.path.join(root, ".git", "packed-refs")
+            if os.path.exists(pr):
+                for line in open(pr):
+                    if line.strip().endswith(ref):
+                        return {"sha": line.split()[0][:12], "source": "git-packed"}
+        else:
+            return {"sha": head[:12], "source": "git-detached"}
+    except OSError:
+        pass
+    return {"sha": "unknown", "source": "none"}
+
+
+BUILD = _build_version()
+
 _LOCK = threading.Lock()
 _FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
@@ -1645,6 +1675,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/audit", "/start"):
             self._count_view()
             return self._send(200, AUDIT_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/version":
+            try:
+                import range as _R
+                node_ok = _R.NodeRange.available
+            except Exception:
+                node_ok = False
+            return self._send(200, json.dumps(
+                {"sha": BUILD["sha"], "source": BUILD["source"], "node_range": node_ok}))
         if self.path == "/api/watchdata":
             import sentinel as SN
             SN.scan()                            # correlate before reading
@@ -3306,11 +3344,15 @@ tr.reprovable td{cursor:default}
   <div class=card id=vcard style="display:none"><h3>The proof</h3><div class=pad>
     <div id=vhead></div>
     <div id=verdict class=muted></div></div></div>
+  <div class=hint id=ver style="text-align:center;margin-top:8px">&nbsp;</div>
 </main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let PROVABLE=new Set(['traversal','rce']);
 function tok(){return localStorage.getItem('ctok')||''}
+(async()=>{ try{ const v=await (await fetch('/api/version')).json();
+  ver.innerHTML='build <b>'+esc(v.sha)+'</b> · node range '+(v.node_range?'up':'down')+' · <a href="/console">console</a>';
+}catch(e){} })();
 async function post(url,body){
   // always resolves to an object; failures become {error:...} so the UI never shows undefined
   let r;
