@@ -3312,10 +3312,15 @@ const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[
 let PROVABLE=new Set(['traversal','rce']);
 function tok(){return localStorage.getItem('ctok')||''}
 async function post(url,body){
-  let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})});
-  if(r.status===429){const j=await r.json().catch(()=>({error:'rate limited'}));scanmeta.innerHTML='<span class=no>'+esc(j.error)+'</span>';return null}
-  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}return null}
-  return r.json();
+  // always resolves to an object; failures become {error:...} so the UI never shows undefined
+  let r;
+  try{ r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})}); }
+  catch(e){ return {error:'network error: '+e.message}; }
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}return {error:'unauthorized'};}
+  let j=null;
+  try{ j=await r.json(); }catch(e){ return {error:'server returned a non-JSON response ('+r.status+')'}; }
+  if(!r.ok && j && !j.error) j={error:'request failed ('+r.status+')'};
+  return j||{error:'empty response ('+r.status+')'};
 }
 async function scanSample(){ return doScan({sample:true}); }
 async function scan(){
@@ -3327,11 +3332,15 @@ async function doScan(payload){
   scanbtn.disabled=true; scanmeta.innerHTML='<span class=spin></span> cloning &amp; scanning… (a fresh repo can take a minute)';
   const d=await post('/api/scan',payload);
   scanbtn.disabled=false;
-  if(!d){return}
   if(d.error){scanmeta.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
-  window._jobId=d.jobId;
+  if(typeof d.files_scanned!=='number'){
+    scanmeta.innerHTML='<span class=no>unexpected response — the app may be out of date; redeploy the branch and hard-refresh.</span>';
+    return;
+  }
+  window._jobId=d.jobId||'';
   if(d.supported) PROVABLE=new Set(Object.keys(d.supported));   // server-derived, not hardcoded
-  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files in <span class=loc>${esc(d.label||'')}</span> — <b>${d.total}</b> candidates`;
+  const label=d.label||payload.repoUrl||'the repo';
+  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files in <span class=loc>${esc(label)}</span> — <b>${d.total||0}</b> candidates`;
   const sevs=['critical','high','medium','low'];
   tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${d.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
     +Object.entries(d.by_class).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');

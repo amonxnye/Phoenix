@@ -66,7 +66,7 @@ RULES = [
      "why": "a filesystem read built from a joined/interpolated path may escape via .."},
     {"id": "py-open-join", "class": "traversal", "severity": "high",
      "langs": (".py",),
-     "pattern": r"open\s*\([^)]*(os\.path\.join|\+|f[\"'])", "needs_var": False,
+     "pattern": r"\bopen\s*\([^)]*(os\.path\.join|\+|f[\"'])", "needs_var": False,
      "why": "open() on a joined/f-string path may escape the intended directory"},
 
     # ── SQL injection ────────────────────────────────────────────────────────
