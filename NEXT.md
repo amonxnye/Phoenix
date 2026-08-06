@@ -74,6 +74,24 @@ One git worktree per agent so a team works in parallel without collisions; the d
 taken from the worktree, never the main checkout. Keeps the netns sandbox for the test
 run itself.
 
+## Step 5 — the fleet — **SHIPPED** (`gov/campaign.py`, CAMPAIGN.md)
+
+Not on the original list, because the original list assumed one agent per task. A
+campaign points many agents at ONE problem and keeps pushing:
+
+- a **champion commit** every round branches from, crowned only on strictly more
+  passing tests — the score is monotonic, so an experiment's downside is zero;
+- a **strategy ladder** so four agents try four ideas, not one idea four times, and
+  each is told what has already been rejected;
+- **escalation**: conservative and cool in round 1, stranger and hotter as rounds
+  fail — creativity as a response to evidence;
+- **staffing**: agents that spend their budget are reaped and successors enlisted, so
+  the organization outlives its agents;
+- stops on solved / dry / campaign budget, and parks the whole thing as ONE dossier.
+
+Proven by `verify_campaign.py` (37/37), including a campaign where every agent is
+ruinous on every round: the repository ends byte-for-byte unchanged.
+
 ## What is still missing
 
 - **A board pre-vote on each dossier.** The design calls for disjoint evidence (does

@@ -53,10 +53,15 @@ machinery runs against real software: that adapter is **already built**, and it 
 runs **unattended against a real git repository**:
 
 ```
-python3 gov/builder.py run --repo /path/to/repo --test-cmd "python -m pytest -q"
+python3 gov/builder.py  run --repo /path/to/repo --test-cmd "python -m pytest -q"
+python3 gov/campaign.py run --repo /path/to/repo --agents 4 --rounds 6
 python3 gov/builder.py gate              # branches waiting, with diffs and test deltas
 python3 gov/builder.py approve --id 1    # the one irreversible act, taken by you
 ```
+
+`builder` sends one agent at each failing test. `campaign` sends a **fleet** at one
+hard problem — different agents given genuinely different strategies, escalating as
+they get stuck, keeping a champion commit that only ever advances. See **CAMPAIGN.md**.
 
 Each task is worked in its own git worktree and branch, so your checkout is never
 written to — not even mid-run. Attempts are capped and budgeted; a patch is kept only
@@ -241,8 +246,9 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `workspace.py` | the real-work world — any repo's test command as oracle, tasks, the closed workspace |
 | `worker.py` | the coding agent — patch, test, get paid for green |
 | `worktree.py` | isolation — a git branch and checkout per task; your tree is never touched |
-| `solver.py` | the executor seam — a task in, files out; the native one calls the brain |
+| `solver.py` | the executor seam — a task in, files out; plus the strategy ladder |
 | `builder.py` | autonomous development — the unattended run, and the human merge gate |
+| `campaign.py` | the fleet — many agents, many strategies, one problem, a champion that only ever advances |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -273,6 +279,9 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] **The merge gate** — dossiers carrying branch, diff, test delta, risk class and
       lineage; `approve` merges, `reject` becomes a lesson (`builder.py`). Agents have
       no push rights; publishing needs `BUILDER_ALLOW_PUSH`
+- [x] **Campaigns** — a fleet against one problem: a champion commit that only ever
+      advances, a strategy ladder that escalates as rounds fail, agents reaped and
+      replaced, and one reviewable diff at the end (`campaign.py`, CAMPAIGN.md)
 - [ ] **The gate as a pull request** — same act, GitHub API transport
 - [ ] **Board pre-vote on dossiers** — disjoint evidence before a human sees a diff
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes

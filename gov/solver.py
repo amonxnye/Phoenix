@@ -61,6 +61,50 @@ def _unfence(text: str) -> str:
     return body[:end].rstrip("\n") if end != -1 else body
 
 
+# ── strategies: how a fleet gets creative without getting reckless ────────────
+#
+# Running the same prompt N times produces N variations on one idea, which is why
+# a stuck agent stays stuck. Each sortie draws a DIFFERENT approach, and the ladder
+# is ordered: cheap and conservative first, wider and stranger as rounds fail. The
+# temperature rises with it — exploit, then explore. Creativity is bounded because
+# the oracle judges every one of them the same way.
+STRATEGIES = (
+    {"key": "direct", "temp": 0.1, "brief":
+     "Make the SMALLEST change that satisfies the failing assertion. Do not "
+     "refactor, rename, or improve anything else."},
+    {"key": "read-the-test", "temp": 0.2, "brief":
+     "Work backwards from what the test says the contract is. State that contract "
+     "to yourself first, then make the code honour it — the test is the "
+     "specification, not an obstacle."},
+    {"key": "widen", "temp": 0.35, "brief":
+     "The defect may not be in the obvious file. Consider that a caller, a default "
+     "argument, or a neighbouring helper is the real cause, and fix it there."},
+    {"key": "rewrite", "temp": 0.45, "brief":
+     "Previous minimal patches failed. Replace the whole function (or module) with "
+     "a clean implementation written from the contract, rather than patching around "
+     "the existing shape."},
+    {"key": "contrarian", "temp": 0.7, "brief":
+     "Assume every previous diagnosis in this campaign was WRONG. Name a different "
+     "root cause than the ones already tried, and fix that instead."},
+    {"key": "decompose", "temp": 0.5, "brief":
+     "Split the problem: make the smallest sub-behaviour correct first, even if it "
+     "does not turn the whole test green yet. Partial, provable progress is kept."},
+)
+
+
+def strategies_for(round_no: int, count: int) -> list[dict]:
+    """The slate of approaches for one round. Round 1 sends the conservative end of
+    the ladder; later rounds slide toward the strange end, because the conservative
+    ideas have demonstrably not worked."""
+    n = len(STRATEGIES)
+    start = min(max(0, round_no - 1), max(0, n - 1))
+    picked, i = [], 0
+    while len(picked) < max(1, count) and i < n * 2:
+        picked.append(STRATEGIES[(start + i) % n])
+        i += 1
+    return picked[:max(1, count)]
+
+
 def render_request(req: dict) -> str:
     """The prompt. Everything in it is evidence the agent could not have invented:
     the runner's own output, the real file contents, and — from attempt 2 on — what
@@ -79,10 +123,29 @@ def render_request(req: dict) -> str:
                      "breaking them is not): " + ", ".join(others))
     lines += ["", "--- what the test runner reported ---", req.get("failure_report", "")[:6000]]
 
+    if req.get("strategy_brief"):
+        lines += ["", f"--- your assigned approach this round: {req.get('strategy', '')} ---",
+                  req["strategy_brief"],
+                  "Other agents are working the same problem from other angles right "
+                  "now. Do YOUR angle — a fleet that converges on one idea is one agent."]
+
     if req.get("attempt", 1) > 1:
         lines += ["", f"--- your previous attempt (#{req['attempt'] - 1}) ---",
                   req.get("last_outcome", "")[:3000],
                   "Do not repeat it. Change your approach."]
+
+    if req.get("tried"):
+        lines += ["", "--- already tried in this campaign, and rejected by the oracle ---"]
+        lines += [f"  · {t}" for t in req["tried"][:12]]
+        lines.append("Do not propose any of these again.")
+
+    if req.get("lessons"):
+        lines += ["", "--- lessons the organization has already paid for ---"]
+        lines += [f"  · {l}" for l in req["lessons"][:8]]
+
+    if req.get("champion_note"):
+        lines += ["", "--- where this campaign has already got to ---", req["champion_note"],
+                  "You are building ON this, not starting over. Do not undo it."]
 
     for path, content in list(req.get("files", {}).items())[:MAX_CONTEXT_FILES]:
         body = content[:MAX_FILE_CHARS] if content else "(this file does not exist yet)"
@@ -115,7 +178,9 @@ def native_solver(req: dict) -> dict:
     """The built-in executor: the ONE brain seam, plus the envelope parser."""
     import brain
     text = brain._chat([{"role": "user", "content": render_request(req)}],
-                       req.get("max_tokens", 8000), 0.2, "builder-patch")
+                       req.get("max_tokens", 8000),
+                       float(req.get("temperature", 0.2)),
+                       f"builder-patch:{req.get('strategy', 'direct')}")
     default = next(iter(req.get("files", {})), "")
     return {"files": parse_patch(text, default), "notes": "", "raw": text}
 

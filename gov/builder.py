@@ -115,6 +115,29 @@ def classify_risk(files: list[str]) -> tuple[str, str]:
     return ("high" if hits else "low"), ", ".join(hits)
 
 
+def park(*, repo: str, branch: str, base_branch: str, base_sha: str, agent: str,
+         task: str, title: str, files: list, diff: str, delta: dict,
+         attempts: int, decision_id: int) -> int:
+    """Put finished, oracle-proven work in front of a human and stop. The single
+    write path to the gate — a task solved by one agent and a campaign fought by a
+    fleet arrive here identically, because what a reviewer needs is the same."""
+    init()
+    risk, risk_why = classify_risk(files)
+    c = _conn()
+    try:
+        cur = c.execute(
+            "INSERT INTO gate(repo, branch, base_branch, base_sha, agent, task, title, "
+            "files, diff, delta, risk, risk_why, attempts, decision_id, status, created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)",
+            (repo, branch, base_branch, base_sha, agent, task, title,
+             json.dumps(files), diff, json.dumps(delta), risk, risk_why,
+             attempts, decision_id, time.time()))
+        c.commit()
+        return cur.lastrowid
+    finally:
+        c.close()
+
+
 # ── one task, start to finish ─────────────────────────────────────────────────
 
 def solve_task(agent: str, task: dict, repo: str, *, solve=None,
@@ -162,7 +185,7 @@ def solve_task(agent: str, task: dict, repo: str, *, solve=None,
                 log(f"  {agent}: attempt {attempt} — executor error: {str(e)[:80]}")
                 continue
             economy.charge(agent, int(result.get("tokens") or COST_PER_ATTEMPT))
-            kept, last_outcome, after = _try_patch(agent, result.get("files") or {}, before)
+            kept, last_outcome, after = try_patch(agent, result.get("files") or {}, before)
             history.append(f"attempt {attempt}: {last_outcome}")
             log(f"  {agent}: attempt {attempt} — {last_outcome}")
             if kept and task["test"] not in after["failures"]:
@@ -201,7 +224,7 @@ def _request(agent, task, repo_cfg, before, target, test_file, attempt, last_out
             "last_outcome": last_outcome}
 
 
-def _try_patch(agent: str, files: dict, before: dict) -> tuple[bool, str, dict]:
+def try_patch(agent: str, files: dict, before: dict) -> tuple[bool, str, dict]:
     """Apply a whole multi-file patch, or none of it, and let the oracle judge.
 
     All-or-nothing matters: half a patch is a state neither the agent nor the tests
@@ -223,21 +246,21 @@ def _try_patch(agent: str, files: dict, before: dict) -> tuple[bool, str, dict]:
     after = W.oracle()
     changed = ", ".join(sorted(files))
     if not after["ok"]:
-        _rollback(old)
+        rollback(old)
         return False, f"reverted — the suite stopped running ({after['error'][:80]})", before
     broke = sorted(set(after["failures"]) - set(before["failures"]))
     if broke:
-        _rollback(old)
+        rollback(old)
         return False, f"reverted — broke {', '.join(broke[:3])}", before
     newly = sorted(set(before["failures"]) - set(after["failures"]))
     if not newly:
-        _rollback(old)
+        rollback(old)
         return False, f"reverted — {changed} changed nothing the oracle can see", before
     return True, (f"kept {changed} — {len(newly)} newly green, suite "
                   f"{after['passed']}/{after['total']}"), after
 
 
-def _rollback(old: dict) -> None:
+def rollback(old: dict) -> None:
     for path, content in old.items():
         W.restore(path, content)
 
@@ -277,22 +300,12 @@ def _park_at_gate(agent, task, wt, repo, before, after, history, attempts) -> di
         anchor.record(-1, "promote", f"{agent} promoted -> {promo}")
         anchor.career_add(agent, -1, "promote", "earned promotion by shipped work")
 
-    init()
-    c = _conn()
-    try:
-        cur = c.execute(
-            "INSERT INTO gate(repo, branch, base_branch, base_sha, agent, task, title, "
-            "files, diff, delta, risk, risk_why, attempts, decision_id, status, created) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)",
-            (repo, wt["branch"], wt["base_branch"], wt["base_sha"], agent, task["test"],
-             task["title"], json.dumps(files), the_diff,
-             json.dumps({"before": before["passed"], "after": after["passed"],
-                         "total": after["total"], "newly": newly}),
-             risk, risk_why, attempts, did, time.time()))
-        c.commit()
-        gate_id = cur.lastrowid
-    finally:
-        c.close()
+    gate_id = park(repo=repo, branch=wt["branch"], base_branch=wt["base_branch"],
+                   base_sha=wt["base_sha"], agent=agent, task=task["test"],
+                   title=task["title"], files=files, diff=the_diff,
+                   delta={"before": before["passed"], "after": after["passed"],
+                          "total": after["total"], "newly": newly},
+                   attempts=attempts, decision_id=did)
     WT.remove(repo, wt["path"])                    # the branch survives; the checkout goes
     return {"agent": agent, "task": task["test"], "did": "parked", "gate_id": gate_id,
             "branch": wt["branch"], "newly_passing": newly, "risk": risk,

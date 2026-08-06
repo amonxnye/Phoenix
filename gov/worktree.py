@@ -80,15 +80,21 @@ def _root() -> str:
     return d
 
 
-def create(repo: str, agent: str, task_slug: str) -> dict:
-    """A fresh worktree on a new branch off the current HEAD. The checkout is clean
-    even if your working tree is dirty — the agent starts from committed truth."""
+def create(repo: str, agent: str, task_slug: str, base_sha: str = "",
+           suffix: str = "") -> dict:
+    """A fresh worktree on a new branch. Off the current HEAD by default; off any
+    commit you name, which is what lets a campaign branch each new round from the
+    best result so far instead of starting over. The checkout is clean even if your
+    working tree is dirty — the agent starts from committed truth."""
     if not is_git(repo):
         raise GitError(f"{repo} is not a git repository — worktree isolation needs one")
     if not has_commits(repo):
         raise GitError(f"{repo} has no commits — nothing to branch from")
-    base_branch, base_sha = base_ref(repo)
+    base_branch, head_sha = base_ref(repo)
+    base_sha = base_sha or head_sha
     name = f"{BRANCH_PREFIX}/{slug(agent, 24)}/{slug(task_slug)}"
+    if suffix:
+        name += f"-{slug(suffix, 24)}"
     path = os.path.join(_root(), slug(os.path.basename(repo.rstrip(os.sep)), 32),
                         slug(name, 80))
     if os.path.exists(path):
@@ -175,6 +181,24 @@ def remove(repo: str, path: str, branch: str = "") -> None:
     _git(repo, "worktree", "prune", check=False)
     if branch:
         _git(repo, "branch", "-D", branch, check=False)
+
+
+def set_branch(repo: str, name: str, sha: str) -> None:
+    """Point a branch at a commit, creating it if needed. This is how a campaign
+    keeps its champion reachable: the winning commit gets a ref before every losing
+    sortie's branch is deleted, so the best work so far can never be garbage."""
+    _git(repo, "branch", "-f", name, sha)
+
+
+def diff_range(repo: str, from_sha: str, to_sha: str, limit: int = 200_000) -> str:
+    """Everything that happened between two commits — the campaign's whole diff,
+    however many rounds and agents it took to get there."""
+    return _git(repo, "diff", f"{from_sha}..{to_sha}", "--")[:limit]
+
+
+def files_changed_between(repo: str, from_sha: str, to_sha: str) -> list[str]:
+    out = _git(repo, "diff", "--name-only", f"{from_sha}..{to_sha}", "--")
+    return sorted(p for p in out.splitlines() if p.strip())
 
 
 def list_branches(repo: str) -> list[str]:

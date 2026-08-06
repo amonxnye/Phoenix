@@ -30,6 +30,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,7 +76,13 @@ DB = os.path.join(_data_dir(), "workspace.sqlite")
 
 # ── configuration: which repo, which test command ─────────────────────────────
 
-_CFG: dict = {}
+# Configuration is PER THREAD, with a process-wide fallback. A fleet works in
+# parallel, each agent in its own worktree, so "which repo am I looking at" cannot
+# be one global — one agent's configure() would silently move every other agent's
+# feet. A thread that never configures anything inherits the process default, so
+# single-threaded callers see exactly the behaviour they always did.
+_LOCAL = threading.local()
+_DEFAULT_CFG: dict = {}
 
 
 def _env_list(name: str) -> tuple:
@@ -92,7 +99,7 @@ def configure(repo: str = "", test_cmd: str = "", timeout: int = 0,
     working in a git worktree reads and writes its own checkout, but the tasks stay
     anchored to the repository they came from, so parallel worktrees share one
     backlog instead of each inventing a copy."""
-    global _CFG
+    global _DEFAULT_CFG
     repo = repo or os.environ.get("WORKSPACE_REPO", "").strip() or TOY_REPO
     repo = os.path.realpath(os.path.expanduser(repo))
     cmd = test_cmd or os.environ.get("WORKSPACE_TEST_CMD", "").strip()
@@ -104,20 +111,32 @@ def configure(repo: str = "", test_cmd: str = "", timeout: int = 0,
     except ValueError:
         tmo = DEFAULT_TIMEOUT
     prot = tuple(protected) or _env_list("WORKSPACE_PROTECTED") or DEFAULT_PROTECTED
-    _CFG = {"repo": repo, "test_cmd": argv, "timeout": max(5, tmo),
-            "protected": prot, "passthrough": _env_list("WORKSPACE_ENV_PASSTHROUGH"),
-            "is_toy": repo == os.path.realpath(TOY_REPO),
-            "key": os.path.realpath(os.path.expanduser(key)) if key else repo}
+    cfg = {"repo": repo, "test_cmd": argv, "timeout": max(5, tmo),
+           "protected": prot, "passthrough": _env_list("WORKSPACE_ENV_PASSTHROUGH"),
+           "is_toy": repo == os.path.realpath(TOY_REPO),
+           "key": os.path.realpath(os.path.expanduser(key)) if key else repo}
+    _LOCAL.cfg = cfg
+    if threading.current_thread() is threading.main_thread():
+        _DEFAULT_CFG = cfg                 # what a fresh worker thread inherits
     return config()
 
 
 def config() -> dict:
-    if not _CFG:
-        configure()
-    c = dict(_CFG)
+    cfg = getattr(_LOCAL, "cfg", None) or _DEFAULT_CFG
+    if not cfg:
+        return configure()
+    c = dict(cfg)
     c["test_cmd_str"] = " ".join(shlex.quote(a) for a in c["test_cmd"])
     c["repo_name"] = os.path.basename(c["repo"].rstrip(os.sep)) or c["repo"]
     return c
+
+
+def release() -> None:
+    """Drop this thread's override and fall back to the process default. A worker
+    thread calls it when its sortie ends, so a leaked config cannot outlive the
+    worktree it pointed at."""
+    if hasattr(_LOCAL, "cfg"):
+        del _LOCAL.cfg
 
 
 def repo_root() -> str:
@@ -192,19 +211,19 @@ def _create_pristine(c: sqlite3.Connection) -> None:
 
 
 def init() -> None:
-    config()
+    cfg = config()
     c = _conn()
     try:
         _create_tasks(c)
         _create_pristine(c)
         _migrate(c)
-        if _CFG["is_toy"]:
+        if cfg["is_toy"]:
             # The toy training ground is small and disposable: snapshot it eagerly so
             # "reset" reopens the practice tasks. A real repo is snapshotted lazily —
             # see apply_patch — and its real undo is git.
-            for name in sorted(os.listdir(_CFG["repo"])):
+            for name in sorted(os.listdir(cfg["repo"])):
                 if name.endswith(".py"):
-                    with open(os.path.join(_CFG["repo"], name)) as f:
+                    with open(os.path.join(cfg["repo"], name)) as f:
                         c.execute("INSERT OR IGNORE INTO pristine(repo, path, content) "
                                   "VALUES(?,?,?)", (_repo_key(), name, f.read()))
         c.commit()

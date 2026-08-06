@@ -25,3 +25,5 @@ jobs:
           git config --global user.email "ci@phoenix.local"
           git config --global user.name "Phoenix CI"
           python3 gov/verify_builder.py
+      - name: Run the Campaign (a fleet against one problem) acceptance checks
+        run: python3 gov/verify_campaign.py
