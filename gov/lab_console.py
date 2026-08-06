@@ -17,9 +17,24 @@ Three things a user can actually do:
      is the oracle with the lid off, and it is the fastest way to see what the system
      will and will not accept as evidence.
 
+**This is a shared service with no accounts — every visitor is a guest.** Two kinds of
+state, two different lifetimes:
+
+- **The evidence store, the replications, the gate, and the skills learnt are shared.**
+  That is the actual product: a growing, collective, cumulative record that every guest
+  reads and adds to, the same way a lab notebook is shared by whoever is in the lab.
+  When one guest approves a critique, every other guest's next poll shows it decided.
+- **A running campaign's live log belongs to the guest who started it.** It is keyed by
+  an anonymous session cookie issued on first visit — no login, nothing durable beyond
+  "which browser tab is watching this run" — so two guests running two campaigns at
+  once never see or block each other, and idle sessions are swept so this cannot grow
+  without bound on a public surface (`_sweep_sessions`).
+
 Writes are token-gated exactly as the settlement console is: with CONSOLE_TOKEN set,
 reading is free and every action needs the token (Article IV — the gate is a human, and
-in a deployment "a human" means one holding the key).
+in a deployment "a human" means one holding the key). The token is a single shared
+secret for anyone allowed to act at all, orthogonal to the per-guest session cookie,
+which only scopes "whose run log am I watching".
 
     python3 gov/lab_console.py [--port 8788]
 """
@@ -27,6 +42,7 @@ in a deployment "a human" means one holding the key).
 import argparse
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -46,8 +62,34 @@ import research_world as RW
 PAGE_PATH = os.path.join(ROOT, "phoenix-command.html")
 SPEC_DIR = os.path.join(ROOT, "sandbox", "campaigns")
 
-_RUN = {"running": False, "log": [], "started": 0.0}
-_LOCK = threading.Lock()
+SESSION_COOKIE = "phx_session"
+SESSION_TTL_S = 2 * 3600            # an idle guest's run state is forgotten after 2h
+MAX_SESSIONS = 500                  # a bound on a public, account-free surface
+
+_RUNS: dict[str, dict] = {}          # session id -> per-guest run state
+_RUNS_LOCK = threading.Lock()
+
+
+def _new_run_state() -> dict:
+    return {"running": False, "log": [], "started": 0.0, "last_seen": time.time()}
+
+
+def _sweep_sessions() -> None:
+    """Called under _RUNS_LOCK. Evicts idle, non-running sessions past the TTL and caps
+    the total — nothing about a guest session is precious, so nothing here needs to be
+    kept a moment longer than a guest might plausibly still be watching it."""
+    now = time.time()
+    for sid in [s for s, st in _RUNS.items()
+               if not st["running"] and now - st["last_seen"] > SESSION_TTL_S]:
+        del _RUNS[sid]
+    if len(_RUNS) > MAX_SESSIONS:
+        idle = sorted((s for s, st in _RUNS.items() if not st["running"]),
+                     key=lambda s: _RUNS[s]["last_seen"])
+        for sid in idle[:len(_RUNS) - MAX_SESSIONS]:
+            del _RUNS[sid]
+
+
+EVIDENCE_PAGE = 60                  # a visible page size, never a silent cap (see below)
 
 
 def _short(s: str, n: int) -> str:
@@ -117,9 +159,11 @@ def overview() -> dict:
     except Exception:
         pass                                       # the research world is optional here
 
-    return {"evidence": len(papers), "papers": papers[:60], "targets": len(reps),
-            "claims": claim_n, "settled": settled, "gate": len(pending),
-            "pending": pending, "replications": reps}
+    shown = papers[:EVIDENCE_PAGE]
+    return {"evidence": len(papers), "papers": shown, "evidence_shown": len(shown),
+            "targets": len(reps), "claims": claim_n, "settled": settled,
+            "gate": len(pending), "pending": pending, "replications": reps,
+            "skills": skills()}
 
 
 def _targets() -> list[str]:
@@ -145,11 +189,25 @@ def target_detail(pmid: str) -> dict:
                          "grade": f["grade"], "quote": _short(f["quote"], 380),
                          "alias": f["alias"], "url": rec.get("source_url", ""),
                          "for_claim": label.get(f["claim_id"], "")})
-    recs = [{"label": r["label"],
-             "reported": json.dumps(r["reported"]), "recomputed": json.dumps(r["recomputed"]),
+    # `reported`/`recomputed` are already JSON-safe Python values (float or None) — the
+    # whole response is serialised exactly once, by _json(). Encoding them again here
+    # would hand the browser the STRING "11.7" instead of the number 11.7, which reads
+    # right by accident (string concatenation looks the same) but is wrong.
+    recs = [{"label": r["label"], "reported": r["reported"], "recomputed": r["recomputed"],
              "verdict": r["verdict"], "why": r["why"]} for r in v["recomputations"]]
     return {"pmid": pmid, "verdict": v["verdict"], "why": v["why"], "claims": claims,
             "recomputations": recs, "findings": findings, "blockers": v["blockers"]}
+
+
+def skills(limit: int = 12) -> list[dict]:
+    """The organization's live lessons — Article VI.4: only what is still current, in
+    order of most recently (re)confirmed. Shared across every guest, like the evidence
+    store; a lesson learnt from one guest's campaign is visible to the next guest's."""
+    try:
+        return [{"lesson": s["lesson"], "source": s["source"], "trigger": s["trigger"]}
+                for s in anchor.skills_top(limit)]
+    except Exception:
+        return []
 
 
 def check_claim(body: dict) -> dict:
@@ -195,25 +253,39 @@ def specs() -> list[dict]:
     return out
 
 
-# ── the one long-running action ───────────────────────────────────────────────
+# ── the one long-running action — scoped to whichever guest started it ─────────
 
-def start_run(spec_rel: str, offline: bool) -> tuple[bool, str]:
-    with _LOCK:
-        if _RUN["running"]:
-            return False, "a campaign is already running"
+def start_run(sid: str, spec_rel: str, offline: bool) -> tuple[bool, str]:
+    with _RUNS_LOCK:
+        st = _RUNS.setdefault(sid, _new_run_state())
+        if st["running"]:
+            return False, "you already have a campaign running — wait for it to finish"
         path = os.path.realpath(os.path.join(ROOT, spec_rel))
         if not path.startswith(os.path.realpath(SPEC_DIR) + os.sep):
             return False, "REFUSED: specs are read from sandbox/campaigns only"
         if not os.path.exists(path):
             return False, f"no such spec: {spec_rel}"
-        _RUN.update({"running": True, "log": [], "started": time.time()})
-    threading.Thread(target=_run_campaign, args=(path, offline), daemon=True).start()
+        st.update({"running": True, "log": [], "started": time.time(),
+                  "last_seen": time.time()})
+    threading.Thread(target=_run_campaign, args=(sid, path, offline), daemon=True).start()
     return True, "started"
 
 
-def _run_campaign(path: str, offline: bool) -> None:
+def run_status(sid: str) -> dict:
+    with _RUNS_LOCK:
+        st = _RUNS.get(sid)
+        if st is None:
+            return {"running": False, "log": []}
+        st["last_seen"] = time.time()
+        return {"running": st["running"], "log": list(st["log"][-400:])}
+
+
+def _run_campaign(sid: str, path: str, offline: bool) -> None:
     def log(line):
-        _RUN["log"].append(line.rstrip())
+        with _RUNS_LOCK:
+            st = _RUNS.get(sid)
+            if st is not None:
+                st["log"].append(line.rstrip())
 
     try:
         spec = CAM.load_spec(path)
@@ -229,12 +301,20 @@ def _run_campaign(path: str, offline: bool) -> None:
         log(f"   {res['why']}")
         for b in res["blockers"]:
             log(f"   open: {b}")
+        if res["skills_learnt"]:
+            log("")
+            log("Skills learnt:")
+            for s in res["skills_learnt"]:
+                log(f"   • {s}")
         d = REP.park_critique(spec["target"])
         log(f"   critique #{d['critique']} parked for a human — nothing published")
     except Exception as e:
         log(f"campaign failed: {type(e).__name__}: {e}")
     finally:
-        _RUN["running"] = False
+        with _RUNS_LOCK:
+            st = _RUNS.get(sid)
+            if st is not None:
+                st["running"] = False
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -251,11 +331,41 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    # ── the guest session: an anonymous cookie, never a login ─────────────────
+
+    def _session(self) -> str:
+        """Return this guest's session id, reusing the cookie if the browser sent one
+        we still recognise. `_new_sid` is left set only when a Set-Cookie header needs
+        to go out — the common case, a returning guest, sends nothing extra."""
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == SESSION_COOKIE and v:
+                with _RUNS_LOCK:
+                    _sweep_sessions()
+                    if v in _RUNS:
+                        _RUNS[v]["last_seen"] = time.time()
+                        self._new_sid = None
+                        return v
+        sid = secrets.token_urlsafe(18)
+        with _RUNS_LOCK:
+            _sweep_sessions()
+            _RUNS[sid] = _new_run_state()
+        self._new_sid = sid
+        return sid
+
+    def _cookie_headers(self):
+        sid = getattr(self, "_new_sid", None)
+        if not sid:
+            return None
+        return [("Set-Cookie", f"{SESSION_COOKIE}={sid}; Path=/; HttpOnly; SameSite=Lax")]
+
+    def _send(self, code, body, ctype="application/json", extra_headers=None):
         payload = body.encode() if isinstance(body, str) else body
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            for k, v in (extra_headers or []):
+                self.send_header(k, v)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -263,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _json(self, obj, code=200):
-        self._send(code, json.dumps(obj), "application/json")
+        self._send(code, json.dumps(obj), "application/json", self._cookie_headers())
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -275,10 +385,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path, _, qs = self.path.partition("?")
         q = urllib.parse.parse_qs(qs)
+        sid = self._session()
         try:
             if path in ("/", "/index.html"):
                 with open(PAGE_PATH, "rb") as f:
-                    return self._send(200, f.read(), "text/html; charset=utf-8")
+                    return self._send(200, f.read(), "text/html; charset=utf-8",
+                                     self._cookie_headers())
             if path == "/api/overview":
                 return self._json(overview())
             if path == "/api/target":
@@ -287,7 +399,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/specs":
                 return self._json({"specs": specs()})
             if path == "/api/run/status":
-                return self._json({"running": _RUN["running"], "log": _RUN["log"][-400:]})
+                return self._json(run_status(sid))
+            if path == "/api/skills":
+                return self._json({"skills": skills(50)})
             if path == "/api/evidence":
                 return self._json({"papers": overview()["papers"]})
         except Exception as e:
@@ -295,6 +409,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        sid = self._session()
         tok = os.environ.get("CONSOLE_TOKEN", "")
         if tok and self.headers.get("X-Console-Token", "") != tok:
             return self._json({"error": "console token required"}, 401)
@@ -303,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/decide":
                 return self._decide(body)
             if self.path == "/api/run":
-                ok, msg = start_run(str(body.get("spec", "")), bool(body.get("offline")))
+                ok, msg = start_run(sid, str(body.get("spec", "")), bool(body.get("offline")))
                 return self._json({"ok": ok, "message": msg}, 200 if ok else 400)
             if self.path == "/api/check":
                 return self._json(check_claim(body))
@@ -349,9 +464,11 @@ if __name__ == "__main__":
         RW.init()
     except Exception:
         pass
-    n_ev, n_t = len(L.store_ids()), len(_targets())
-    print(f"Phoenix Lab — {n_ev} papers held, {n_t} under replication")
+    n_ev, n_t, n_sk = len(L.store_ids()), len(_targets()), len(skills(999))
+    print(f"Phoenix Lab — {n_ev} papers held, {n_t} under replication, {n_sk} skills learnt")
     print(f"  http://{a.host}:{a.port}")
+    print("  no accounts — every visitor is a guest; evidence and the gate are shared, "
+         "a running campaign's log is not")
     if not os.environ.get("CONSOLE_TOKEN"):
         print("  (CONSOLE_TOKEN unset — actions are open on this host)")
     QuietServer((a.host, a.port), Handler).serve_forever()

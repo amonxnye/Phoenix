@@ -133,17 +133,24 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all seven on every push)
+# the acceptance suites (CI runs all nine on every push)
 python3 gov/verify.py            # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
 python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
 python3 gov/verify_research.py   # 40 — citation oracle, reproduction gate, dossier gate
 python3 gov/verify_literature.py # 36 — real biomedical evidence, offline and quoted
 python3 gov/verify_replication.py# 37 — recomputed statistics, the campaign ladder, the gate
-python3 gov/lab_console_smoke.py # 20 — the Lab console: gate, claim check, auth
+python3 gov/lab_console_smoke.py # 34 — the Lab console: gate, claim check, auth, multi-guest isolation
+python3 gov/verify_director.py   # 15 — the settlement play loop: staffing, reclaim, reap
+python3 gov/verify_evalrun.py    # 13 — the headless reproducible-run harness
 python3 gov/console_smoke.py     # headless settlement console API smoke
 
-# the console — papers under replication, the evidence, and the human gate
+# real, measured throughput — not estimated (checks brain.available() honestly first)
+python3 gov/perf_report.py
+
+# the console — papers under replication, the evidence, the skills learnt, the human
+# gate. No accounts: every visitor is a guest; evidence/gate/skills are shared, a
+# running campaign's live log is scoped to your own session cookie.
 python3 gov/lab_console.py            # → http://127.0.0.1:8788
 
 # the settlement console (the original testbed)
@@ -249,6 +256,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `campaign.py` | the campaign engine — works a problem until settled, escalated or exhausted; the creativity ladder |
 | `replication.py` | rebuild a paper's conclusion without taking its word for it — fidelity, arithmetic, independence |
 | `statcheck.py` | the recomputation oracle — percentages, odds ratios, CIs, p-values, GRIM, SD bounds, dependency-free |
+| `perf_report.py` | real, measured throughput of the deterministic machinery — never a fabricated number |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -277,8 +285,12 @@ not try to make agents smarter. It tries to make an organization of them account
       PMC evidence, quotes checked verbatim against the stored paper, negation and
       opposite-direction citations refused by name — offline and deterministic
 - [x] The **campaign engine** — a fleet kept on a problem until it is settled, escalated
-      or out of budget, with a creativity ladder that cannot destroy verified work
-      ([`CAMPAIGN.md`](CAMPAIGN.md))
+      or out of budget, with a creativity ladder that cannot destroy verified work; a
+      full audit trail per judgement round and durable skills learnt, both ported from
+      the settlement's own governance ([`CAMPAIGN.md`](CAMPAIGN.md))
+- [x] The **Lab console** as a shared, account-free service — every visitor a guest,
+      evidence/gate/skills collective, a running campaign's log scoped to a session
+      cookie so concurrent guests never cross wires (`lab_console.py`)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate

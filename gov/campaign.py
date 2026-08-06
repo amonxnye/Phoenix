@@ -34,6 +34,23 @@ fooling itself, so they are fenced:
 - Every irreversible act — publishing, contacting authors — stays behind the human gate
   no matter how the campaign ends.
 
+**Nothing runs unseen (Article VII), ported from the settlement.** Every round that
+produces something is written to the permanent event log, and the two judgement rungs
+each open a first-class decision — `reason_add` naming what was decided and why,
+`decision_close` linking it to what it produced — exactly the audit trail
+`researcher.py` keeps for a claim. An equivalence is `authorized_by="human"` because it
+came from the spec's candidate list, never invented; a weakened claim is
+`authorized_by="policy"` because the *move* is the engine's, even though it can only
+weaken toward a form a human's equivalence already implies.
+
+**Skills learnt, ported from the settlement's retrospective.** At the end of a run the
+campaign distills what it learned into durable lessons — recomputation alone refuted a
+claim, an equivalence did or didn't surface anything, a claim was corroborated only at
+title/introduction grade — and records them with `anchor.skill_add`. The same dedup and
+expiry rules apply as everywhere else in the anchor (Article VI.4): re-running the same
+campaign teaches nothing new, and a lesson only sticks around while it keeps being
+re-confirmed.
+
 Run:  python3 gov/campaign.py --spec sandbox/campaigns/PMID-41964971.json --fresh
 """
 
@@ -128,10 +145,23 @@ class Campaign:
             return [f'query "{q[:56]}" retrieved {len(new)} new paper(s)'] if new else []
         return []
 
+    @staticmethod
+    def _already_declared(entity: str, names: list[str]) -> bool:
+        """Is this equivalence already true in the world? `self.declared` is this
+        instance's memory of what IT did this run; the alias table is what actually
+        happened, and it outlives any one Campaign object. A fresh instance pointed at
+        a target a PRIOR run already worked must see the persisted state, or it redoes
+        — and re-logs, re-teaches — a rung that has nothing left to do."""
+        existing = {a.lower() for a in L.aliases(entity)}
+        return all(n.lower() in existing for n in names)
+
     def _declare_equivalence(self) -> list[str]:
         for eq in self.spec.get("equivalences", []):
             key = eq["entity"]
             if key in self.declared:
+                continue
+            if self._already_declared(key, eq["names"]):
+                self.declared.append(key)          # true in the world — catch up, say nothing
                 continue
             self.declared.append(key)
             L.aliases_put(key, eq["names"])
@@ -143,13 +173,15 @@ class Campaign:
         """Test the broader form of a claim: the alias group's head name is the general
         thing the specific one belongs to. The strong claim stays open — this adds a
         question, it does not answer the original one."""
-        rec = L.store_get(self.target)
         for cl in REP.claims(self.target):
             broad_s, broad_o = L.aliases(cl["subject"])[0], L.aliases(cl["object"])[0]
             if (broad_s, broad_o) == (cl["subject"], cl["object"]):
                 continue
             key = f"{broad_s} {cl['relation']} {broad_o}"
             if key in self.weakened:
+                continue
+            if any(c["claim"] == key for c in REP.claims(self.target)):
+                self.weakened.append(key)          # already under test — catch up, say nothing
                 continue
             self.weakened.append(key)
             r = REP.put_claim(self.target, {"subject": broad_s, "relation": cl["relation"],
@@ -177,12 +209,15 @@ class Campaign:
                 and any(q not in self.used_queries for q in self.spec.get("queries", [])))
 
     def _can_declare(self) -> bool:
-        return any(e["entity"] not in self.declared for e in self.spec.get("equivalences", []))
+        return any(e["entity"] not in self.declared
+                  and not self._already_declared(e["entity"], e["names"])
+                  for e in self.spec.get("equivalences", []))
 
     def _can_weaken(self) -> bool:
+        existing = {c["claim"] for c in REP.claims(self.target)}
         for cl in REP.claims(self.target):
             broad = f"{L.aliases(cl['subject'])[0]} {cl['relation']} {L.aliases(cl['object'])[0]}"
-            if broad != cl["claim"] and broad not in self.weakened:
+            if broad != cl["claim"] and broad not in self.weakened and broad not in existing:
                 return True
         return False
 
@@ -198,6 +233,29 @@ class Campaign:
             if self.AVAILABLE[LADDER[i][0]](self):
                 return i
         return ESCALATE
+
+    # ── the audit trail — best-effort, never load-bearing for the campaign itself ──
+
+    def _note(self, kind: str, msg: str) -> int | None:
+        """Append to the permanent event log. A telemetry failure must never break the
+        campaign that produced it — this can fail silently, the campaign cannot."""
+        try:
+            return anchor.record(-1, kind, msg[:500])
+        except Exception:
+            return None
+
+    def _lineage(self, decision: str, why: str, authorized_by: str,
+                 event: int | None, outcome: str) -> None:
+        """Open and close a first-class decision for a judgement rung — the same shape
+        `researcher.py` keeps for a claim, so an equivalence or a weakened claim is
+        traceable back to what authorized it and what it produced."""
+        try:
+            did = anchor.reason_add(-1, f"campaign:{self.target}", decision[:240], why[:500],
+                                    derived_from=[f"target:{self.target}"],
+                                    authorized_by=authorized_by, effect_event=event)
+            anchor.decision_close(did, event, outcome=outcome[:240])
+        except Exception:
+            pass
 
     # ── the loop ─────────────────────────────────────────────────────────────
 
@@ -218,12 +276,108 @@ class Campaign:
                                  "produced": produced})
             for line in produced:
                 self.log(f"   r{self.round} {name:<19} {line}")
+                ev = self._note("work", f"campaign:{self.target} r{self.round} "
+                                        f"[{name}] {line}")
+                if name == "declare-equivalence":
+                    self._lineage(f"declare equivalence (round {self.round})",
+                                 "a candidate from the human-supplied list, not invented "
+                                 f"by the engine — {line}", "human", ev,
+                                 outcome=f"round {self.round}: {line}")
+                elif name == "weaken-claim":
+                    self._lineage(f"weaken claim (round {self.round})",
+                                 "the strong form stays open and unsettled; this only "
+                                 f"adds a question the evidence in hand could answer — {line}",
+                                 "policy", ev, outcome=f"round {self.round}: {line}")
             if produced:
                 self.rung = self._next_rung(0)     # cheap checks have new material
             else:
                 self.log(f"   r{self.round} {name:<19} {'(nothing new)':<40} → climbing")
                 self.rung += 1
         return self._finish("exhausted", REP.verdict(self.target), started)
+
+    # ── skills learnt — the settlement's retrospective, pointed at replication ────
+
+    def _learn(self, v: dict) -> list[str]:
+        """Distill durable, reusable lessons from this run and record them. Dedup and
+        expiry are the anchor's job (Article VI.4) — this only has to phrase a lesson
+        the same way each time the same situation recurs, so identical re-runs teach
+        nothing new and a genuinely different outcome does."""
+        lessons = []                                # (text, trigger) pairs
+
+        impossible = [r for r in v["recomputations"] if r["verdict"] == "impossible"]
+        if impossible:
+            r = impossible[0]
+            lessons.append((
+                f"Recomputing a paper's own arithmetic can refute it outright before any "
+                f"literature search: '{r['label']}' reported {r['reported']}, but the "
+                f"paper's own sample size cannot produce it. Always recompute first — "
+                f"it is free, certain, and can end the campaign on round one.",
+                "arithmetic-can-refute"))
+
+        divergent = [r for r in v["recomputations"] if r["verdict"] == "divergent"]
+        if divergent:
+            labels = ", ".join(r["label"] for r in divergent[:3])
+            lessons.append((
+                f"A reported statistic can diverge from its own recomputation without "
+                f"being impossible ({labels}) — worth flagging in the critique even when "
+                f"it doesn't change the verdict, since it means the point estimate and "
+                f"the interval didn't come from the same model.",
+                "divergent-not-impossible"))
+
+        for cl in v["claims"]:
+            if cl["state"] == "weakly-corroborated":
+                lessons.append((
+                    f"'{cl['claim']}' was corroborated only in a title or introduction, "
+                    f"never a result — abstracts mostly restate prior work rather than "
+                    f"report it. Full-text retrieval is the next lever, not a wider "
+                    f"abstract search.",
+                    "weak-grade-ceiling"))
+            elif cl["state"] == "contradicted":
+                lessons.append((
+                    f"'{cl['claim']}' was contradicted by independent, result-grade "
+                    f"evidence — exactly the failure mode the independence check exists "
+                    f"to catch before a critique is written.",
+                    "independence-caught-a-contradiction"))
+
+        for i, h in enumerate(self.history):
+            if h["move"] != "declare-equivalence" or not h["produced"]:
+                continue
+            line = h["produced"][0]
+            entity = line.split("counted as '")[1].split("'")[0] if "counted as '" in line else "?"
+            nxt = next((x for x in self.history[i + 1:] if x["move"] == "search-store"), None)
+            if nxt and nxt["produced"]:
+                lessons.append((
+                    f"Broadening '{entity}' to its synonym group surfaced independent "
+                    f"evidence a narrower search missed — try wider synonym groups before "
+                    f"reaching for a new query.",
+                    "equivalence-helped"))
+            elif nxt:
+                lessons.append((
+                    f"Broadening '{entity}' to its synonym group did not surface anything "
+                    f"new — the literature in hand may simply not use this framing.",
+                    "equivalence-was-neutral"))
+
+        if v["verdict"] == "corroborated":
+            lessons.append((
+                f"A replication of a paper shaped like '{self.target}' reached full "
+                f"independent, result-grade corroboration — a template for what "
+                f"'settled' looks like for this claim shape.",
+                "settled-corroborated"))
+
+        learnt = []
+        for text, trigger in lessons:
+            # Truncate to the exact same bound anchor.skill_add applies before storing,
+            # so what this returns is always what actually landed — never a string that
+            # LOOKS learnt here but reads back shorter (or not at all) from skills_top.
+            text = text.strip()[:anchor.SKILL_LESSON_MAX]
+            try:
+                sid = anchor.skill_add(self.round, text, source=f"campaign:{self.target}",
+                                       trigger=trigger)
+                if sid:
+                    learnt.append(text)
+            except Exception:
+                pass
+        return learnt
 
     def _finish(self, how: str, v: dict, started: float) -> dict:
         out = {"how": how, "verdict": v["verdict"], "why": v["why"],
@@ -237,6 +391,7 @@ class Campaign:
                           f"{v['why'][:150]}")
         except Exception:
             pass                                   # the campaign result is not the anchor's hostage
+        out["skills_learnt"] = self._learn(v)
         return out
 
 
@@ -292,6 +447,10 @@ if __name__ == "__main__":
         print(f"   equivalences used: {', '.join(res['declared_equivalences'])}")
     for b in res["blockers"]:
         print(f"   \033[33mopen:\033[0m {b}")
+    if res["skills_learnt"]:
+        print("\n\033[1mSkills learnt\033[0m")
+        for s in res["skills_learnt"]:
+            print(f"   • {s}")
     d = REP.park_critique(spec["target"])
     print(f"\n   critique #{d['critique']} parked for a human — "
           f"{len(d['body']['limitations'])} limitations stated, nothing published")

@@ -591,10 +591,14 @@ def lineage(decision_id: int) -> dict:
         c.close()
 
 
+SKILL_LESSON_MAX = 280               # a caller building a lesson string truncates to the
+                                     # same bound so what it gets back matches what's stored
+
+
 def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> int | None:
     """Store a lesson; returns its id (citable as 'skill:<id>' in decision lineage),
     or None if empty/duplicate."""
-    lesson = (lesson or "").strip()[:280]
+    lesson = (lesson or "").strip()[:SKILL_LESSON_MAX]
     if not lesson:
         return None
     c = _conn()

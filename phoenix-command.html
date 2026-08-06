@@ -178,10 +178,18 @@
     </div>
 
     <div class="panel">
+      <p class="ptitle">Skills learnt <span class="count" id="skills-count"></span></p>
+      <div id="skills"><div class="empty">&hellip;</div></div>
+      <div class="src" style="margin-top:8px">Distilled at the end of each campaign,
+        shared by every guest. Re-learning the same thing teaches nothing new — a
+        lesson only persists while it keeps being reconfirmed.</div>
+    </div>
+
+    <div class="panel">
       <p class="ptitle">Evidence held <span class="count" id="ev-count"></span></p>
       <div style="max-height:240px;overflow:auto"><table id="evidence"></table></div>
-      <div class="src" style="margin-top:8px">Retrieval is a human's step, never an
-        agent's. Every record carries its source, licence and retrieval date.</div>
+      <div class="src" id="ev-note" style="margin-top:8px">Retrieval is a human's step,
+        never an agent's. Every record carries its source, licence and retrieval date.</div>
     </div>
   </div>
 </div>
@@ -200,13 +208,30 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s === null || s === undefined ? "" : s)
   .replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const badge = v => `<span class="v v-${esc(v)}">${esc(v)}</span>`;
-let OPEN = null, RUNNING = false;
+const num = v => (v === null || v === undefined) ? "&mdash;" : String(v);
+let OPEN = null, RUNNING = false, POLL = null;
 
+// Every fetch carries the guest-session cookie explicitly rather than relying on the
+// browser's same-origin default — this page has no login, so the cookie is the ONLY
+// thing that keeps two guests' campaign runs from crossing streams.
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const r = await fetch(path, Object.assign({credentials: "same-origin"}, opts || {}));
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+// Delegated click handling — no inline onclick="" with string-interpolated values.
+// A paper title or PMID is real data from a real (if usually well-behaved) external
+// source; building a click handler by splicing it into a JS string is exactly the
+// pattern that turns "usually well-behaved" into a bug report.
+document.getElementById("gate").addEventListener("click", e => {
+  const b = e.target.closest("button[data-decide]");
+  if (b) decide(b.dataset.kind, Number(b.dataset.id), b.dataset.decide);
+});
+document.getElementById("targets").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-pmid]");
+  if (tr) openTarget(tr.dataset.pmid);
+});
 
 async function refresh() {
   let d;
@@ -236,8 +261,10 @@ async function refresh() {
       ${g.limitations.length ? '<ul class="lim">' + g.limitations.map(l =>
         `<li>${esc(l)}</li>`).join("") + '</ul>' : ""}
       <div class="actions">
-        <button class="primary" onclick="decide('${g.kind}',${g.id},'approve')">Approve</button>
-        <button class="danger" onclick="decide('${g.kind}',${g.id},'refuse')">Refuse</button>
+        <button class="primary" data-decide="approve" data-kind="${esc(g.kind)}"
+                data-id="${g.id}">Approve</button>
+        <button class="danger" data-decide="refuse" data-kind="${esc(g.kind)}"
+                data-id="${g.id}">Refuse</button>
       </div>
     </div>`).join("")
     : '<div class="empty">Nothing needs you right now. The organization keeps working; '
@@ -246,7 +273,7 @@ async function refresh() {
   $("#targets-count").textContent = d.targets ? String(d.targets) : "";
   $("#targets").innerHTML = d.replications.length ? '<table>'
     + '<tr><th>paper</th><th>verdict</th><th>claims</th><th></th></tr>'
-    + d.replications.map(t => `<tr class="clickable" onclick="openTarget('${t.pmid}')">
+    + d.replications.map(t => `<tr class="clickable" data-pmid="${esc(t.pmid)}">
       <td><b style="color:var(--ink)">${esc(t.title)}</b><br>
           <span class="src">${esc(t.pmid)} &middot; ${esc(t.year)}</span></td>
       <td>${badge(t.verdict)}</td>
@@ -255,7 +282,21 @@ async function refresh() {
     + '</table>'
     : '<div class="empty">No paper is under replication yet. Run a campaign &rarr;</div>';
 
+  $("#skills-count").textContent = d.skills.length ? String(d.skills.length) : "";
+  $("#skills").innerHTML = d.skills.length ? d.skills.map(s => `
+    <div class="claim">
+      <div class="txt" style="font-weight:400">${esc(s.lesson)}</div>
+      <div class="src">${esc(s.trigger)} &middot; from ${esc(s.source)}</div>
+    </div>`).join("")
+    : '<div class="empty">Nothing learnt yet — run a campaign and the durable lessons '
+      + 'from it land here.</div>';
+
   $("#ev-count").textContent = String(d.evidence);
+  $("#ev-note").textContent = d.evidence > d.evidence_shown
+    ? `Showing the ${d.evidence_shown} most recent of ${d.evidence} papers held. `
+      + `Retrieval is a human's step, never an agent's.`
+    : `Retrieval is a human's step, never an agent's. Every record carries its `
+      + `source, licence and retrieval date.`;
   $("#evidence").innerHTML = '<tr><th>id</th><th>year</th><th>licence</th><th>title</th></tr>'
     + d.papers.map(p => `<tr><td class="n"><a href="${esc(p.url)}" target="_blank"
         rel="noopener">${esc(p.id)}</a></td><td class="n">${esc(p.year)}</td>
@@ -284,8 +325,8 @@ async function renderDetail(pmid) {
       <p class="ptitle" style="margin-top:16px">Its arithmetic, redone</p>
       <table><tr><th>statistic</th><th>reported</th><th>recomputed</th><th></th></tr>
       ${t.recomputations.map(r => `<tr><td>${esc(r.label)}</td>
-         <td class="n">${esc(r.reported)}</td>
-         <td class="n">${esc(r.recomputed)}</td>
+         <td class="n">${num(r.reported)}</td>
+         <td class="n">${num(r.recomputed)}</td>
          <td>${badge(r.verdict)}</td></tr>`).join("")
        || '<tr><td colspan="4" class="empty">nothing recomputed yet</td></tr>'}
       </table>
@@ -317,25 +358,48 @@ async function decide(kind, id, decision) {
   refresh();
 }
 
+function watchRun() {
+  // One poller for "my campaign, whatever state it's in" — used both to start
+  // watching a fresh run and to resume watching one that was already going when
+  // this tab loaded (a reload, or a second tab open on the same guest session).
+  if (POLL) clearInterval(POLL);
+  RUNNING = true; $("#run").disabled = true; $("#runlog").style.display = "block";
+  POLL = setInterval(async () => {
+    let s;
+    try { s = await api("/api/run/status"); }
+    catch (e) { return; }                       // a transient hiccup, try again next tick
+    $("#runlog").textContent = s.log.join("\n") || "starting…";
+    $("#runlog").scrollTop = $("#runlog").scrollHeight;
+    if (!s.running) {
+      clearInterval(POLL); POLL = null; RUNNING = false; $("#run").disabled = false;
+      refresh();
+    }
+  }, 800);
+}
+
 async function run() {
   if (RUNNING) return;
-  RUNNING = true; $("#run").disabled = true;
+  $("#run").disabled = true;
   $("#runlog").style.display = "block"; $("#runlog").textContent = "starting…";
   try {
     await api("/api/run", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({spec: $("#spec").value, offline: $("#offline-run").checked})});
-    const poll = setInterval(async function () {
-      const s = await api("/api/run/status");
-      $("#runlog").textContent = s.log.join("\n");
-      $("#runlog").scrollTop = $("#runlog").scrollHeight;
-      if (!s.running) {
-        clearInterval(poll); RUNNING = false; $("#run").disabled = false; refresh();
-      }
-    }, 800);
+    watchRun();
   } catch (e) {
     $("#runlog").textContent = "failed: " + e.message;
-    RUNNING = false; $("#run").disabled = false;
+    $("#run").disabled = false;
   }
+}
+
+// A reload — or a second tab on the same guest session — must not lose track of a
+// campaign already in flight. Without this, the button would look idle while the
+// server is mid-run, and a click would just be told "you already have one running"
+// with no visible explanation.
+async function resumeIfRunning() {
+  try {
+    const s = await api("/api/run/status");
+    if (s.running) watchRun();
+  } catch (e) {}
 }
 
 async function check() {
@@ -362,7 +426,7 @@ async function loadSpecs() {
 
 $("#run").onclick = run;
 $("#check").onclick = check;
-loadSpecs(); refresh(); setInterval(refresh, 4000);
+loadSpecs(); refresh(); resumeIfRunning(); setInterval(refresh, 4000);
 </script>
 </body>
 </html>
