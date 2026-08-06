@@ -3362,7 +3362,7 @@ async function prove(i){
     &nbsp;<b>${esc(d.class)}</b> <span class=muted>modelling ${esc(d.provenance||'')}</span>`;
   const lines=[];
   if(d.vulnerable){lines.push(`vulnerable rebuild → reproduced: ${d.vulnerable.reproduced?'YES':'no'}`);
-    (d.vulnerable.violations||[]).forEach(v=>lines.push(`   ${v.id} [${v.class}] ${v.detail}`));
+    (d.vulnerable.violations||[]).forEach(v=>lines.push(`   ${v.id} [${v.cls||v.class||''}] ${v.detail}`));
     if(d.vulnerable.denied&&d.vulnerable.denied.length)lines.push(`   cage denied: ${d.vulnerable.denied.join(', ')}`);
     if(d.vulnerable.error)lines.push(`   note: ${d.vulnerable.error}`);}
   if(d.hardened)lines.push(`hardened rebuild → same exploit reproduced: ${d.hardened.reproduced?'YES (still vulnerable!)':'no — the fix stops it'}`);
