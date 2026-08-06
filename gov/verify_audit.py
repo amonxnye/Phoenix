@@ -183,5 +183,31 @@ else:
           jsprov is not None and jsprov[1]["evidence"]["resolved"],
           jsprov[1]["provenance"] if jsprov else "none confirmed")
 
+# ── I. audit jobs (SaaS isolation + safe input) ──────────────────────────────
+print("\nI. Audit jobs — guest isolation and safe input")
+import audit_jobs as AJ
+bad = False
+try:
+    AJ.clone("http://evil.internal/repo")
+except ValueError:
+    bad = True
+check("a non-GitHub URL is rejected before any clone", bad)
+check("ssh / arbitrary hosts rejected", AJ.GITHUB_URL.match("git@github.com:o/r") is None
+      and AJ.GITHUB_URL.match("https://github.com/owner/repo") is not None)
+tmp = tempfile.mkdtemp()
+jid = AJ.register(tmp, "t", owned=True)
+check("register → resolvable jobId", AJ.root_of(jid) == os.path.realpath(tmp))
+check("an unknown jobId resolves to None", AJ.root_of("job_nope") is None)
+AJ._JOBS[jid]["ts"] = 0                           # force expiry
+AJ._gc()
+check("an expired owned job is evicted and its dir removed",
+      AJ.root_of(jid) is None and not os.path.exists(tmp))
+try:
+    AJ.dev_path("/does/not/exist")
+    devok = False
+except ValueError:
+    devok = True
+check("dev_path validates the directory", devok)
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

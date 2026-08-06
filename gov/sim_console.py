@@ -1554,6 +1554,7 @@ class Handler(BaseHTTPRequestHandler):
     # ── analytics: who is watching, PERMANENTLY recorded (anchor.visitors) ───
     _TOUCHED: dict = {}                           # visitor hash → last DB write ts
     _CHAT_LAST: dict = {}                         # visitor hash → last chat ts
+    _AUDIT_LAST: dict = {}                        # (visitor hash, path) → last call ts
 
     def _visitor(self) -> str:
         """Identify the visitor (hash of ip+ua, nothing stored beyond that) and
@@ -1877,7 +1878,8 @@ class Handler(BaseHTTPRequestHandler):
         # visitors may try to talk the fleet into breaking its constitution; the
         # refusals are the show, and every message lands in the permanent log.
         tok = os.environ.get("CONSOLE_TOKEN", "")
-        if tok and self.headers.get("X-Console-Token", "") != tok:
+        authed = not tok or self.headers.get("X-Console-Token", "") == tok
+        if not authed:
             if self.path == "/api/chat" and os.environ.get("PUBLIC_CHAT", "") == "1":
                 h = self._visitor()
                 now = time.time()
@@ -1886,6 +1888,16 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": "easy — one message every 8 seconds"}))
                 Handler._CHAT_LAST[h] = now
                 anchor.metric_bump("public_chats")
+            elif self.path in ("/api/scan", "/api/prove"):
+                # audit is the product — open to guests, rate-limited (clones are heavy)
+                h = self._visitor()
+                now = time.time()
+                interval = 20 if self.path == "/api/scan" else 2
+                key = (h, self.path)
+                if now - Handler._AUDIT_LAST.get(key, 0) < interval:
+                    return self._send(429, json.dumps(
+                        {"error": f"rate limited — wait {interval}s between {self.path} calls"}))
+                Handler._AUDIT_LAST[key] = now
             else:
                 return self._send(401, json.dumps({"error": "console token required"}))
         if self.path == "/api/resume":
@@ -2039,32 +2051,49 @@ class Handler(BaseHTTPRequestHandler):
             ok = SN.acknowledge(aid, who="operator")
             return self._send(200, json.dumps({"ok": ok, "alert": aid}))
         if self.path == "/api/scan":
+            import audit_jobs as AJ
+            import reproducer as RP
             import scanner as SC
             body = self._read_json()
-            path = (body.get("path") or "").strip() or os.path.dirname(HERE)
-            if not os.path.isdir(path):
-                return self._send(400, json.dumps({"error": f"not a directory: {path}"}))
+            url = (body.get("repoUrl") or "").strip()
+            want_sample = bool(body.get("sample"))
+            path = (body.get("path") or "").strip()
             try:
-                res = SC.scan(path)
+                if url:
+                    jid, label, root = AJ.clone(url)
+                elif want_sample:
+                    jid, label, root = AJ.sample()
+                elif path and authed:            # arbitrary local path — operators only
+                    jid, label, root = AJ.dev_path(path)
+                else:
+                    return self._send(400, json.dumps({"error":
+                        "provide repoUrl (https://github.com/owner/repo) or sample:true"}))
+            except (ValueError, RuntimeError) as e:
+                return self._send(400, json.dumps({"error": str(e)[:300]}))
+            try:
+                res = SC.scan(root)
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:300]}))
-            # cap the payload; the ranked head is what a user acts on
-            res["candidates"] = res["candidates"][:150]
+            res["candidates"] = res["candidates"][:150]      # ranked head; no abspath leaks
+            res["jobId"], res["label"] = jid, label
+            res["supported"] = RP.supported()                # which classes can be proven here
             anchor.record(_S["turn"], "audit",
-                          f"scanned {path}: {res['total']} candidates "
-                          f"across {res['files_scanned']} files")
+                          f"scanned {label}: {res['total']} candidates across "
+                          f"{res['files_scanned']} files")
             return self._send(200, json.dumps(res))
         if self.path == "/api/prove":
+            import audit_jobs as AJ
             import reproducer as RP
             body = self._read_json()
             cand = body.get("candidate") or {}
             if not cand.get("class"):
                 return self._send(400, json.dumps({"error": "a candidate with a class is required"}))
+            root = AJ.root_of(body.get("jobId") or "")       # read real source from the job
             try:
-                out = RP.prove(cand)
+                out = RP.prove(cand, root=root)
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:300]}))
-            verdict = ("confirmed" if out.get("confirmed") else "not-confirmed")
+            verdict = "confirmed" if out.get("confirmed") else "not-confirmed"
             anchor.record(_S["turn"], "audit",
                           f"prove {cand.get('class')} @ {cand.get('file')}:{cand.get('line')} "
                           f"-> {verdict}")
@@ -3256,13 +3285,12 @@ tr.reprovable td{cursor:default}
 
   <div class=card><h3>1 · Scan a repository</h3><div class=pad>
     <div class=row>
-      <input id=path type=text placeholder="/path/to/a/checkout on this machine" value="">
-      <button id=scanbtn onclick=scan()>Scan</button>
+      <input id=repo type=text placeholder="https://github.com/owner/repo" value="">
+      <button id=scanbtn onclick=scan()>Scan repo</button>
+      <button class=ghost onclick=scanSample()>Try the sample</button>
     </div>
-    <div class=ex>Examples on this machine:
-      <code onclick="pick(this)">/workspace/amonxnye/computer-cloufare</code> &middot;
-      <code onclick="pick(this)">/home/user/Phoenix</code>
-      &nbsp;— read-only; the scanner never runs the code it reads.</div>
+    <div class=ex>Paste a public GitHub repo — it is cloned into an isolated job just for
+      you, scanned read-only, and thrown away after. No account needed; you're a guest.</div>
     <div id=scanmeta class=hint></div>
   </div></div>
 
@@ -3281,22 +3309,29 @@ tr.reprovable td{cursor:default}
 </main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const PROVABLE=new Set(['traversal','rce']);
+let PROVABLE=new Set(['traversal','rce']);
 function tok(){return localStorage.getItem('ctok')||''}
-function pick(el){document.getElementById('path').value=el.textContent}
 async function post(url,body){
   let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})});
+  if(r.status===429){const j=await r.json().catch(()=>({error:'rate limited'}));scanmeta.innerHTML='<span class=no>'+esc(j.error)+'</span>';return null}
   if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}return null}
   return r.json();
 }
+async function scanSample(){ return doScan({sample:true}); }
 async function scan(){
-  const path=document.getElementById('path').value.trim();
-  scanbtn.disabled=true; scanmeta.innerHTML='<span class=spin></span> scanning…';
-  const d=await post('/api/scan',{path});
+  const repo=document.getElementById('repo').value.trim();
+  if(!repo){scanmeta.innerHTML='<span class=no>paste a GitHub repo URL, or try the sample</span>';return}
+  return doScan({repoUrl:repo});
+}
+async function doScan(payload){
+  scanbtn.disabled=true; scanmeta.innerHTML='<span class=spin></span> cloning &amp; scanning… (a fresh repo can take a minute)';
+  const d=await post('/api/scan',payload);
   scanbtn.disabled=false;
-  if(!d){scanmeta.textContent='';return}
+  if(!d){return}
   if(d.error){scanmeta.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
-  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files under <span class=loc>${esc(d.root)}</span> — <b>${d.total}</b> candidates`;
+  window._jobId=d.jobId;
+  if(d.supported) PROVABLE=new Set(Object.keys(d.supported));   // server-derived, not hardcoded
+  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files in <span class=loc>${esc(d.label||'')}</span> — <b>${d.total}</b> candidates`;
   const sevs=['critical','high','medium','low'];
   tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${d.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
     +Object.entries(d.by_class).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');
@@ -3318,7 +3353,7 @@ async function prove(i){
   const btn=document.querySelector(`button[data-i="${i}"]`); if(btn){btn.disabled=true;btn.innerHTML='<span class=spin></span>'}
   vcard.style.display='block'; vhead.innerHTML='<span class=spin></span> rebuilding, hosting, exploiting…'; verdict.textContent='';
   vcard.scrollIntoView({behavior:'smooth',block:'nearest'});
-  const d=await post('/api/prove',{candidate:c});
+  const d=await post('/api/prove',{jobId:window._jobId,candidate:c});
   if(btn){btn.disabled=false;btn.textContent='Prove'}
   if(!d){vhead.textContent='';return}
   if(d.error){vhead.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
