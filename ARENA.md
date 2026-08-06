@@ -1,6 +1,8 @@
 # The Arena — running Phoenix on any model, and measuring what happens
 
-**Status:** plan, approved in principle. No code yet.
+**Status:** steps 1-3 built (`models.py`, `/providers`, budget ceilings); steps 4-6
+(ablation matrix, `/parliament`, probe pack) still to come. Proven by
+`gov/verify_arena.py` — 58 acceptance checks, no API key required.
 
 Phoenix is a governance layer with exactly one seam where a model plugs in
 (`brain._chat`). That makes a question answerable that no benchmark currently asks:
@@ -86,7 +88,7 @@ Three constitutional rules ship with it, because they are not implementation det
 |---|---|---|---|
 | **Solo** | one model in every role | "model X runs the best organization" | built (`evalrun.py`) |
 | **Ablation matrix** | everything fixed; swap **one seat at a time**; repeat across seeds | "this seat, this model, this much difference" | to build — the rigorous core |
-| **Parliament** | mixed board + a different governor | interaction effects, disagreement, diversity | to build — the showpiece |
+| **Parliament** | mixed board + a different governor | interaction effects, disagreement, diversity | routing built (`models.py`); the page is step 5 |
 
 **Seats are not equal.** Growth's chair may be structurally more influential than
 Prudence's, so a model can look good merely by sitting in it. Every matrix run is
@@ -152,22 +154,52 @@ the budget ceiling. Nothing about the arena changes how the settlement runs.
 
 ## 8. Build order (each step ships alone)
 
-1. **Provider registry + per-role routing**, model recorded on every decision and
-   call. Solo leaderboard keeps working; no new pages.
-2. **`/providers` page** — computed from data we already log (`model_calls` +
-   `decisions`) plus the price table and cost-per-call.
-3. **Ablation matrix runner** — `evalrun --matrix`, counterbalanced, N seeds,
+1. ✅ **Provider registry + per-role routing**, model recorded on every decision and
+   call — `gov/models.py`, the seam in `brain._chat`, `decisions.model`,
+   `model_calls.role`/`.cost_usd`. With every role unset, nothing changes.
+2. ✅ **`/providers` page** — computed from `model_calls` + `decisions` plus the price
+   table, cost stored per call at log time. Roles are assigned from this page, behind
+   the operator token.
+3. ✅ **Budget ceilings** — pre-flight estimate, `EVAL_BUDGET_USD`, per-provider
+   sub-caps, halt-and-mark-`incomplete: budget` on breach.
+4. **Ablation matrix runner** — `evalrun --matrix`, counterbalanced, N seeds,
    medians, scorecards stored with full configuration.
-4. **`/parliament` page** — live mixed world: seats with model badges, votes coloured
+5. **`/parliament` page** — live mixed world: seats with model badges, votes coloured
    by model, each seat's reasoning in its own voice, the running disagreement matrix.
-5. **Constitution probe pack**, scored per model; refusal rate becomes a column.
-6. **The report** — the first cross-model comparison of governance. That is the
+6. **Constitution probe pack**, scored per model; refusal rate becomes a column.
+7. **The report** — the first cross-model comparison of governance. That is the
    artifact worth publishing.
 
-## 9. Open items
+## 9. How to run it today
+
+```bash
+# one lab per seat — a mixed board, on direct keys
+export OPENAI_API_KEY=... GEMINI_API_KEY=... ANTHROPIC_API_KEY=... DEEPSEEK_API_KEY=...
+export MODEL_ROLE_GOVERNOR=anthropic MODEL_ROLE_PRUDENCE=openai \
+       MODEL_ROLE_GROWTH=gemini MODEL_ROLE_LEDGER=deepseek
+export EVAL_BUDGET_USD=5.00
+python3 gov/evalrun.py --turns 120 --fresh --label mixed-board-1
+```
+
+Any other lab is a registry entry, not a code change:
+
+```bash
+export MODEL_REGISTRY='{"myLab":{"base_url":"https://api.mylab.ai/v1",
+  "key_env":"MYLAB_KEY","model":"m-1","kind":"openai"}}'
+export MODEL_ROLE_GOVERNOR=myLab:m-1-pro
+```
+
+Roles can also be assigned live from `/providers` (operator token required — X.1), and
+the price table overridden with `MODEL_PRICES` or the same page.
+
+## 10. Open items
 
 - Keys for OpenAI, Gemini and Anthropic (DeepSeek is live).
-- The dollar ceiling per run, and whether a per-provider sub-cap is wanted.
-- The price table's initial values (I'll seed it; you confirm).
+- The dollar ceiling per run (`EVAL_BUDGET_USD`), and whether per-provider sub-caps are
+  wanted (`EVAL_PROVIDER_CAP_USD` is built and unset).
+- The price table's initial values — seeded in `models.SEED_PRICES`; **please confirm**,
+  since an unconfirmed price makes every $-per-vision-point column wrong in the same
+  direction. An unpriced model is reported as unpriced, never guessed.
 - Whether scouting-tier (routed) runs appear on the public leaderboard at all, or
-  only in a separate table. My recommendation: separate table, clearly marked.
+  only in a separate table. My recommendation: separate table, clearly marked. Today
+  the tier is a column on both `/leaderboard` and `/providers`.

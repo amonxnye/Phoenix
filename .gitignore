@@ -11,6 +11,7 @@ gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
 gov/scorecard.json
+gov/.arena-verify/
 scorecard.json
 
 # Python

@@ -176,6 +176,34 @@ Everything below is those two laws, applied.
 > Enforced by `sim_console.py` (failed-turn counter, `_binding_constraint`, stall
 > escalation), surfaced on `/agents` SYSTEM HEALTH and in every work report.
 
+## Article X — Who thinks is a human choice, and it is on the record
+
+1. **Assigning a model to a role is a human-only power.** Which mind governs, sits on
+   the Board, drives the fleet or writes the code is nearer to adopting a Vision than to
+   any operational choice. The Board may *propose* a swap — and must, when a seat stops
+   functioning: a seat abstaining through 40% of its last twenty votes is reported once,
+   with the number. Only the human assigns. Tacit consent (IV.7) never applies to a
+   model change (`models.assign`, gated by the operator token; `_seat_watch`).
+2. **Every call and every decision records the model that made it.** Article VII is
+   incomplete if we know what was decided and why but not by which mind. Per-model
+   scoring is therefore a query over the permanent record, not a bolt-on
+   (`anchor.model_call_log` role + model + cost; `decisions.model`).
+3. **An outage is an abstention, never a substitution.** A seat whose provider fails
+   votes *unknown*, and the abstention is logged naming the dead model. No other model
+   is quietly borrowed to fill the chair: a substitution that isn't recorded corrupts
+   every attribution downstream (`models.offline_seats` → `board.vote`).
+4. **Dollars govern the experiment; simulated compute governs the settlement.** A run
+   is estimated before it starts and refused if the estimate exceeds its ceiling; a run
+   that breaches its ceiling **halts** and stores its scorecard marked
+   `incomplete: budget`. It does not quietly finish on a cheaper model. The two caps are
+   never conflated — conflating them would corrupt both (`models.check_budget`,
+   `evalrun`).
+5. **A result is only as pinned as its weakest seat.** A run served through a router,
+   anywhere on the board, is *scouting* tier: useful breadth, never a ranked claim
+   (`models.tier`).
+> Enforced by `models.py`, `brain.py` (the one seam), `board.py` and `evalrun.py`;
+> surfaced on `/providers`; proven by `gov/verify_arena.py`.
+
 ## Amending this constitution
 
 Change the rules by changing the code they name, and update the article. A rule with no

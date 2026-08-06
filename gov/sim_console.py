@@ -26,6 +26,7 @@ import brain
 import director as D
 import economy
 import governor as G
+import models as MODELS
 import sim
 import vision as V
 
@@ -267,7 +268,10 @@ def _board_ctx(affordable: bool, views=None) -> dict:
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
             "burn_per_turn": _S.get("fleet_burn"),
             "progress_delta": _progress_delta(),
-            "understaffed": len(_S["villagers"]) < _target_villagers()}
+            "understaffed": len(_S["villagers"]) < _target_villagers(),
+            # Article X.3: a seat whose assigned model is failing abstains — the chair
+            # stays empty and the log says so, rather than being filled in secret.
+            "offline": MODELS.offline_seats()}
 
 
 def _breaker(key: str, escalate: str) -> bool:
@@ -529,7 +533,7 @@ def _governor_report():
         facts = f"STALLED — {_S['stall']} · " + facts
     body = brain.think("the Chief Governor", _situation(),
                        f"Report your work to the Board in 1-2 sentences, leading with the "
-                       f"vision delta: {facts}") or facts
+                       f"vision delta: {facts}", role="governor") or facts
     anchor.msg_send("all", "Chief Governor", f"WORK REPORT — {body}"[:480])
 
     # VIII.5: scored on Vision points gained per compute spent, less waste — never on
@@ -660,6 +664,36 @@ def _chat_send(key: str, body: str):
         anchor.msg_send(key, name, _chat_reply(key, body))
 
 
+SEAT_WINDOW = 20                # votes counted when judging whether a seat is working
+SEAT_ABSTAIN_PCT = 40           # above this, the board asks the human for a swap
+
+
+def _seat_watch(bv: dict):
+    """Article X.1: the Board may PROPOSE a model swap; only the human assigns.
+
+    A seat that abstains through half its votes is not governing, and the board is the
+    first to know. It says so — once, with the number — and then stops, because the
+    decision is not its to make."""
+    hist = _S.setdefault("seat_votes", {})
+    for g, v in bv["ballots"].items():
+        h = hist.setdefault(g, [])
+        h.append(v is None)
+        del h[:-SEAT_WINDOW]
+        if len(h) < SEAT_WINDOW or f"seatswap:{g}" in _S["notified"]:
+            continue
+        pct = round(100 * sum(h) / len(h))
+        if pct >= SEAT_ABSTAIN_PCT:
+            _S["notified"].add(f"seatswap:{g}")
+            model = MODELS.model_for_role(g) or "the default brain"
+            anchor.msg_send("chief", "Board",
+                            f"MODEL SWAP PROPOSED (X.1): {g} abstained on {pct}% of its "
+                            f"last {len(h)} votes on {model}. A seat that cannot vote is "
+                            f"not a governor. Only you can reassign it — /providers.")
+            anchor.record(_S["turn"], "models",
+                          f"board proposes swapping {g}'s model ({model}): "
+                          f"{pct}% abstentions over {len(h)} votes")
+
+
 def _narrate_vote(bv: dict, why: str = ""):
     """Board votes are DECISIONS — put the tally and each governor's position AND
     live reasoning into the internal chat. Rationales carry real values now (runway
@@ -670,6 +704,13 @@ def _narrate_vote(bv: dict, why: str = ""):
     verdict = "APPROVED" if bv["approved"] else "BLOCKED"
     line = f"{bv['proposal']} — {detail} → {verdict} {bv['tally']}" + (f"; {why}" if why else "")
     anchor.msg_send("internal", "Board vote", line)
+    # Article X.3: an abstention caused by a dead provider is part of the record —
+    # the vote that did not happen is as auditable as the votes that did.
+    for g in bv.get("abstained", []):
+        anchor.record(_S["turn"], "board",
+                      f"{g} abstained — its model ({MODELS.model_for_role(g)}) is "
+                      f"unavailable; the seat was NOT substituted")
+    _seat_watch(bv)
     # degeneracy check (VIII.1): a member whose vote never varies is decoration
     for g in bv.get("degenerate", []):
         if f"degen:{g}" not in _S["notified"]:
@@ -686,7 +727,8 @@ def _internal_voices():
     sit = _situation()
     if t % 4 == 0:                # tuned down from every 2nd turn — cost + load
         line = brain.think("the Chief Governor", sit,
-                           "Issue one short directive to the fleet for this cycle.") \
+                           "Issue one short directive to the fleet for this cycle.",
+                           role="governor") \
             or f"Directive: press toward '{_vision().name}'; keep spend under cap and gather what's scarce."
         anchor.msg_send("internal", "Chief Governor", line)
     if t % 8 == 0:                # board debates less often; each round is 3 model calls
@@ -698,7 +740,7 @@ def _internal_voices():
             heard = " | ".join(said) or "you open the debate"
             line = brain.think(f"{g}, a member of the Board", sit,
                                f"Board debate so far: {heard}. In one line, respond to your "
-                               f"colleagues — agree or push back ({stance}).") \
+                               f"colleagues — agree or push back ({stance}).", role=g) \
                 or f"{stance.capitalize()}."
             said.append(f"{g}: {line[:140]}")
             anchor.msg_send("internal", g, line)
@@ -721,7 +763,7 @@ def _peer_chatter():
     _S["last_tip"] = (sender, receiver, res)
     line = brain.think(f"{sender}, a {s_role} in the fleet", _situation(),
                        f"In one short line, coordinate with your colleague {receiver}: "
-                       f"the settlement should gather {res} because {why}.") \
+                       f"the settlement should gather {res} because {why}.", role="fleet") \
         or f"{receiver}, shift to {res} — {why}."
     anchor.msg_send("internal", f"{sender} → {receiver}", line)
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
@@ -1600,6 +1642,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/leaderboard":
             self._count_view()
             return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
+        if self.path == "/providers":
+            self._count_view()
+            return self._send(200, PROVIDERS_PAGE, "text/html; charset=utf-8")
         if self.path == "/work":
             self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
@@ -1619,6 +1664,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
                 "model_calls": anchor.model_calls_stats(),
+                "brain": brain.brain_name(),
+            }))
+        if self.path == "/api/providers":
+            runs = anchor.eval_runs(50)
+            return self._send(200, json.dumps({
+                "roles": MODELS.assignments(),
+                "role_names": list(MODELS.ROLES),
+                "registry": MODELS.catalog(),        # never the keys
+                "tier": MODELS.tier(),
+                "routed": MODELS.active(),
+                "prices": MODELS.prices(),
+                "budget": MODELS.budget_state(),
+                "seats": MODELS.seat_status(),
+                "fallbacks": MODELS.fallbacks(),
+                "by_model": anchor.model_calls_by_model(),
+                "by_decision": anchor.decisions_by_model(),
+                "totals": anchor.model_calls_stats(),
+                "runs": runs,
                 "brain": brain.brain_name(),
             }))
         if self.path == "/api/skillsdata":
@@ -2014,6 +2077,23 @@ class Handler(BaseHTTPRequestHandler):
             anchor.ingest(topic, source, fact)       # Article VI: source recorded, never executed
             anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
             return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/models":
+            # Article X.1 — assigning a model to a role is a HUMAN-ONLY power. This
+            # endpoint is behind the operator token (above); nothing in the fleet, the
+            # board or the tacit-consent clock can reach it. Who thinks for the
+            # organization is nearer to adopting a Vision than to an operational choice.
+            body = self._read_json()
+            role, spec = (body.get("role") or "").strip(), (body.get("model") or "").strip()
+            ok, msg = MODELS.assign(role, spec)
+            if not ok:
+                return self._send(400, json.dumps({"error": msg}))
+            anchor.record(_S["turn"], "models", f"the human assigned {msg}")
+            anchor.reason_add(_S["turn"], "human", f"assign model: {msg}",
+                              "who thinks for the organization is a human-only power "
+                              "(Article X.1); the board may propose a swap, never make one",
+                              authorized_by="human")
+            return self._send(200, json.dumps({"ok": True, "roles": MODELS.assignments(),
+                                               "tier": MODELS.tier()}))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -2090,6 +2170,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/providers">Providers &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2719,7 +2800,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/providers">Providers</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2731,10 +2812,11 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
     <div class=p id=telemetry>loading…</div></div>
   <div class=card><h2>Runs — same world, same constitution, different brains</h2>
-    <table><thead><tr><th>Brain / label</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
+    <table><thead><tr><th>Brain / label</th><th>Tier</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
       <th class=n>Progress</th><th class=n>Net worth</th><th class=n>Value/1k</th>
       <th class=n>Waste</th><th class=n>Spoil evts</th><th class=n>Stall turns</th>
-      <th class=n>Lessons</th><th class=n>Real tokens</th><th class=n>Errors</th><th class=n>Latency</th></tr></thead>
+      <th class=n>Lessons</th><th class=n>Real tokens</th><th class=n>Errors</th><th class=n>Latency</th>
+      <th class=n>Cost</th><th class=n>$ / vision pt</th></tr></thead>
       <tbody id=rows></tbody></table>
     <div class=empty id=empty>No eval runs yet — run <b>python3 gov/evalrun.py --turns 120 --fresh</b> with a brain configured (BRAIN_BASE_URL / BRAIN_API_KEY / BRAIN_MODEL).</div>
     <div class=p>Scorecards are stored permanently in the anchor. Fairness rules in EVAL.md &sect;5:
@@ -2754,7 +2836,8 @@ async function load(){
   empty.style.display=rs.length?'none':'block';
   const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);
   rows.innerHTML=rs.map(r=>`<tr>
-    <td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td><b>${esc(r.label||r.brain||'?')}</b>${r.incomplete?` <span style="color:var(--gold)">(${esc(r.incomplete)})</span>`:''}</td>
+    <td>${esc(r.tier||'ranked')}</td>
     <td>${r._ts?new Date(r._ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</td>
     <td class=n>${r.turns}</td><td>${esc(r.age||'—')}</td>
     <td class="n ${r.progress_pct===bestP&&bestP>0?'best':''}">${r.progress_pct}%</td>
@@ -2763,9 +2846,158 @@ async function load(){
     <td class=n>${r.waste_builds}</td><td class=n>${r.spoilage_events}</td>
     <td class=n>${r.stall_turns}</td><td class=n>${r.lessons_live}</td>
     <td class=n>${((r.real_prompt_tokens||0)+(r.real_completion_tokens||0)).toLocaleString()}</td>
-    <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td></tr>`).join('');
+    <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td>
+    <td class=n>${r.cost_usd?('$'+Number(r.cost_usd).toFixed(4)):'—'}</td>
+    <td class=n>${r.usd_per_vision_point?('$'+Number(r.usd_per_vision_point).toFixed(4)):'—'}</td></tr>`).join('');
 }
 load(); setInterval(load,5000);
+</script>
+</html>"""
+
+
+PROVIDERS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Providers — Phoenix Arena</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1240px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;margin-bottom:14px}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.n{text-align:right}.best{color:var(--green);font-weight:700}.bad{color:var(--red)}
+.p{padding:12px 14px;color:var(--dim);line-height:1.6}
+.tag{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);text-transform:uppercase;letter-spacing:1px}
+.ranked{color:var(--green);border-color:#2c4a3c}.scouting{color:var(--gold);border-color:#5a4a1a}
+select,input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit}
+button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit}
+.bar{height:8px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:6px;max-width:420px}
+.fill{height:100%;background:var(--green);transition:width .5s}
+</style>
+<header><h1>&#9670; PHOENIX ARENA — PROVIDERS</h1>
+  <a href="/">Console</a><a href="/leaderboard">Leaderboard</a><a href="/agents">Agent Health</a>
+  <a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <span class=meta>run tier: <b id=tier>—</b> &middot; default brain: <b id=br>—</b></span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class=card><h2>Who thinks for the organization — assignment is a human-only power (Article X.1)</h2>
+    <table><thead><tr><th>Role</th><th>Model serving it</th><th>Seat health</th><th>Assign</th></tr></thead>
+      <tbody id=roles></tbody></table>
+    <div class=p>A role left unset inherits the default brain. A seat whose provider fails
+      <b>abstains</b> and the abstention is logged — it is never filled by another model.</div></div>
+
+  <div class=card><h2>Budget — dollars govern the experiment, simulated compute governs the settlement</h2>
+    <div class=p id=budget>loading&hellip;</div></div>
+
+  <div class=card><h2>Per model — reliability, cost and governance (from model_calls + decisions)</h2>
+    <table><thead><tr><th>Model</th><th>Roles</th><th class=n>Calls</th><th class=n>Tokens in/out</th>
+      <th class=n>p50</th><th class=n>p95</th><th class=n>Errors</th><th class=n>Cost</th>
+      <th class=n>Decisions</th><th class=n>Closed</th><th class=n>Hit rate</th><th class=n>Grounded</th></tr></thead>
+      <tbody id=perm></tbody></table>
+    <div class=empty id=noperm style="display:none;color:var(--dim);padding:24px;text-align:center">
+      No model calls logged yet.</div>
+    <div class=p><b>Hit rate</b> is the share of <i>closed</i> decisions whose measured outcome was
+      positive — the lineage engine's own record, not a judge's opinion. Decisions whose outcome
+      text cannot be classified count as neither hit nor miss. <b>Grounded</b> is the share citing
+      a real input (a lesson, an event, an observed yield).</div></div>
+
+  <div class=card><h2>Runs — cost per vision point (ranked and scouting kept apart)</h2>
+    <table><thead><tr><th>Label</th><th>Tier</th><th>When</th><th class=n>Turns</th>
+      <th class=n>Progress</th><th class=n>Cost</th><th class=n>$ / vision pt</th><th>Incomplete</th></tr></thead>
+      <tbody id=runs></tbody></table>
+    <div class=p>A run is <b>ranked</b> only when every routed role is a direct provider key with
+      fallbacks off. Anything served through a router is <b>scouting</b>: cheap breadth for
+      screening models, never mixed into ranked tables.</div></div>
+
+  <div class=card><h2>Registry — any OpenAI-compatible endpoint is one entry, not a code change</h2>
+    <table><thead><tr><th>Provider</th><th>Kind</th><th>Base URL</th><th>Default model</th>
+      <th>Tier</th><th>Key</th><th class=n>Price in/out per 1M</th></tr></thead>
+      <tbody id=reg></tbody></table></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const usd=v=>v?('$'+Number(v).toFixed(Number(v)<1?4:2)):'—';
+let DATA={};
+async function load(){
+  let d; try{ d=await (await fetch('/api/providers')).json() }catch(e){ return }
+  DATA=d;
+  br.textContent=d.brain; tier.textContent=d.routed?d.tier:'unrouted (single brain)';
+  tier.className=d.routed?d.tier:'';
+  const opts=['<option value="">default</option>'].concat((d.registry||[]).map(p=>
+    `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`)).join('');
+  roles.innerHTML=(d.role_names||[]).map(r=>{
+    const seat=(d.seats||{})[r]||{}, served=(d.roles||{})[r];
+    const health=seat.at?(seat.ok?'<span class=best>ok</span>':
+      `<span class=bad>failing — abstains (${esc(seat.error||'error')})</span>`):'—';
+    return `<tr><td><b>${esc(r)}</b></td><td>${served?esc(served):'<span style="color:var(--dim)">default brain</span>'}</td>
+      <td>${health}</td>
+      <td><select id="sel-${esc(r)}">${opts}</select>
+        <input id="mdl-${esc(r)}" placeholder="model (optional)" style="width:170px">
+        <button onclick="assign('${esc(r)}')">Assign</button></td></tr>`}).join('');
+  (d.role_names||[]).forEach(r=>{const s=document.getElementById('sel-'+r);
+    const cur=((d.roles||{})[r]||'').split(':')[0]; if(s&&cur)s.value=cur});
+  const b=d.budget||{};
+  budget.innerHTML=b.limit?
+    `ceiling <b>${usd(b.limit)}</b> &middot; spent <b>${usd(b.spent)}</b> &middot; remaining <b>${usd(b.remaining)}</b>`+
+    (b.over?' &middot; <span class=bad>CEILING REACHED — runs halt, they do not finish on a cheaper model</span>':'')+
+    `<div class=bar><div class=fill style="width:${Math.min(100,100*(b.spent||0)/b.limit)}%"></div></div>`
+    :`No ceiling set (<b>EVAL_BUDGET_USD</b> unset) &middot; spent this process <b>${usd(b.spent)}</b>. `+
+     `Total logged spend: <b>${usd((d.totals||{}).cost_usd)}</b> across `+
+     `<b>${((d.totals||{}).calls||0).toLocaleString()}</b> calls.`;
+  budget.innerHTML+=`<div style="margin-top:6px">rule-based rescues since boot: `+
+    `<b class="${d.fallbacks?'bad':''}">${d.fallbacks||0}</b> — a model that errors scores `+
+    `the error, so every fallback is counted, never credited to the model.</div>`;
+  const dec={}; (d.by_decision||[]).forEach(x=>dec[x.model]=x);
+  const rows=d.by_model||[];
+  noperm.style.display=rows.length?'none':'block';
+  const bestHit=Math.max(...Object.values(dec).map(x=>x.hit_rate||0),0);
+  perm.innerHTML=rows.map(m=>{const g=dec[m.model]||{};
+    return `<tr><td><b>${esc(m.model)}</b></td><td>${esc((m.roles||[]).join(', ')||'default')}</td>
+    <td class=n>${m.calls.toLocaleString()}</td>
+    <td class=n>${(m.prompt_tokens||0).toLocaleString()} / ${(m.completion_tokens||0).toLocaleString()}</td>
+    <td class=n>${m.p50_ms}ms</td><td class=n>${m.p95_ms}ms</td>
+    <td class="n ${m.error_rate>10?'bad':''}">${m.error_rate}%</td>
+    <td class=n>${usd(m.cost_usd)}</td>
+    <td class=n>${g.decisions||0}</td><td class=n>${g.closed_pct||0}%</td>
+    <td class="n ${g.hit_rate!=null&&g.hit_rate===bestHit&&bestHit>0?'best':''}">${g.hit_rate!=null?g.hit_rate+'%':'—'}</td>
+    <td class=n>${g.grounded_pct||0}%</td></tr>`}).join('');
+  runs.innerHTML=(d.runs||[]).map(r=>`<tr><td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td><span class="tag ${esc(r.tier||'ranked')}">${esc(r.tier||'ranked')}</span></td>
+    <td>${r._ts?new Date(r._ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+    <td class=n>${r.turns}</td><td class=n>${r.progress_pct}%</td>
+    <td class=n>${usd(r.cost_usd)}</td><td class=n>${usd(r.usd_per_vision_point)}</td>
+    <td>${r.incomplete?`<span class=bad>${esc(r.incomplete)}</span>`:'—'}</td></tr>`).join('')
+    ||'<tr><td colspan=8 style="color:var(--dim)">no eval runs yet</td></tr>';
+  const pr=d.prices||{};
+  reg.innerHTML=(d.registry||[]).map(p=>{
+    const price=Object.entries(pr).filter(([k])=>(p.model||'').toLowerCase().startsWith(k.toLowerCase()))
+      .sort((a,b)=>b[0].length-a[0].length)[0];
+    return `<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.kind)}</td><td>${esc(p.base_url)}</td>
+    <td>${esc(p.model||'—')}</td><td><span class="tag ${esc(p.tier)}">${esc(p.tier)}</span></td>
+    <td>${p.keyed?'<span class=best>set</span>':`<span class=bad>missing ${esc(p.key_env||'')}</span>`}</td>
+    <td class=n>${price?('$'+price[1].in+' / $'+price[1].out):'unpriced'}</td></tr>`}).join('');
+}
+async function assign(role){
+  const p=document.getElementById('sel-'+role).value;
+  const m=document.getElementById('mdl-'+role).value.trim();
+  const spec=p?(m?p+':'+m:p):'';
+  const r=await fetch('/api/models',{method:'POST',headers:{'Content-Type':'application/json',
+    'X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({role,model:spec})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return assign(role)}return}
+  if(!r.ok){alert((await r.json()).error||'failed');return}
+  load();
+}
+load(); setInterval(load,6000);
 </script>
 </html>"""
 
@@ -2798,7 +3030,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/providers">Providers</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>

@@ -25,6 +25,8 @@ framework. Everything it needs is already in the repo.
 | `GOV_DATA_DIR=/data` | Point the SQLite DB at a mounted **Volume** so game state survives redeploys |
 | `DEEPSEEK_API_KEY` | Turns on the DeepSeek brain (`brain.py`); also `pip install openai` |
 | `DEEPSEEK_MODEL` | Optional model override (default `deepseek-chat`) |
+| `MODEL_ROLE_*` / `MODEL_REGISTRY` | **Arena only**: a different model per seat. Set these on the *arena* service, never on the live settlement — an experiment that swaps its governor mid-flight corrupts both the experiment and the demo ([`ARENA.md`](ARENA.md) §7) |
+| `EVAL_BUDGET_USD` | Arena only: the dollar ceiling per run. On breach the run halts and its scorecard is marked `incomplete: budget` |
 
 ## State persistence
 
