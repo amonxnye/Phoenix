@@ -2,8 +2,10 @@
 
 **Status: v1 shipped.** The constitution pointed at **supply chain and logistics**:
 planning replenishment, routing, allocation and capacity — proposing decisions a human
-commits to. Steps 1–4 of the build order are code, with 50 acceptance checks in CI
-(`gov/verify_logistics.py`, ~10s, no model and no network required).
+commits to. Steps 1–4 of the build order are code, with three suites in CI and no model, network or API key needed by any of them:
+**107 unit tests**, **50 acceptance checks**, and an **end-to-end smoke test that
+measures the agents** (`test_logistics.py`, `verify_logistics.py`,
+`smoke_logistics.py` — about 25 seconds together).
 
 > **The oracle is the simulator; the gate is the purchase order.**
 
@@ -12,7 +14,7 @@ commits to. Steps 1–4 of the build order are code, with 50 acceptance checks i
 | The world | `gov/logistics_world.py` — 4 SKUs × 2 nodes, 180 days, one fixed seed |
 | The agent | `gov/planner.py` — propose a policy, get scored on demand it never saw |
 | The console | `gov/logistics_console.py` + `phoenix-command.html` — the surface a planner works in |
-| The proof | `gov/verify_logistics.py` — 50 checks |
+| The proof | `test_logistics.py` (107 unit tests) · `verify_logistics.py` (50 acceptance checks) · `smoke_logistics.py` (end-to-end, with agent performance) |
 | Try it | `python3 gov/logistics_console.py --seed` → <http://127.0.0.1:8790> |
 
 ### The console
@@ -119,15 +121,34 @@ Phoenix adds:
 | do nothing | 38.5 | 38.5 | 38.5 | 60.2% | $282 | $0 | $15,162 |
 | naive reorder point (the baseline) | 73.6 | 75.9 | 70.2 | 94.8% | $17,157 | $3,980 | $2,097 |
 | order everything (the absurd one) | 62.0 | 66.1 | 55.9 | **100.0%** | $110,332 | $35,928 | $0 |
-| **the planner, after 20 proposals** | **91.6** | **100.0** | **78.9** | **99.3%** | **$14,903** | **$0** | **$683** |
+| **the planner, after 20 proposals** | **91.1** | **100.0** | **77.8** | **98.7%** | **$14,558** | **$0** | **$776** |
 
 Read the third row: the absurd policy *wins outright on service* and still loses,
 because capital and waste are on the same scorecard. That is the whole anti-gaming
 argument, and it is an assertion in CI rather than a claim in a README.
 
 Read the fourth row: the nominal holdout is now **saturated** (100.0) while the worst
-disruption sits at 78.9. All the remaining headroom is robustness — which is exactly
-where a supply chain's remaining headroom actually is.
+disruption sits at 77.8. All the remaining headroom is robustness — which is exactly
+where a supply chain's remaining headroom actually is, and the planner says so itself:
+every run ends by naming its binding constraint (Article IX).
+
+### And what the agents cost
+
+The smoke test reports the fleet the way the settlement's production audit reported
+its own, because those turned out to be the numbers that mattered:
+
+| | |
+|---|---|
+| proposals that moved the plan | 5 of 20 — **25% liveness** |
+| rejected per adoption | 3.0 : 1 |
+| score points won | **+17.5** on held-out demand |
+| points per second of simulation | 8.1 |
+| simulations run | 100 (every proposal against every disruption) |
+| throughput | **46 simulations/second**, 0.11s per proposal |
+| read path | p95 **158 ms** |
+
+Those floors are asserted, not just printed: a run that clears every stage but leaves
+the fleet having improved nothing exits non-zero.
 
 ## 6. What the operator still sets
 

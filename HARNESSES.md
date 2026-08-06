@@ -24,7 +24,7 @@ That is the whole selection rule.
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |
 | `harness/data` | Data engineering & analysis | data contracts passing on staging | any production write, deletion, backfill or export | design |
-| `harness/logistics` | Supply chain & logistics | a network simulator replaying held-out demand, plus disruption scenarios | **the purchase order** | **v1 shipped** (`logistics_world.py`, `planner.py`, a console, 50 checks) |
+| `harness/logistics` | Supply chain & logistics | a network simulator replaying held-out demand, plus disruption scenarios | **the purchase order** | **v1 shipped** (`logistics_world.py`, `planner.py`, a console, 107 unit tests + 50 acceptance checks + a smoke test) |
 
 ### What the second shipped domain actually cost
 

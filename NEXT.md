@@ -4,13 +4,18 @@
 network (`gov/logistics_world.py`), a planner agent that is paid only for what the
 simulator measures (`gov/planner.py`), four disruption scenarios, a purchase-order gate
 that no model can walk through, and an operator surface a planner can actually work in
-(`gov/logistics_console.py` + `phoenix-command.html`) — proven by 50 acceptance checks
-in CI (`gov/verify_logistics.py`, ~10s, no model and no network required).
+(`gov/logistics_console.py` + `phoenix-command.html`) — proven by three suites in CI, none of
+which needs a model, a network or an API key: **107 unit tests** (`test_logistics.py`),
+**50 acceptance checks** (`verify_logistics.py`) and an **end-to-end smoke test that
+measures the agents and fails if they underperform** (`smoke_logistics.py`).
 
 ```
 naive reorder point   fill 94.8%  capital $17,157  waste $3,980  →  score 73.6
-after 20 proposals    fill 99.3%  capital $14,903  waste     $0  →  score 91.6
-                                            (nominal 100.0, worst case 78.9)
+after 20 proposals    fill 98.7%  capital $14,558  waste     $0  →  score 91.1
+                                            (nominal 100.0, worst case 77.8)
+
+5 of 20 proposals moved the plan · 3.0 rejected per adoption · +17.5 points won
+46 simulations/second · 0.11s per proposal · read path p95 158ms
 ```
 
 ## Done
@@ -30,6 +35,19 @@ after 20 proposals    fill 99.3%  capital $14,903  waste     $0  →  score 91.6
   disjoint ballots, and the running price of every day of silence (IV.4). Tacit consent
   (IV.7) reaches only inside a pre-approved envelope the human sets in the environment;
   unset by default, so nothing is ever bought by silence.
+- **Tests, at three levels.** 107 unit tests (one behaviour per function, hermetic),
+  50 acceptance checks (the constitution's claims, in the language a human reads), and
+  a smoke test that boots the real console on a real socket, drives the whole visitor
+  journey, and reports the fleet's performance against floors it must clear to exit 0.
+  Writing them found four real defects: a safety factor could push a perishable's
+  reorder point past its shelf life, `rounds: 0` silently became the default, reported
+  lead-time demand did not reconcile with the mean it was derived from, and one
+  disruption scenario was decoration — halving vendor capacity left a tuned plan
+  completely untouched.
+- **Multi-user, no accounts.** Everyone is a guest with a derived, stable handle that
+  signs everything they do. One planning run at a time (a non-blocking lock), a
+  per-guest cooldown, and a compare-and-set gate so of two people deciding the same
+  dossier only the first lands and the second is told.
 - **The console** (build order §3, brought forward). `gov/logistics_console.py` serves
   `phoenix-command.html` — the mandate as four meters, the plan per SKU, the four
   disruption scores, and the gate queue with approve/reject. Planning runs from a

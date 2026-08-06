@@ -57,7 +57,26 @@ SKUS = {
                  "vendor": "PartsCo", "lead": 21},
 }
 A_LIST = tuple(k for k, v in SKUS.items() if v["a_list"])
-VENDOR_CAPACITY = {"AgriCo": 400, "BulkCo": 900, "Atelier": 40, "PartsCo": 60}   # units/day
+
+# Units per vendor per day. Deliberately generous — roughly 6-16x mean demand — because
+# in THIS network supply is not the binding constraint: shelf life and demand
+# variability are, and a plan is judged on how it handles those. That choice has a
+# consequence worth knowing before changing it: tighten these toward ~2x demand and the
+# naive baseline's central weakness (over-ordering perishables) is masked, because the
+# supplier throttles the over-ordering for it. Its score climbs from 74 to 98 and the
+# separation the whole harness rests on disappears. If capacity should be the binding
+# constraint, that is a different network, not a smaller number here.
+VENDOR_CAPACITY = {"AgriCo": 400, "BulkCo": 900, "Atelier": 40, "PartsCo": 60}
+
+CURRENCY = os.environ.get("GOV_CURRENCY", "$")      # one symbol, one place to change it
+
+
+def m(x: float, dp: int = 0) -> str:
+    """Money, formatted once. Every human-facing figure in this harness — the console,
+    the dossier, the CLI — goes through here, so a deployment in another currency is one
+    environment variable and not a grep."""
+    return f"{CURRENCY}{x:,.{dp}f}"
+
 
 HOLDING_RATE = 0.0008               # per unit of stock value per day (~30%/yr)
 PO_COST = 60.0                      # fixed cost of raising a purchase order
@@ -94,8 +113,14 @@ SCENARIOS = {
                           "vendor_lead_x": 2},
     "demand_spike":     {"label": "demand runs 2.2x for two weeks",
                          "demand_x": 2.2, "window": (150, 163)},
-    "capacity_cut":     {"label": "vendor capacity halves",
-                         "vendor_cap_x": 0.5},
+    # 0.1, not 0.5. A HALVED capacity is not a disruption in this network — the tuned
+    # plan does not notice it at all (identical fill, identical score), which made this
+    # scenario decoration: a robustness test that never tests anything, the same defect
+    # as a governor whose vote never varies. A vendor losing 90% of its output — a fire,
+    # an export ban — is a disruption, and it costs the tuned plan real service.
+    # `test_every_scenario_actually_bites` keeps it that way.
+    "capacity_cut":     {"label": "a vendor loses 90% of its capacity",
+                         "vendor_cap_x": 0.1},
 }
 
 
@@ -181,11 +206,16 @@ def train_stats() -> dict:
         mean = sum(series) / n
         var = sum((x - mean) ** 2 for x in series) / n
         s = SKUS[k]
-        out[k] = {"mean_daily": round(mean, 2), "stdev": round(var ** 0.5, 2),
+        # Every figure here is derived from the ROUNDED mean, so a planner reading
+        # "41.42/day over a 4-day lead" can do the multiplication and get the number
+        # printed next to it. Reported arithmetic that does not reconcile is a bug
+        # report waiting to happen.
+        mean_daily = round(mean, 2)
+        out[k] = {"mean_daily": mean_daily, "stdev": round(var ** 0.5, 2),
                   "peak": max(series), "lead_days": s["lead"], "vendor": s["vendor"],
                   "unit_cost": s["cost"], "shelf_life": s["shelf_life"],
                   "a_list": s["a_list"],
-                  "lead_demand": round(mean * s["lead"], 1)}
+                  "lead_demand": round(mean_daily * s["lead"], 1)}
     return out
 
 
@@ -233,13 +263,18 @@ def build_policy(knobs: dict) -> dict:
     for sku in SKUS:
         mu, sd, life = st[sku]["mean_daily"], st[sku]["stdev"], SKUS[sku]["shelf_life"]
         p[sku] = {}
+        shelf_ceiling = mu * life * SHELF_TURN
         for node in NODES:
             lead = DC_LEAD if node == "store" else st[sku]["lead_days"]
             k = (knobs.get(sku, {}) or {}).get(node, {}) or DEFAULT_KNOBS
             z = max(0.0, float(k.get("z", DEFAULT_KNOBS["z"])))
             cover = max(0.0, float(k.get("cover", DEFAULT_KNOBS["cover"])))
-            s = mu * lead + z * sd * math.sqrt(lead)
-            big = min(s + cover * mu, mu * life * SHELF_TURN)
+            # Shelf life binds the REORDER POINT as well as the order-up-to level. It
+            # is a physical wall, not a preference: without this, a large enough safety
+            # factor pushes s above the ceiling and S is dragged up with it, and the
+            # plan quietly holds more perishable stock than it can ever sell.
+            s = min(mu * lead + z * sd * math.sqrt(lead), shelf_ceiling)
+            big = min(s + cover * mu, shelf_ceiling)
             p[sku][node] = {"s": s, "S": max(big, s)}
     return normalize_policy(p)
 
@@ -576,6 +611,8 @@ def leaderboard(limit: int = 10) -> list[dict]:
 # ── the gate: a commitment is a dossier, not an order ─────────────────────────
 
 TACIT_CONSENT_S = 3600              # Article IV.7 — an hour of silence goes to the Board
+CANCEL_WINDOW_S = 86_400            # how long a vendor lets a raised order be cancelled
+CANCEL_FEE_PCT = 0.05               # what they charge for the privilege
 
 
 def envelope() -> dict:
@@ -603,10 +640,10 @@ def within_envelope(d: dict) -> tuple[bool, str]:
     if d["vendor"] not in env["vendors"]:
         return False, f"{d['vendor']} is not a pre-approved vendor"
     if d["value"] > env["max_value"]:
-        return False, (f"${d['value']:,.0f} exceeds the pre-approved ceiling "
-                       f"${env['max_value']:,.0f}")
+        return False, (f"{m(d['value'])} exceeds the pre-approved ceiling "
+                       f"{m(env['max_value'])}")
     return True, (f"inside the envelope: {d['sku']} from {d['vendor']} at "
-                  f"${d['value']:,.0f} ≤ ${env['max_value']:,.0f}")
+                  f"{m(d['value'])} ≤ {m(env['max_value'])}")
 
 
 def wait_cost_per_day(sku: str) -> float:
@@ -629,15 +666,17 @@ def propose_commitment(agent: str, sku: str, qty: int, node: str = "dc",
     qty = max(1, int(qty))
     value = round(qty * s["cost"], 2)
     lead = s["lead"] if node == "dc" else DC_LEAD
-    cancel_fee = round(value * 0.05, 2)
+    cancel_fee = round(value * CANCEL_FEE_PCT, 2)
     d = {"agent": agent, "sku": sku, "node": node, "qty": qty, "vendor": s["vendor"],
          "value": value, "eta": lead,
          "forecast": forecast or (f"train-window mean {train_stats()[sku]['mean_daily']}/day, "
                                   f"{lead}-day lead → {train_stats()[sku]['lead_demand']} "
                                   f"units of lead-time cover"),
-         "rollback": (f"cancellable with {s['vendor']} until 24h before dispatch for a "
-                      f"5% fee (${cancel_fee:,.2f}); after dispatch the goods are ours"),
-         "cancel_by": time.time() + 86400, "cancel_fee": cancel_fee,
+         "rollback": (f"cancellable with {s['vendor']} until "
+                      f"{CANCEL_WINDOW_S // 3600}h before dispatch for a "
+                      f"{CANCEL_FEE_PCT:.0%} fee ({m(cancel_fee, 2)}); after dispatch "
+                      f"the goods are ours"),
+         "cancel_by": time.time() + CANCEL_WINDOW_S, "cancel_fee": cancel_fee,
          "wait_cost_per_day": wait_cost_per_day(sku)}
     c = _conn()
     try:
@@ -675,7 +714,7 @@ def commitments(status: str = "") -> list[dict]:
     out = [dict(zip(keys, r)) for r in rows]
     now = time.time()
     for d in out:                                   # IV.4: the running cost of waiting
-        waited = max(0.0, (now - d["ts"]) / 86400.0)
+        waited = max(0.0, (now - d["ts"]) / 86_400.0)     # days
         d["waited_days"] = round(waited, 3)
         d["cost_of_waiting"] = round(waited * d["wait_cost_per_day"], 2)
         try:
@@ -724,7 +763,7 @@ def tacit_sweep(board_vote, ctx, now: float | None = None) -> list[dict]:
             out.append({"id": d["id"], "action": "still waiting", "why": why})
             continue
         v = board_vote(f"commit {d['qty']}× {d['sku']} from {d['vendor']} "
-                       f"(${d['value']:,.0f})", ctx(d) if callable(ctx) else ctx)
+                       f"({m(d['value'])})", ctx(d) if callable(ctx) else ctx)
         if v["approved"]:
             decide(d["id"], "tacit", "board (tacit consent)",
                    f"{why}; board {v['tally']} after an hour of silence")
@@ -754,7 +793,7 @@ def render_world() -> str:
     w = world()
     return (f"{w['skus']} SKUs × {w['nodes']} nodes | policies scored {w['policies_scored']:>3} "
             f"| incumbent {w['incumbent_score']:>5.1f}/100  fill {w['fill_rate']:.1%}  "
-            f"capital ${w['working_capital']:,.0f} | mandate "
+            f"capital {m(w['working_capital'])} | mandate "
             f"{'MET' if w['mandate_met'] else 'unmet'} | gate: "
             f"{w['commitments_pending']} pending")
 
@@ -768,5 +807,5 @@ if __name__ == "__main__":
         n = v["nominal"]
         print(f"{name:<22} score {v['score']:>6.2f}  (nominal {n['score']:>6.2f}, "
               f"worst {v['robust_score']:>6.2f} @ {v['worst'] or '-':<18}) "
-              f"fill {n['fill_rate']:.1%}  capital ${n['working_capital']:>9,.0f}  "
-              f"waste ${n['waste_cost']:>8,.0f}  expedite ${n['expedite_spend']:>8,.0f}")
+              f"fill {n['fill_rate']:.1%}  capital {m(n['working_capital']):>10}  "
+              f"waste {m(n['waste_cost']):>9}  expedite {m(n['expedite_spend']):>9}")

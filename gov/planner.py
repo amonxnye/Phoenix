@@ -27,6 +27,7 @@ import json
 import os
 import random
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -75,17 +76,20 @@ def prompt_for(incumbent: dict) -> str:
         f"Stock older than its shelf life is scrapped. A stockout on an A-list SKU "
         f"triggers emergency freight, which is expensive and arrives a day late.\n\n"
         f"The mandate: fill rate ≥ {L.TARGET_FILL:.0%}, average working capital ≤ "
-        f"${L.CAPITAL_CEILING:,.0f}, zero stockouts on the A-list "
-        f"({', '.join(L.A_LIST)}), waste under ${L.WASTE_BUDGET:,.0f} and emergency "
-        f"freight under ${L.EXPEDITE_BUDGET:,.0f}.\n\n"
+        f"{L.m(L.CAPITAL_CEILING)}, A-list fill ≥ {L.A_LIST_FILL_FLOOR:.0%} "
+        f"({', '.join(L.A_LIST)}), waste under {L.m(L.WASTE_BUDGET)} and emergency "
+        f"freight under {L.m(L.EXPEDITE_BUDGET)}.\n\n"
         f"--- what the readable history says (days {L.TRAIN[0]}-{L.TRAIN[1]}) ---\n"
         f"{json.dumps(stats, indent=1)}\n\n"
         f"--- the policy running today ---\n{json.dumps(incumbent['policy'], indent=1)}\n"
         f"On the readable window it delivers fill {train['fill_rate']:.1%}, working "
-        f"capital ${train['working_capital']:,.0f}, waste ${train['waste_cost']:,.0f}, "
-        f"emergency freight ${train['expedite_spend']:,.0f}.\n"
+        f"capital {L.m(train['working_capital'])}, waste {L.m(train['waste_cost'])}, "
+        f"emergency freight {L.m(train['expedite_spend'])}.\n"
         f"It will be judged on a later period you cannot see, and on disruption "
         f"scenarios: {', '.join(s['label'] for s in L.SCENARIOS.values())}.\n\n"
+        + (f"--- what this fleet has already paid to learn ---\n"
+           f"{lessons_for_prompt()}\n\n" if lessons_for_prompt() else "")
+        + f"The thinnest axis right now: {binding_constraint()['why']}.\n\n"
         "Reply with ONLY a JSON object of the form "
         '{"SKU": {"dc": {"s": 0, "S": 0}, "store": {"s": 0, "S": 0}}, ...} '
         "covering every SKU. No prose, no fences."
@@ -171,7 +175,7 @@ def evaluate_and_score(agent: str, policy: dict, how: str = "search",
     L.adopt(pid)
     did = anchor.reason_add(
         -1, agent, f"adopt policy #{pid}",
-        f"held-out fill {n['fill_rate']:.1%} at ${n['working_capital']:,.0f} working "
+        f"held-out fill {n['fill_rate']:.1%} at {L.m(n['working_capital'])} working "
         f"capital; worst disruption {verdict['robust_score']:.1f} "
         f"({verdict['worst'] or 'none'}); joint score {inc['score']:.1f} → "
         f"{verdict['score']:.1f}",
@@ -179,13 +183,13 @@ def evaluate_and_score(agent: str, policy: dict, how: str = "search",
     ev = anchor.record(-1, "work",
                        f"{agent} adopted policy #{pid} — score {inc['score']:.1f}→"
                        f"{verdict['score']:.1f}, fill {n['fill_rate']:.1%}, capital "
-                       f"${n['working_capital']:,.0f}, mandate "
+                       f"{L.m(n['working_capital'])}, mandate "
                        f"{'MET' if n['mandate_met'] else 'unmet'}")
     anchor.decision_close(did, ev, outcome=f"+{got} contribution; robust "
                                            f"{verdict['robust_score']:.1f}")
     anchor.career_add(agent, -1, "work", f"policy #{pid}: +{gain:.1f} score on the "
                                          f"holdout (+{got} contribution)")
-    _learn(n)
+    _learn(n, inc["verdict"]["nominal"])
     promo = economy.evaluate(agent)
     if promo:
         anchor.record(-1, "promote", f"{agent} promoted -> {promo}")
@@ -198,17 +202,66 @@ def evaluate_and_score(agent: str, policy: dict, how: str = "search",
             "mandate_met": n["mandate_met"], "promoted": promo, "decision_id": did}
 
 
-def _learn(n: dict) -> None:
-    """A lesson outlives the agent that paid for it (Article VI). Only the two failures
-    this domain actually repeats are worth the anchor's space."""
+def _learn(n: dict, previous: dict | None = None) -> None:
+    """A lesson outlives the agent that paid for it (Article VI).
+
+    The settlement's rule is the one worth copying: a lesson is only worth storing if
+    it would change a later decision, and it must carry the evidence that bought it.
+    Every lesson below is written from the ORACLE'S numbers at the moment they were
+    measured — none is a maxim someone typed in — and `lessons_for_prompt` reads them
+    back into the next proposal, because a lesson nobody reads is a diary entry.
+    """
     if n["waste_cost"] > L.WASTE_BUDGET:
         anchor.skill_add(-1, f"cover beyond a SKU's shelf life is not safety stock, it is "
-                             f"waste — ${n['waste_cost']:,.0f} scrapped in the holdout",
+                             f"waste — {L.m(n['waste_cost'])} scrapped in the holdout",
                          source="logistics oracle", trigger="waste over budget")
     if n["expedite_spend"] > L.EXPEDITE_BUDGET:
         anchor.skill_add(-1, f"emergency freight lands a day late: it pays for the next "
-                             f"sale, never the lost one (${n['expedite_spend']:,.0f} spent)",
+                             f"sale, never the lost one ({L.m(n['expedite_spend'])} spent)",
                          source="logistics oracle", trigger="expedite over budget")
+    if n["working_capital"] > L.CAPITAL_CEILING and n["fill_rate"] >= L.TARGET_FILL:
+        anchor.skill_add(-1, f"service was already met at {n['fill_rate']:.1%} — the "
+                             f"{L.m(n['working_capital'] - L.CAPITAL_CEILING)} above the "
+                             f"ceiling bought nothing the scorecard rewards",
+                         source="logistics oracle", trigger="capital over ceiling")
+    if n["a_list_fill"] < L.A_LIST_FILL_FLOOR <= n["fill_rate"] / 1.0:
+        anchor.skill_add(-1, f"the average fill hid the A-list: {n['a_list_fill']:.1%} on "
+                             f"the lines that matter against {n['fill_rate']:.1%} overall",
+                         source="logistics oracle", trigger="a-list below floor")
+    # Success teaches too, and a fleet that only learns from breaches learns nothing on
+    # the days it works. But it must fire on the CROSSING, not on the state: recording
+    # "the mandate is met" on every adoption while it stays met wrote four near-identical
+    # lessons in one run, which is the firehose the settlement's data-diet audit warned
+    # about — the anchor's dedup cannot catch them because the numbers differ slightly.
+    if n["mandate_met"] and not (previous or {}).get("mandate_met", False):
+        anchor.skill_add(-1, f"the mandate is reachable at {L.m(n['working_capital'])} of "
+                             f"capital: {n['fill_rate']:.1%} fill, A-list "
+                             f"{n['a_list_fill']:.1%}, {L.m(n['waste_cost'])} waste",
+                         source="logistics oracle", trigger="mandate met")
+
+
+def _learn_constraint_moved(before: dict, after: dict) -> None:
+    """The most valuable thing a search can report is that the SHAPE of the problem
+    changed — the axis that was binding no longer is. One lesson per move, never per
+    proposal: the settlement's own audit showed a firehose of activity buries the
+    signal it was meant to carry."""
+    if before.get("axis") and after.get("axis") and before["axis"] != after["axis"]:
+        anchor.skill_add(-1, f"the binding constraint moved from {before['axis']} to "
+                             f"{after['axis']} — {after['why']}",
+                         source="logistics oracle", trigger="binding constraint moved")
+
+
+def lessons_for_prompt(limit: int = 4) -> str:
+    """What this fleet has already paid to find out. Fed back into the next proposal so
+    the next planner starts where the last one stopped (Article VI) — the settlement's
+    finding was that lessons only pay when they are read at the point of decision."""
+    try:
+        got = anchor.skills_top(limit)
+    except Exception:
+        return ""
+    if not got:
+        return ""
+    return "\n".join(f"- {s['lesson']}" for s in got)
 
 
 def plan_cycle(agent: str, round_no: int = 0) -> dict:
@@ -219,24 +272,107 @@ def plan_cycle(agent: str, round_no: int = 0) -> dict:
 
 def run_search(agent: str, rounds: int = SEARCH_ROUNDS) -> dict:
     """The v1 bar: propose and score `rounds` policies, keeping whatever beats the
-    incumbent. Deterministic and model-free by default."""
-    adopted, best = [], None
+    incumbent. Deterministic and model-free by default, and measured throughout —
+    a run that produced nothing has to say so, and say what stopped it."""
+    # Seed the baseline BEFORE the clock starts, or the first run credits itself with
+    # the naive plan's score and every efficiency number is inflated.
+    started = ensure_incumbent()["score"]
+    constraint_before = binding_constraint()
+    t0 = time.perf_counter()
+    results = []
     for i in range(rounds):
+        r0 = time.perf_counter()
         r = plan_cycle(agent, i)
-        if r["did"] == "adopted":
-            adopted.append(r)
-            best = r
+        r["seconds"] = round(time.perf_counter() - r0, 3)
+        results.append(r)
+    elapsed = time.perf_counter() - t0
+    _learn_constraint_moved(constraint_before, binding_constraint())
+    adopted = [r for r in results if r["did"] == "adopted"]
     inc = L.incumbent()
     base = L.oracle(L.naive_reorder_point())["nominal"]
     n = inc["verdict"]["nominal"]
-    return {"agent": agent, "proposed": rounds, "adopted": len(adopted),
-            "best_policy_id": inc["id"], "score": inc["score"],
-            "robust_score": inc["robust_score"],
-            "beats_baseline_on_service": n["fill_rate"] > base["fill_rate"],
-            "beats_baseline_on_capital": n["working_capital"] < base["working_capital"],
-            "mandate_met": n["mandate_met"],
-            "contribution": sum(a["contribution"] for a in adopted),
-            "last": best}
+    out = {"agent": agent, "proposed": rounds, "adopted": len(adopted),
+           "best_policy_id": inc["id"], "score": inc["score"],
+           "robust_score": inc["robust_score"],
+           "beats_baseline_on_service": n["fill_rate"] > base["fill_rate"],
+           "beats_baseline_on_capital": n["working_capital"] < base["working_capital"],
+           "mandate_met": n["mandate_met"],
+           "contribution": sum(a["contribution"] for a in adopted),
+           "performance": performance(results, elapsed, inc["score"] - started),
+           "binding_constraint": binding_constraint(),
+           "last": adopted[-1] if adopted else None}
+    if not adopted:
+        # Article IX in this domain: a run that changed nothing is not a quiet success.
+        # It names what stopped it, on the record, where a human will see it.
+        anchor.record(-1, "stall", f"{agent} proposed {rounds} policies and moved nothing "
+                                   f"— binding constraint: {out['binding_constraint']['why']}")
+    return out
+
+
+# ── measuring the agents, the way the settlement learned to ───────────────────
+#
+# The settlement's production audit found the failure that matters is not a wrong
+# answer, it is a fleet that talks: 21% of turns changed the world, and the talk-to-
+# action ratio was 3.78:1. The fix was to measure the right things and put them where
+# a human reads them. The same three questions transfer exactly:
+#
+#   * did the world actually change?        → moved_pct (the liveness rate)
+#   * how much talking bought that?         → talk_to_action (rejected per adoption)
+#   * what did it cost per point won?       → points_per_second, seconds_per_proposal
+#
+# A planner that proposes twenty policies and adopts none is the logistics twin of a
+# fleet reaching consensus and producing nothing, and it is reported as a stall.
+
+def performance(results: list[dict], elapsed: float, points: float) -> dict:
+    n = len(results) or 1
+    adopted = [r for r in results if r["did"] == "adopted"]
+    sims = n * (1 + len(L.SCENARIOS))          # every proposal is scored on all tiers
+    return {
+        "proposals": len(results),
+        "adopted": len(adopted),
+        "adoption_rate": round(len(adopted) / n, 3),
+        "moved_pct": round(100.0 * len(adopted) / n, 1),
+        "talk_to_action": round((len(results) - len(adopted)) / max(len(adopted), 1), 2),
+        "points_won": round(points, 2),
+        "points_per_proposal": round(points / n, 3),
+        "points_per_second": round(points / elapsed, 3) if elapsed > 0 else 0.0,
+        "seconds_total": round(elapsed, 2),
+        "seconds_per_proposal": round(elapsed / n, 3),
+        "simulations": sims,
+        "simulations_per_second": round(sims / elapsed, 1) if elapsed > 0 else 0.0,
+    }
+
+
+def binding_constraint() -> dict:
+    """What is actually stopping this plan from scoring better — named, not guessed.
+
+    Article IX says a stall must name its binding constraint; the settlement's audit
+    showed that reports which name it are the ones that get acted on. Here the answer
+    is always available because the scorecard is an explicit weighted sum: the binding
+    constraint is the axis with the least score left in it, and if every axis is full
+    on an average day then the binding constraint is the worst disruption.
+    """
+    inc = ensure_incumbent()
+    n, v = inc["verdict"]["nominal"], inc["verdict"]
+    parts = L.components(n)
+    axis = min(parts, key=lambda k: parts[k])
+    detail = {
+        "service": f"fill {n['fill_rate']:.1%} against a {L.TARGET_FILL:.0%} target",
+        "capital": f"{L.m(n['working_capital'])} held against a "
+                   f"{L.m(L.CAPITAL_CEILING)} ceiling",
+        "waste": f"{L.m(n['waste_cost'])} scrapped against a {L.m(L.WASTE_BUDGET)} budget",
+        "expedite": f"{L.m(n['expedite_spend'])} of emergency freight against a "
+                    f"{L.m(L.EXPEDITE_BUDGET)} budget",
+    }[axis]
+    if parts[axis] >= 0.999:
+        worst = v.get("worst") or ""
+        return {"axis": "robustness", "score": v["robust_score"],
+                "why": f"every axis is full on an average day — what is left is the "
+                       f"worst disruption ({worst or 'none scored'}), which scores "
+                       f"{v['robust_score']:.1f} against a nominal {n['score']:.1f}"}
+    return {"axis": axis, "score": round(parts[axis], 3),
+            "why": f"{axis} is the thinnest axis at {parts[axis]:.0%} of its weight — "
+                   f"{detail}"}
 
 
 # ── the board, reading logistics evidence ─────────────────────────────────────
@@ -282,7 +418,18 @@ def board_context(value: float = 0.0, planned_value: float = 0.0) -> dict:
 
 # ── the gate ──────────────────────────────────────────────────────────────────
 
-def commit(agent: str, sku: str, node: str = "dc", qty: int = 0) -> dict:
+def planned_quantity(sku: str, node: str = "dc", policy: dict | None = None) -> int:
+    """The plan's own order quantity: order-up-to minus reorder point, floored at the
+    lead-time cover — nobody raises a purchase order for less than the time it takes to
+    arrive. ONE definition, because the gate prices an order against it and the console
+    shows it: two answers to "what does the plan provide for?" would be one too many."""
+    policy = policy or ensure_incumbent()["policy"]
+    p = policy[sku][node]
+    lead = L.SKUS[sku]["lead"] if node == "dc" else L.DC_LEAD
+    return max(p["S"] - p["s"], int(round(L.train_stats()[sku]["mean_daily"] * lead)))
+
+
+def commit(agent: str, sku: str, node: str = "dc", qty: int = 0, note: str = "") -> dict:
     """Package one irreversible act — a purchase order — with the evidence behind it and
     PARK it for a human. The board votes first, on disjoint logistics evidence, and its
     tally rides with the dossier; a board NO does not stop the human seeing it, because
@@ -290,21 +437,21 @@ def commit(agent: str, sku: str, node: str = "dc", qty: int = 0) -> dict:
 
     Nothing this function returns can move goods. ``L.place_order`` refuses always."""
     inc = ensure_incumbent()
-    # The policy's own cycle quantity (order-up-to minus reorder point), floored at the
-    # lead-time cover — nobody raises a purchase order for less than the time it takes
-    # to arrive. This is also what the plan already provides for, so it is what Ledger
-    # measures an oversized order against.
-    p = inc["policy"][sku][node]
-    lead = L.SKUS[sku]["lead"] if node == "dc" else L.DC_LEAD
-    planned = max(p["S"] - p["s"], int(round(L.train_stats()[sku]["mean_daily"] * lead)))
+    # What the plan already provides for is what Ledger measures an oversized order
+    # against: the part beyond it is capital nobody has accounted for.
+    planned = planned_quantity(sku, node, inc["policy"])
     qty = planned if qty <= 0 else int(qty)
     value = qty * L.SKUS[sku]["cost"]
     v = board.vote(f"commit {qty}× {sku} from {L.SKUS[sku]['vendor']} (${value:,.0f})",
                    board_context(value, planned * L.SKUS[sku]["cost"]))
     did = anchor.reason_add(
         -1, agent, f"propose PO: {qty}× {sku}",
-        f"policy #{inc['id']} orders up to {inc['policy'][sku][node]['S']} at the {node}; "
-        f"board {v['tally']} — " + "; ".join(f"{g}: {r}" for g, r in v["reasons"].items()),
+        f"policy #{inc['id']} orders up to {inc['policy'][sku][node]['S']} at the {node}, "
+        f"a cycle of {planned}; "
+        + (f"asked for {qty} — {qty - planned} beyond the plan; " if qty > planned else "")
+        + (f"note: {note.strip()[:120]}; " if note.strip() else "")
+        + f"board {v['tally']} — "
+        + "; ".join(f"{g}: {r}" for g, r in v["reasons"].items()),
         derived_from=[f"policy:{inc['id']}"],
         authorized_by="human" if not v["approved"] else "board")
     d = L.propose_commitment(agent, sku, qty, node, decision_id=did, board=v)

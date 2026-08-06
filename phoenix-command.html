@@ -44,7 +44,7 @@
     display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
   }
   .ptitle b { color: var(--ink-2); font-weight: 600; letter-spacing: 0;
-              text-transform: none; font-size: 11px; }
+              text-transform: none; font-size: 11px; text-align: right; }
 
   /* ---------- masthead ---------- */
   header.bar {
@@ -63,19 +63,29 @@
   .badge.unmet { color: #ffd9a1; border-color: rgba(250,178,25,.5); background: rgba(250,178,25,.10); }
   .score { font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
   .score small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .runner { display: flex; align-items: center; gap: 6px; }
+  .who-bar { display: flex; align-items: center; gap: 8px; }
+  .badge.you { color: var(--accent); border-color: rgba(57,135,229,.45); }
+  .badge.locked { color: #ffd9a1; border-color: rgba(250,178,25,.45); }
+  .mine { border-color: rgba(57,135,229,.5) !important; }
 
-  button {
+  button, select, input, textarea {
     font: inherit; font-size: 12px; color: var(--ink); background: var(--surface-2);
-    border: 1px solid var(--border); border-radius: 7px; padding: 6px 11px;
-    cursor: pointer;
+    border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px;
   }
+  button { cursor: pointer; }
   button:hover:not(:disabled) { background: #2a2a29; }
-  button:disabled { opacity: .45; cursor: default; }
+  button:disabled, input:disabled, select:disabled { opacity: .45; cursor: default; }
   button.primary { background: var(--accent); border-color: transparent; }
   button.primary:hover:not(:disabled) { background: #4c95ea; }
   button.approve { background: rgba(12,163,12,.18); border-color: rgba(12,163,12,.5); color: #b7f0b7; }
   button.reject  { background: rgba(208,59,59,.15); border-color: rgba(208,59,59,.45); color: #f3b1b1; }
   button.ghost   { background: transparent; color: var(--muted); }
+  button.ghost:hover:not(:disabled) { color: var(--ink); background: var(--surface-2); }
+  input:focus, select:focus, textarea:focus, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  input[type=number] { width: 96px; font-family: var(--mono); }
 
   /* ---------- the mandate strip ---------- */
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
@@ -88,7 +98,8 @@
   .tile-val small { font-size: 12px; font-weight: 400; color: var(--ink-2); letter-spacing: 0; }
   .meter { height: 5px; border-radius: 3px; background: var(--accent-trk);
            overflow: hidden; margin-top: 8px; }
-  .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent);
+               transition: width .35s ease; }
   .meter.good > i { background: var(--good); }
   .meter.warn > i { background: var(--warning); }
   .meter.crit > i { background: var(--critical); }
@@ -97,11 +108,12 @@
   /* ---------- layout ---------- */
   .cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px; align-items: start; }
   @media (max-width: 1050px) { .cols { grid-template-columns: 1fr; } }
-  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
   /* ---------- the gate ---------- */
   .dossier { border: 1px solid rgba(250,178,25,.35); background: rgba(250,178,25,.05);
              border-radius: 9px; padding: 11px 12px; margin-bottom: 9px; }
+  .dossier:last-child { margin-bottom: 0; }
   .dossier h4 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
   .cost { color: var(--warning); font-family: var(--mono); font-size: 11.5px; }
   .kv { display: grid; grid-template-columns: 78px 1fr; gap: 3px 10px;
@@ -114,6 +126,7 @@
   .ballot.yes { color: #b7f0b7; border-color: rgba(12,163,12,.45); }
   .ballot.no  { color: #f3b1b1; border-color: rgba(208,59,59,.4); }
   .acts { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .acts input[type=text] { flex: 1; min-width: 170px; }
   .empty { color: var(--muted); font-size: 12px; padding: 4px 0 2px; }
 
   /* ---------- tables ---------- */
@@ -124,9 +137,11 @@
   th:first-child, td:first-child { text-align: left; }
   td.num { font-family: var(--mono); }
   tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: rgba(255,255,255,.02); }
   .tag { color: var(--accent); font-size: 9.5px; border: 1px solid rgba(57,135,229,.4);
          border-radius: 999px; padding: 0 5px; margin-left: 5px; vertical-align: 1px;
          font-family: var(--sans); }
+  .wrap { overflow-x: auto; }
 
   /* ---------- scenarios ---------- */
   .scn { margin-bottom: 9px; }
@@ -135,34 +150,73 @@
   .scn-top span { color: var(--muted); font-family: var(--mono); }
   .scn.worst .scn-top b { color: var(--warning); }
 
+  /* ---------- decisions ---------- */
+  .decision { display: flex; gap: 8px; align-items: baseline; padding: 5px 0;
+              border-bottom: 1px solid rgba(255,255,255,.05); font-size: 11.5px; }
+  .decision:last-child { border-bottom: 0; }
+  .decision .who { color: var(--muted); font-size: 11px; }
+  .pill { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 999px;
+          border: 1px solid var(--border); white-space: nowrap; }
+  .pill.ok   { color: #b7f0b7; border-color: rgba(12,163,12,.45); }
+  .pill.no   { color: #f3b1b1; border-color: rgba(208,59,59,.4); }
+  .pill.auto { color: #ffd9a1; border-color: rgba(250,178,25,.45); }
+
   /* ---------- log ---------- */
   #log { font-family: var(--mono); font-size: 11px; color: var(--ink-2);
-         max-height: 250px; overflow-y: auto; }
+         max-height: 260px; overflow-y: auto; }
   #log div { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
   #log time { color: var(--muted); margin-right: 8px; }
 
   .note { font-size: 11.5px; color: var(--muted); }
   .note strong { color: var(--ink-2); font-weight: 600; }
+
+  /* ---------- the order composer ---------- */
+  dialog {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 11px; padding: 0; width: min(460px, calc(100vw - 28px));
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog .head { padding: 13px 15px 0; }
+  dialog h3 { margin: 0; font-size: 14px; }
+  dialog .body { padding: 12px 15px 15px; display: flex; flex-direction: column; gap: 10px; }
+  .field { display: flex; align-items: center; gap: 10px; }
+  .field label { width: 96px; color: var(--muted); font-size: 11.5px; }
+  .field select, .field input[type=text] { flex: 1; }
+  .figure { font-family: var(--mono); font-size: 15px; }
+  .warnbox { border: 1px solid rgba(250,178,25,.4); background: rgba(250,178,25,.07);
+             border-radius: 8px; padding: 8px 10px; font-size: 11.5px; color: #ffd9a1; }
+  .warnbox.hidden { display: none; }
+  dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 430px;
            background: var(--surface-2); border: 1px solid var(--border);
            border-radius: 9px; padding: 10px 13px; font-size: 12px;
-           display: none; z-index: 20; }
+           display: none; z-index: 30; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
   #offline { display: none; border-color: rgba(208,59,59,.45); background: rgba(208,59,59,.08); }
+  .skeleton { color: var(--muted); }
 </style>
 </head>
 <body>
 
 <header class="bar">
   <h1>Phoenix Logistics</h1>
-  <span class="mandate" id="mandate">connecting…</span>
+  <span class="mandate" id="mandate">reading the simulator…</span>
   <span class="grow"></span>
   <span class="badge" id="mandate-flag">—</span>
   <div style="text-align:right">
-    <div class="score"><span id="score">—</span><small>/100</small></div>
+    <div class="score"><span id="score" class="skeleton">—</span><small>/100</small></div>
     <div class="note" id="score-sub">&nbsp;</div>
   </div>
-  <button class="primary" id="plan">Run 20 planning rounds</button>
-  <button id="refresh">Refresh</button>
+  <div class="runner">
+    <button class="primary" id="plan">Run planning</button>
+    <input type="number" id="rounds" min="1" title="how many policies to propose and score">
+    <span class="note" id="rounds-unit">rounds</span>
+  </div>
+  <button id="refresh" title="re-read the simulator">Refresh</button>
+  <div class="who-bar">
+    <span class="badge" id="you">…</span>
+    <span class="note" id="watchers"></span>
+  </div>
 </header>
 
 <section class="panel" id="offline">
@@ -193,12 +247,17 @@
 
     <section class="panel">
       <div class="ptitle">The plan <b id="plan-meta"></b></div>
-      <table id="network"></table>
+      <div class="wrap"><table id="network"></table></div>
       <div class="note" style="margin-top:8px">
         <strong>s</strong> is the reorder point, <strong>S</strong> the order-up-to
         level. Both were fitted to the readable window only — the score above comes
         from a later window the planner never saw.
       </div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">Activity</div>
+      <div id="log"></div>
     </section>
 
   </div>
@@ -212,12 +271,12 @@
 
     <section class="panel">
       <div class="ptitle">Policies scored <b id="pol-count"></b></div>
-      <table id="leaderboard"></table>
+      <div class="wrap"><table id="leaderboard"></table></div>
     </section>
 
     <section class="panel">
-      <div class="ptitle">Activity</div>
-      <div id="log"></div>
+      <div class="ptitle">Decisions <b id="dec-count"></b></div>
+      <div id="decisions"></div>
     </section>
 
   </div>
@@ -237,14 +296,44 @@
   </div>
 </section>
 
+<dialog id="composer">
+  <div class="head"><h3 id="c-title">Draft a purchase order</h3>
+    <div class="note" id="c-sub">&nbsp;</div></div>
+  <div class="body">
+    <div class="field">
+      <label for="c-node">Deliver to</label>
+      <select id="c-node"></select>
+    </div>
+    <div class="field">
+      <label for="c-qty">Quantity</label>
+      <input type="number" id="c-qty" min="1" step="1">
+      <span class="figure" id="c-value">—</span>
+    </div>
+    <div class="field">
+      <label for="c-note">Note</label>
+      <input type="text" id="c-note" maxlength="200" placeholder="optional — kept in the permanent record">
+    </div>
+    <div class="warnbox hidden" id="c-warn"></div>
+    <div class="note" id="c-plan">&nbsp;</div>
+    <div class="foot">
+      <span class="note grow">Parking is reversible. Nothing is ordered.</span>
+      <button id="c-cancel">Cancel</button>
+      <button class="primary" id="c-park">Park for decision</button>
+    </div>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
 const $ = id => document.getElementById(id);
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
-let state = null, busy = false;
+let state = null, busy = false, composing = null;
 
-const money = n => '$' + Math.round(n).toLocaleString();
+// Nothing below invents a value the server owns: currency, node names, poll rate,
+// round limits and every colour threshold arrive in `state.config`.
+let cfg = null;
+const money = n => (cfg ? cfg.currency : '') + Math.round(n).toLocaleString();
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -269,9 +358,18 @@ async function api(path, body) {
   return d;
 }
 
+function typedNotes() {                 // a poll must never eat what you were typing
+  const out = {};
+  document.querySelectorAll('[data-why]').forEach(i => {
+    if (i.value) out[i.dataset.why] = i.value;
+  });
+  return out;
+}
+
 async function load() {
   try {
     state = await api('/api/logistics');
+    cfg = state.config;
     $('offline').style.display = 'none';
     render();
   } catch (e) {
@@ -281,9 +379,26 @@ async function load() {
 }
 
 function render() {
-  const s = state;
-  $('mandate').textContent = s.mandate;
+  const s = state, keep = typedNotes();
+  $('mandate').textContent = s.config.mandate;
+
+  // identity and presence: no accounts, so the record is signed by a derived handle
+  const you = $('you');
+  you.textContent = s.you || 'guest';
+  you.className = 'badge you';
+  you.title = 'Your handle for this world. Everything you do is recorded against it.';
+  const w = s.watchers || {};
+  $('watchers').textContent =
+    `${w.online_now || 1} here now · ${w.today || 1} today` +
+    (s.config.mode === 'operator' ? ' · locked to the operator' : '') +
+    (s.planning_now ? ' · someone is planning' : '');
+
+  const rd = $('rounds');
+  rd.max = s.config.max_rounds;
+  if (!rd.value) rd.value = s.config.default_rounds;
+  $('rounds-unit').textContent = `rounds (max ${s.config.max_rounds})`;
   $('score').textContent = s.score.blended.toFixed(1);
+  $('score').classList.remove('skeleton');
   $('score-sub').textContent =
     `nominal ${s.score.nominal.toFixed(1)} · worst case ${s.score.robust.toFixed(1)}`;
   const flag = $('mandate-flag');
@@ -302,9 +417,10 @@ function render() {
     </div>`).join('');
 
   renderGate();
+  renderDecisions();
 
   $('plan-meta').textContent = `policy #${s.incumbent.id} by ${s.incumbent.agent} · ` +
-    `fitted on ${s.train} · scored on ${s.holdout}`;
+    `fitted on ${s.config.train} · scored on ${s.config.holdout}`;
   $('network').innerHTML = `<thead><tr>
       <th>SKU</th><th>Vendor</th><th>Lead</th><th>Shelf</th><th>Demand/day</th>
       <th>DC s → S</th><th>Store s → S</th><th>Cover</th><th></th></tr></thead><tbody>` +
@@ -317,14 +433,14 @@ function render() {
       <td class="num">${r.dc_s} → ${r.dc_S}</td>
       <td class="num">${r.store_s} → ${r.store_S}</td>
       <td class="num">${r.cover_days}d</td>
-      <td><button class="ghost" data-propose="${esc(r.sku)}">Draft PO</button></td>
+      <td><button class="ghost" data-propose="${esc(r.sku)}">Draft PO…</button></td>
     </tr>`).join('') + '</tbody>';
 
   $('worst-label').textContent = s.score.worst ? 'worst: ' + s.score.worst : '';
   $('scenarios').innerHTML = s.scenarios.map(x => `
     <div class="scn ${x.worst ? 'worst' : ''}">
       <div class="scn-top"><b>${esc(x.label)}</b><span>${x.score.toFixed(1)}</span></div>
-      <div class="meter ${x.score >= 85 ? 'good' : x.score >= 70 ? 'warn' : 'crit'}">
+      <div class="meter ${esc(x.state)}">
         <i style="width:${Math.max(2, x.score).toFixed(0)}%"></i></div>
       <div class="tile-sub">fill ${(x.fill_rate * 100).toFixed(1)}% · capital ${money(x.working_capital)}</div>
     </div>`).join('');
@@ -346,7 +462,11 @@ function render() {
   }).join('') || '<div class="empty">nothing yet</div>';
 
   document.querySelectorAll('[data-propose]').forEach(b => {
-    b.onclick = () => propose(b.dataset.propose);
+    b.onclick = () => openComposer(b.dataset.propose);
+  });
+  Object.entries(keep).forEach(([id, v]) => {
+    const el = document.querySelector(`[data-why="${id}"]`);
+    if (el) el.value = v;
   });
 }
 
@@ -365,7 +485,7 @@ function renderGate() {
         esc(b.reasons[who])}">${esc(who)}: ${
         v === true ? 'yes' : v === false ? 'no' : 'unknown'}</span>`).join('') : '';
     return `
-    <div class="dossier">
+    <div class="dossier${d.mine ? ' mine' : ''}">
       <h4>${d.qty.toLocaleString()} × ${esc(d.sku)} from ${esc(d.vendor)} — ${money(d.value)}</h4>
       <div class="cost">waiting ${d.waited_days.toFixed(2)} days · ${money(d.wait_cost_per_day)}/day · ${money(d.cost_of_waiting)} so far</div>
       <dl class="kv">
@@ -378,9 +498,11 @@ function renderGate() {
       ${ballots ? `<div class="ballots">${ballots}<span class="ballot ${b.approved ? 'yes' : 'no'}">board ${
         esc(b.tally)}${b.approved ? '' : ' — blocked, shown anyway'}</span></div>` : ''}
       <div class="acts">
+        <input type="text" data-why="${d.id}" maxlength="200"
+               placeholder="why (optional — goes on the record)">
         <button class="approve" data-decide="approve" data-id="${d.id}">Approve</button>
         <button class="reject"  data-decide="reject"  data-id="${d.id}">Reject</button>
-        <span class="note">recorded against your name in the permanent log</span>
+        <span class="note">drafted by ${esc(d.agent)}</span>
       </div>
     </div>`;
   }).join('');
@@ -389,10 +511,30 @@ function renderGate() {
   });
 }
 
+function renderDecisions() {
+  const d = state.decided || [];
+  $('dec-count').textContent = d.length ? `${d.length} on the record` : '';
+  if (!d.length) {
+    $('decisions').innerHTML = '<div class="empty">No commitment has been decided yet. ' +
+      'Every approval, rejection and stand-down lands here and in the permanent log.</div>';
+    return;
+  }
+  $('decisions').innerHTML = d.map(x => {
+    const cls = x.status.startsWith('approved') ? (x.decided_by.startsWith('board') ? 'auto' : 'ok')
+              : 'no';
+    return `<div class="decision">
+      <span class="pill ${cls}">${esc(x.status)}</span>
+      <span class="grow">${x.qty.toLocaleString()} × ${esc(x.sku)} — ${money(x.value)}
+        <span class="who">by ${esc(x.decided_by || 'unknown')}${
+          x.why ? ' · ' + esc(x.why) : ''}</span></span>
+    </div>`;
+  }).join('');
+}
+
 async function guard(fn) {
   if (busy) return;
   busy = true;
-  document.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  document.querySelectorAll('button, select, input').forEach(b => { b.disabled = true; });
   try {
     await fn();
   } catch (e) {
@@ -400,13 +542,84 @@ async function guard(fn) {
       ? 'This console is locked. Append ?token=… to the URL.' : e.message);
   } finally {
     busy = false;
-    document.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    document.querySelectorAll('button, select, input').forEach(b => { b.disabled = false; });
+    if (composing) syncComposer(false);        // restore the composer's own rules
   }
 }
 
+// ── the order composer ───────────────────────────────────────────────────────
+
+function openComposer(sku) {
+  const row = state.network.find(r => r.sku === sku);
+  if (!row) return;
+  composing = row;
+  $('c-title').textContent = `Draft a purchase order — ${sku}`;
+  $('c-sub').textContent =
+    `${row.vendor} · ${row.lead}-day lead · ${row.mean_daily.toFixed(1)}/day of demand`;
+  const nodeSel = $('c-node');
+  nodeSel.innerHTML = cfg.nodes.map(n =>
+    `<option value="${esc(n.key)}">${esc(n.label)}</option>`).join('');
+  nodeSel.value = cfg.nodes[0].key;
+  $('c-qty').max = cfg.max_order_units;
+  $('c-note').value = '';
+  syncComposer(true);
+  $('composer').showModal();
+  $('c-qty').focus();
+}
+
+function syncComposer(reset) {
+  if (!composing) return;
+  const node = $('c-node').value;
+  const planned = composing.planned[node];
+  if (reset) $('c-qty').value = planned;
+  const qty = Math.max(0, Number($('c-qty').value) || 0);
+  $('c-value').textContent = money(qty * composing.unit_cost);
+  $('c-plan').textContent =
+    `The plan provides for ${planned.toLocaleString()} units at the ` +
+    `${node === 'dc' ? 'DC' : 'store'} (${money(planned * composing.unit_cost)}) — ` +
+    `one cycle of cover.`;
+  const over = qty - planned;
+  const warn = $('c-warn');
+  if (over > 0) {
+    warn.classList.remove('hidden');
+    warn.textContent = `${over.toLocaleString()} units beyond the plan ` +
+      `(${money(over * composing.unit_cost)}). That part is capital nobody has ` +
+      `accounted for, and it is what Ledger will vote on.`;
+  } else {
+    warn.classList.add('hidden');
+  }
+  $('c-park').disabled = qty < 1;
+}
+
+$('c-node').onchange = () => syncComposer(true);
+$('c-qty').oninput = () => syncComposer(false);
+$('c-cancel').onclick = () => $('composer').close();
+$('composer').addEventListener('close', () => { composing = null; });
+
+$('c-park').onclick = () => {
+  const sku = composing.sku;
+  const body = { sku, node: $('c-node').value,
+                 qty: Math.max(1, Number($('c-qty').value) || 0),
+                 note: $('c-note').value };
+  $('composer').close();
+  guard(async () => {
+    const d = await api('/api/propose', body);
+    state = d.state;
+    render();
+    const c = d.commitment;
+    toast(`Drafted ${c.qty.toLocaleString()} × ${sku} from ${c.vendor} (${money(c.value)}), ` +
+          `board ${c.board.tally}. It is parked at the gate — nothing has been ordered.`, 8000);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+};
+
+// ── the rest of the actions ──────────────────────────────────────────────────
+
 $('plan').onclick = () => guard(async () => {
-  toast('Planning — proposing 20 policies and scoring each on held-out demand…', 60000);
-  const d = await api('/api/plan', { rounds: 20 });
+  const rounds = Number($('rounds').value) || cfg.default_rounds;
+  toast(`Planning — proposing ${rounds} policies and scoring each on held-out demand…`,
+        120000);
+  const d = await api('/api/plan', { rounds });
   state = d.state;
   render();
   const r = d.result;
@@ -417,21 +630,15 @@ $('plan').onclick = () => guard(async () => {
 
 $('refresh').onclick = () => guard(load);
 
-function propose(sku) {
-  guard(async () => {
-    const d = await api('/api/propose', { sku });
-    state = d.state;
-    render();
-    toast(`Drafted ${d.commitment.qty} × ${sku} from ${d.commitment.vendor}. ` +
-          'It is parked at the gate — nothing has been ordered.');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  });
-}
-
 function decide(id, decision) {
+  const why = (document.querySelector(`[data-why="${id}"]`) || {}).value || '';
   guard(async () => {
-    const d = await api('/api/decide', { id: Number(id), decision });
-    if (!d.ok) { toast(d.message); return; }
+    const d = await api('/api/decide', { id: Number(id), decision, why });
+    if (!d.ok) {                                // someone else got there first
+      toast(d.message + ' — reloading the shared world.');
+      if (d.state) { state = d.state; render(); } else { await load(); }
+      return;
+    }
     state = d.state;
     render();
     toast(decision === 'approve'
@@ -449,8 +656,13 @@ $('test-guard').onclick = e => {
   });
 };
 
-load();
-setInterval(() => { if (!busy) load(); }, 15000);
+let poller = null;
+function startPolling() {
+  if (poller) clearInterval(poller);
+  poller = setInterval(() => { if (!busy && !composing) load(); },
+                       (cfg && cfg.poll_ms) || 15000);
+}
+load().then(startPolling);
 </script>
 </body>
 </html>

@@ -133,11 +133,13 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all five on every push)
+# the suites (CI runs all of them on every push)
 python3 gov/verify.py            # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
 python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
+python3 -m unittest discover -s gov -p "test_*.py"   # 107 unit tests, one per function
 python3 gov/verify_logistics.py  # 50 — supply network oracle, holdout, robustness, PO gate, console
+python3 gov/smoke_logistics.py   # end-to-end over HTTP, with agent performance + floors
 python3 gov/console_smoke.py     # headless console API smoke
 
 # the live consoles
