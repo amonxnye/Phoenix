@@ -1,10 +1,11 @@
 # Next — `harness/logistics`
 
-**Where it stands:** steps 1–4 are code. A deterministic supply network
-(`gov/logistics_world.py`), a planner agent that is paid only for what the simulator
-measures (`gov/planner.py`), four disruption scenarios, and a purchase-order gate that
-no model can walk through — proven by 36 acceptance checks in CI
-(`gov/verify_logistics.py`, ~3s, no model and no network required).
+**Where it stands:** steps 1–4 are code, and so is the console. A deterministic supply
+network (`gov/logistics_world.py`), a planner agent that is paid only for what the
+simulator measures (`gov/planner.py`), four disruption scenarios, a purchase-order gate
+that no model can walk through, and an operator surface a planner can actually work in
+(`gov/logistics_console.py` + `phoenix-command.html`) — proven by 50 acceptance checks
+in CI (`gov/verify_logistics.py`, ~10s, no model and no network required).
 
 ```
 naive reorder point   fill 94.8%  capital $17,157  waste $3,980  →  score 73.6
@@ -29,6 +30,12 @@ after 20 proposals    fill 99.3%  capital $14,903  waste     $0  →  score 91.6
   disjoint ballots, and the running price of every day of silence (IV.4). Tacit consent
   (IV.7) reaches only inside a pre-approved envelope the human sets in the environment;
   unset by default, so nothing is ever bought by silence.
+- **The console** (build order §3, brought forward). `gov/logistics_console.py` serves
+  `phoenix-command.html` — the mandate as four meters, the plan per SKU, the four
+  disruption scores, and the gate queue with approve/reject. Planning runs from a
+  button; the purchase order does not. Spectating is free, acting needs
+  `CONSOLE_TOKEN`, and the page has a link that makes the procurement guard refuse in
+  front of you.
 
 ## Step 5 — real data, read-only
 
@@ -45,12 +52,10 @@ thing to re-prove rather than a thing to assert once.
    an oracle. The Board already proposes a bolder Vision when the goal is met with
    budget to spare (`board.propose_vision`); the same move belongs here: raise the fill
    floor, drop the capital ceiling, or weight robustness harder.
-2. **A console page** — the network, the leaderboard of scored policies, and the parked
-   dossiers, in the shape the settlement page already has (harness build order §3).
-3. **Director integration.** Today `run_search` is the loop. The Director should staff
+2. **Director integration.** Today `run_search` is the loop. The Director should staff
    planners against the *shortfall the oracle names* — service, capital, or robustness —
    and reap the ones that stop finding anything.
-4. **The eval race** (`EVAL.md`): which frontier model runs the best governed planning
+3. **The eval race** (`EVAL.md`): which frontier model runs the best governed planning
    organization. The model-free search is the floor every model must beat; a model that
    cannot is a finding, not a failure.
 

@@ -137,13 +137,14 @@ pip install -r requirements.txt
 python3 gov/verify.py            # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
 python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/verify_logistics.py  # 36 — supply network oracle, holdout, robustness, PO gate
+python3 gov/verify_logistics.py  # 50 — supply network oracle, holdout, robustness, PO gate, console
 python3 gov/console_smoke.py     # headless console API smoke
 
-# the live console
-python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+# the live consoles
+python3 gov/sim_console.py --seed         # the settlement → http://127.0.0.1:8788
+python3 gov/logistics_console.py --seed   # the planner    → http://127.0.0.1:8790
 
-# the logistics harness: 20 replenishment policies, scored on demand they never saw
+# or drive the logistics harness from the command line
 python3 gov/planner.py --agent plan-01 --rounds 20
 ```
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project Phoenix — Command Surface</title>
+<title>Phoenix Logistics — planning console</title>
 <style>
   :root {
     color-scheme: dark;
@@ -13,7 +13,6 @@
     --ink:        #ffffff;
     --ink-2:      #c3c2b7;
     --muted:      #898781;
-    --grid:       #2c2c2a;
     --border:     rgba(255,255,255,0.10);
 
     --accent:     #3987e5;
@@ -21,10 +20,10 @@
 
     --good:       #0ca30c;
     --warning:    #fab219;
-    --serious:    #ec835a;
     --critical:   #d03b3b;
 
     --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   body {
@@ -33,6 +32,8 @@
     padding: 14px; display: flex; flex-direction: column; gap: 10px;
     min-height: 100vh;
   }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); color: var(--ink-2); }
   .panel {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px;
@@ -40,296 +41,416 @@
   .ptitle {
     font-size: 10px; letter-spacing: .10em; text-transform: uppercase;
     color: var(--muted); margin: 0 0 10px; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
   }
+  .ptitle b { color: var(--ink-2); font-weight: 600; letter-spacing: 0;
+              text-transform: none; font-size: 11px; }
 
-  /* ---------- resource strip ---------- */
-  .resources { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-  .res { background: var(--surface); border: 1px solid var(--border);
-         border-radius: 10px; padding: 11px 14px; }
-  .res-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
-               color: var(--muted); font-weight: 600; }
-  .res-val { font-size: 25px; font-weight: 600; margin: 3px 0 1px; letter-spacing: -.02em; }
-  .res-val small { font-size: 13px; font-weight: 400; color: var(--ink-2); letter-spacing: 0; }
+  /* ---------- masthead ---------- */
+  header.bar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 14px;
+  }
+  header.bar h1 { font-size: 14px; margin: 0; letter-spacing: -.01em; white-space: nowrap; }
+  .mandate { color: var(--muted); font-size: 11.5px; }
+  .grow { flex: 1; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap;
+  }
+  .badge.met   { color: #b7f0b7; border-color: rgba(12,163,12,.55); background: rgba(12,163,12,.12); }
+  .badge.unmet { color: #ffd9a1; border-color: rgba(250,178,25,.5); background: rgba(250,178,25,.10); }
+  .score { font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
+  .score small { font-size: 12px; font-weight: 400; color: var(--muted); }
+
+  button {
+    font: inherit; font-size: 12px; color: var(--ink); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 7px; padding: 6px 11px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #2a2a29; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: transparent; }
+  button.primary:hover:not(:disabled) { background: #4c95ea; }
+  button.approve { background: rgba(12,163,12,.18); border-color: rgba(12,163,12,.5); color: #b7f0b7; }
+  button.reject  { background: rgba(208,59,59,.15); border-color: rgba(208,59,59,.45); color: #f3b1b1; }
+  button.ghost   { background: transparent; color: var(--muted); }
+
+  /* ---------- the mandate strip ---------- */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 900px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 10px; padding: 11px 14px; }
+  .tile-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+                color: var(--muted); font-weight: 600; }
+  .tile-val { font-size: 25px; font-weight: 600; margin: 3px 0 1px; letter-spacing: -.02em; }
+  .tile-val small { font-size: 12px; font-weight: 400; color: var(--ink-2); letter-spacing: 0; }
   .meter { height: 5px; border-radius: 3px; background: var(--accent-trk);
            overflow: hidden; margin-top: 8px; }
   .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  .meter.good > i { background: var(--good); }
   .meter.warn > i { background: var(--warning); }
   .meter.crit > i { background: var(--critical); }
-  .res-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .tile-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
-  /* ---------- idle alert ---------- */
-  .alert {
-    display: flex; align-items: center; gap: 10px;
-    background: var(--surface); border: 1px solid var(--serious);
-    border-left: 3px solid var(--serious);
-    border-radius: 10px; padding: 10px 14px;
-  }
-  .alert .glyph { color: var(--serious); font-size: 15px; }
-  .alert b { font-weight: 600; }
-  .alert span { color: var(--ink-2); }
-  .alert .spacer { flex: 1; }
+  /* ---------- layout ---------- */
+  .cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px; align-items: start; }
+  @media (max-width: 1050px) { .cols { grid-template-columns: 1fr; } }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
 
-  /* ---------- main ---------- */
-  .main { display: grid; grid-template-columns: 1fr 320px; gap: 10px; align-items: start; }
-  .units { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px,1fr)); gap: 9px; }
+  /* ---------- the gate ---------- */
+  .dossier { border: 1px solid rgba(250,178,25,.35); background: rgba(250,178,25,.05);
+             border-radius: 9px; padding: 11px 12px; margin-bottom: 9px; }
+  .dossier h4 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+  .cost { color: var(--warning); font-family: var(--mono); font-size: 11.5px; }
+  .kv { display: grid; grid-template-columns: 78px 1fr; gap: 3px 10px;
+        margin: 8px 0 0; font-size: 11.5px; color: var(--ink-2); }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .ballots { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .ballot { font-size: 10.5px; font-family: var(--mono); padding: 2px 7px;
+            border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .ballot.yes { color: #b7f0b7; border-color: rgba(12,163,12,.45); }
+  .ballot.no  { color: #f3b1b1; border-color: rgba(208,59,59,.4); }
+  .acts { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .empty { color: var(--muted); font-size: 12px; padding: 4px 0 2px; }
 
-  .unit {
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 9px; padding: 10px 11px; cursor: pointer;
-    transition: border-color .12s, transform .12s;
-  }
-  .unit:hover { border-color: var(--muted); }
-  .unit[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .unit-top { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
-  .unit-id { font-size: 11px; font-weight: 600; color: var(--ink-2);
-             font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .unit-task { font-size: 12.5px; color: var(--ink); margin-bottom: 9px;
-               min-height: 34px; }
-  .unit-foot { display: flex; justify-content: space-between;
-               font-size: 11px; color: var(--muted);
-               font-variant-numeric: tabular-nums; }
+  /* ---------- tables ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: right; padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,.05); }
+  th { color: var(--muted); font-weight: 600; font-size: 10px;
+       letter-spacing: .06em; text-transform: uppercase; }
+  th:first-child, td:first-child { text-align: left; }
+  td.num { font-family: var(--mono); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .tag { color: var(--accent); font-size: 9.5px; border: 1px solid rgba(57,135,229,.4);
+         border-radius: 999px; padding: 0 5px; margin-left: 5px; vertical-align: 1px;
+         font-family: var(--sans); }
 
-  .chip { display: inline-flex; align-items: center; gap: 4px;
-          font-size: 9.5px; font-weight: 700; letter-spacing: .07em;
-          text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
-          border: 1px solid currentColor; margin-left: auto; white-space: nowrap; }
-  .chip.running  { color: var(--good); }
-  .chip.orders   { color: var(--warning); }
-  .chip.idle     { color: var(--serious); }
-  .chip.failed   { color: var(--critical); }
-
-  /* ---------- right rail ---------- */
-  .rail { display: flex; flex-direction: column; gap: 10px; }
-  .kv { display: flex; justify-content: space-between; padding: 5px 0;
-        border-bottom: 1px solid var(--grid); font-size: 12px; }
-  .kv:last-of-type { border-bottom: none; }
-  .kv span:first-child { color: var(--muted); }
-  .kv span:last-child { color: var(--ink-2); font-variant-numeric: tabular-nums; }
-  .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 11px; }
-  button {
-    font-family: var(--sans); font-size: 11.5px; font-weight: 600;
-    padding: 7px 8px; border-radius: 6px; cursor: pointer;
-    background: transparent; color: var(--ink-2);
-    border: 1px solid var(--border); transition: background .12s, color .12s;
-  }
-  button:hover { background: rgba(255,255,255,.06); color: var(--ink); }
-  button.primary { border-color: var(--accent); color: var(--accent); }
-  button.danger  { border-color: var(--critical); color: var(--critical); }
-
-  /* ---------- approvals ---------- */
-  .appr { border: 1px solid var(--border); border-left: 3px solid var(--warning);
-          border-radius: 7px; padding: 9px 10px; margin-bottom: 7px;
-          background: var(--surface-2); }
-  .appr-kind { font-size: 9.5px; font-weight: 700; letter-spacing: .07em;
-               text-transform: uppercase; color: var(--warning); margin-bottom: 4px; }
-  .appr-body { font-size: 12px; color: var(--ink); margin-bottom: 3px; }
-  .appr-meta { font-size: 10.5px; color: var(--muted); margin-bottom: 8px; }
-  .appr-btns { display: flex; gap: 6px; }
-  .appr-btns button { flex: 1; padding: 5px; font-size: 11px; }
-  .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 6px 0; }
+  /* ---------- scenarios ---------- */
+  .scn { margin-bottom: 9px; }
+  .scn:last-child { margin-bottom: 0; }
+  .scn-top { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; }
+  .scn-top span { color: var(--muted); font-family: var(--mono); }
+  .scn.worst .scn-top b { color: var(--warning); }
 
   /* ---------- log ---------- */
-  .log { max-height: 210px; overflow-y: auto; font-size: 11.5px;
-         font-variant-numeric: tabular-nums; }
-  .log div { padding: 2.5px 0; color: var(--ink-2); border-bottom: 1px solid var(--grid); }
-  .log div:last-child { border-bottom: none; }
-  .log time { color: var(--muted); margin-right: 9px; }
+  #log { font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+         max-height: 250px; overflow-y: auto; }
+  #log div { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+  #log time { color: var(--muted); margin-right: 8px; }
 
-  .hint { font-size: 11px; color: var(--muted); margin-top: 9px; font-style: italic; }
-  @media (max-width: 880px) { .main { grid-template-columns: 1fr; }
-                              .resources { grid-template-columns: repeat(2,1fr); } }
+  .note { font-size: 11.5px; color: var(--muted); }
+  .note strong { color: var(--ink-2); font-weight: 600; }
+  #toast { position: fixed; right: 16px; bottom: 16px; max-width: 430px;
+           background: var(--surface-2); border: 1px solid var(--border);
+           border-radius: 9px; padding: 10px 13px; font-size: 12px;
+           display: none; z-index: 20; }
+  #offline { display: none; border-color: rgba(208,59,59,.45); background: rgba(208,59,59,.08); }
 </style>
 </head>
 <body>
 
-<div class="resources">
-  <div class="res">
-    <div class="res-label">Token budget</div>
-    <div class="res-val">$18.40 <small>/ $50.00</small></div>
-    <div class="meter"><i style="width:37%"></i></div>
-    <div class="res-sub">Burn $2.60/hr · 12h 8m left at rate</div>
+<header class="bar">
+  <h1>Phoenix Logistics</h1>
+  <span class="mandate" id="mandate">connecting…</span>
+  <span class="grow"></span>
+  <span class="badge" id="mandate-flag">—</span>
+  <div style="text-align:right">
+    <div class="score"><span id="score">—</span><small>/100</small></div>
+    <div class="note" id="score-sub">&nbsp;</div>
   </div>
-  <div class="res">
-    <div class="res-label">Ad spend</div>
-    <div class="res-val">$0.00 <small>/ $40.00</small></div>
-    <div class="meter"><i style="width:0%"></i></div>
-    <div class="res-sub">Authorized, none released</div>
+  <button class="primary" id="plan">Run 20 planning rounds</button>
+  <button id="refresh">Refresh</button>
+</header>
+
+<section class="panel" id="offline">
+  <div class="ptitle">Not connected</div>
+  <div class="note">
+    This page reads a live console. Start it and reload:
+    <code>python3 gov/logistics_console.py --seed</code> →
+    <a href="http://127.0.0.1:8790">http://127.0.0.1:8790</a>.
+    Opened as a file it shows nothing, deliberately — every number here comes from the
+    simulator, and there are no placeholder numbers to show instead.
   </div>
-  <div class="res">
-    <div class="res-label">Sandbox hours</div>
-    <div class="res-val">18.6 <small>/ 24.0</small></div>
-    <div class="meter warn"><i style="width:78%"></i></div>
-    <div class="res-sub">2 units consuming while idle</div>
+</section>
+
+<section class="tiles" id="tiles"></section>
+
+<div class="cols">
+  <div class="stack">
+
+    <section class="panel">
+      <div class="ptitle">Awaiting your decision <b id="gate-count"></b></div>
+      <div id="gate"></div>
+      <div class="note" style="margin-top:8px">
+        Approving records <strong>your</strong> decision and hands you the dossier.
+        Phoenix cannot place the order — it holds no procurement credentials, and
+        <a href="#" id="test-guard">the guard can be tested</a> from here.
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">The plan <b id="plan-meta"></b></div>
+      <table id="network"></table>
+      <div class="note" style="margin-top:8px">
+        <strong>s</strong> is the reorder point, <strong>S</strong> the order-up-to
+        level. Both were fitted to the readable window only — the score above comes
+        from a later window the planner never saw.
+      </div>
+    </section>
+
   </div>
-  <div class="res">
-    <div class="res-label">Units</div>
-    <div class="res-val">5 <small>/ 8 active</small></div>
-    <div class="meter"><i style="width:62%"></i></div>
-    <div class="res-sub">1 idle · 1 awaiting orders · 1 failed</div>
+
+  <div class="stack">
+
+    <section class="panel">
+      <div class="ptitle">Would it survive a bad week? <b id="worst-label"></b></div>
+      <div id="scenarios"></div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">Policies scored <b id="pol-count"></b></div>
+      <table id="leaderboard"></table>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">Activity</div>
+      <div id="log"></div>
+    </section>
+
   </div>
 </div>
 
-<div class="alert">
-  <span class="glyph">⏹</span>
-  <b>2 units idle.</b>
-  <span>probe-04 blocked 41m on LinkedIn API scope · recon-08 failed, not restarted. Both still billing sandbox time.</span>
-  <span class="spacer"></span>
-  <button id="reassign">Reassign both</button>
-</div>
-
-<div class="main">
-  <div class="panel">
-    <p class="ptitle">Units — Silk NOVA / daily marketing loop</p>
-    <div class="units" id="units"></div>
-    <p class="hint">Click a unit to select it and issue orders. Nothing irreversible executes without an approval below.</p>
-
-    <div style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px">
-      <p class="ptitle">Event log</p>
-      <div class="log" id="log"></div>
-    </div>
+<section class="panel">
+  <div class="ptitle">What this console can and cannot do</div>
+  <div class="note">
+    Planning, simulating and comparing policies are reversible, so they run from a
+    button with no approval. Committing to a purchase is not, so it stops here and
+    waits for you — priced by what the wait is costing, with the board's ballots
+    attached. Silence approves nothing outside a pre-approved envelope you set
+    yourself (<code>GOV_LOGISTICS_ENVELOPE</code>, currently
+    <span id="envelope">—</span>). Simulated performance is not guaranteed
+    performance: the oracle scores decisions against a fixed history and four
+    disruptions, which is a much smaller promise than predicting the world.
   </div>
+</section>
 
-  <div class="rail">
-    <div class="panel">
-      <p class="ptitle">Selected unit</p>
-      <div id="detail"></div>
-    </div>
-
-    <div class="panel">
-      <p class="ptitle">Awaiting orders — irreversible</p>
-      <div id="approvals"></div>
-    </div>
-  </div>
-</div>
+<div id="toast"></div>
 
 <script>
-const STATES = {
-  running: { cls:'running', glyph:'▶', label:'Running'   },
-  orders:  { cls:'orders',  glyph:'◆', label:'Needs orders' },
-  idle:    { cls:'idle',    glyph:'⏹', label:'Idle'      },
-  failed:  { cls:'failed',  glyph:'✕', label:'Failed'    }
-};
+const $ = id => document.getElementById(id);
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+let state = null, busy = false;
 
-const units = [
-  { id:'scout-01', state:'running', task:'Draft daily X post — founder-story angle',
-    el:'4m 12s', tok:'12.1K', hyp:'H-084', model:'deepseek-v4-flash', note:'Third variant; two rejected by tone filter.' },
-  { id:'scout-02', state:'running', task:'Draft daily X post — problem-first angle',
-    el:'3m 48s', tok:'9.4K',  hyp:'H-085', model:'deepseek-v4-flash', note:'Awaiting competitor scan from recon-07.' },
-  { id:'probe-03', state:'running', task:'Analyse last 14 posts for engagement pattern',
-    el:'11m 02s', tok:'31.7K', hyp:'H-081', model:'deepseek-v4-flash', note:'n=14 — below significance threshold, flagged.' },
-  { id:'probe-04', state:'idle',    task:'Draft LinkedIn variant',
-    el:'41m 19s', tok:'2.2K',  hyp:'H-086', model:'—', note:'Blocked: LinkedIn MDP scope not approved. No retry path.' },
-  { id:'forge-05', state:'orders',  task:'Generate 3 ad creative concepts',
-    el:'8m 55s', tok:'44.0K', hyp:'H-087', model:'deepseek-v4-flash', note:'Concepts ready. Release requires ad-spend approval.' },
-  { id:'forge-06', state:'running', task:'Landing page copy — variant B',
-    el:'6m 31s', tok:'18.9K', hyp:'H-083', model:'deepseek-v4-flash', note:'Writing against staging, not production.' },
-  { id:'recon-07', state:'running', task:'Competitor posting cadence scan',
-    el:'2m 07s', tok:'6.8K',  hyp:'H-085', model:'deepseek-v4-flash', note:'Read-only. 6 accounts in scope.' },
-  { id:'recon-08', state:'failed',  task:'Keyword gap analysis',
-    el:'—',      tok:'5.1K',  hyp:'H-082', model:'—', note:'Egress denied: host not on allowlist. Critic logged syntax-tier rule.' }
-];
+const money = n => '$' + Math.round(n).toLocaleString();
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-let approvals = [
-  { kind:'Publish — irreversible', body:'Post to @silknova: "Most founders discover their pricing is wrong six months too late…"',
-    meta:'scout-01 · H-084 · cannot be unsent' },
-  { kind:'Spend — $40', body:'Release $40/day to X Ads campaign "silk-nova-cold-01"',
-    meta:'forge-05 · H-087 · real money, non-refundable' },
-  { kind:'Deploy', body:'Promote landing page variant B from staging to production',
-    meta:'forge-06 · H-083 · reversible via rollback' }
-];
-
-let sel = 'forge-05';
-
-function renderUnits() {
-  document.getElementById('units').innerHTML = units.map(u => {
-    const s = STATES[u.state];
-    return `<div class="unit" data-id="${u.id}" aria-selected="${u.id===sel}">
-      <div class="unit-top">
-        <span class="unit-id">${u.id}</span>
-        <span class="chip ${s.cls}">${s.glyph} ${s.label}</span>
-      </div>
-      <div class="unit-task">${u.task}</div>
-      <div class="unit-foot"><span>${u.hyp}</span><span>${u.el} · ${u.tok}</span></div>
-    </div>`;
-  }).join('');
-  document.querySelectorAll('.unit').forEach(el =>
-    el.onclick = () => { sel = el.dataset.id; renderUnits(); renderDetail(); });
+function toast(msg, ms = 5500) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.display = 'none'; }, ms);
 }
 
-function renderDetail() {
-  const u = units.find(x => x.id === sel), s = STATES[u.state];
-  document.getElementById('detail').innerHTML = `
-    <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px">
-      <b style="font-size:14px;white-space:nowrap">${u.id}</b>
-      <span class="chip ${s.cls}">${s.glyph} ${s.label}</span>
-    </div>
-    <div style="font-size:12px;color:var(--ink-2);margin-bottom:11px">${u.task}</div>
-    <div class="kv"><span>Hypothesis</span><span>${u.hyp}</span></div>
-    <div class="kv"><span>Elapsed</span><span>${u.el}</span></div>
-    <div class="kv"><span>Tokens</span><span>${u.tok}</span></div>
-    <div class="kv"><span>Model</span><span>${u.model}</span></div>
-    <div style="font-size:11.5px;color:var(--muted);margin-top:10px">${u.note}</div>
-    <div class="orders">
-      <button class="primary">Redirect</button>
-      <button>Pause</button>
-      <button>Clone</button>
-      <button class="danger">Terminate</button>
-    </div>`;
+async function api(path, body) {
+  const opt = body
+    ? { method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' },
+                               TOKEN ? { 'X-Console-Token': TOKEN } : {}),
+        body: JSON.stringify(body) }
+    : {};
+  const r = await fetch(path, opt);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok && r.status !== 403) throw new Error(d.error || d.message || ('HTTP ' + r.status));
+  return d;
 }
 
-function renderApprovals() {
-  const box = document.getElementById('approvals');
-  if (!approvals.length) { box.innerHTML = '<div class="empty">Queue clear. No irreversible actions pending.</div>'; return; }
-  box.innerHTML = approvals.map((a,i) => `
-    <div class="appr">
-      <div class="appr-kind">${a.kind}</div>
-      <div class="appr-body">${a.body}</div>
-      <div class="appr-meta">${a.meta}</div>
-      <div class="appr-btns">
-        <button class="primary" data-ok="${i}">Approve</button>
-        <button class="danger" data-no="${i}">Reject</button>
-      </div>
+async function load() {
+  try {
+    state = await api('/api/logistics');
+    $('offline').style.display = 'none';
+    render();
+  } catch (e) {
+    $('offline').style.display = 'block';
+    $('mandate').textContent = 'no console answering on this address';
+  }
+}
+
+function render() {
+  const s = state;
+  $('mandate').textContent = s.mandate;
+  $('score').textContent = s.score.blended.toFixed(1);
+  $('score-sub').textContent =
+    `nominal ${s.score.nominal.toFixed(1)} · worst case ${s.score.robust.toFixed(1)}`;
+  const flag = $('mandate-flag');
+  flag.textContent = s.score.mandate_met ? 'mandate met' : 'mandate unmet';
+  flag.className = 'badge ' + (s.score.mandate_met ? 'met' : 'unmet');
+  $('envelope').textContent = s.envelope.max_value > 0
+    ? `${s.envelope.skus.join(', ')} from ${s.envelope.vendors.join(', ')} up to ${money(s.envelope.max_value)}`
+    : 'unset — nothing proceeds on silence';
+
+  $('tiles').innerHTML = s.tiles.map(t => `
+    <div class="tile">
+      <div class="tile-label">${esc(t.label)}</div>
+      <div class="tile-val">${esc(t.value)} <small>${esc(t.target)}</small></div>
+      <div class="meter ${t.state}"><i style="width:${t.pct.toFixed(1)}%"></i></div>
+      <div class="tile-sub">${esc(t.sub)}</div>
     </div>`).join('');
-  box.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => resolve(+b.dataset.ok, 'approved'));
-  box.querySelectorAll('[data-no]').forEach(b => b.onclick = () => resolve(+b.dataset.no, 'rejected'));
+
+  renderGate();
+
+  $('plan-meta').textContent = `policy #${s.incumbent.id} by ${s.incumbent.agent} · ` +
+    `fitted on ${s.train} · scored on ${s.holdout}`;
+  $('network').innerHTML = `<thead><tr>
+      <th>SKU</th><th>Vendor</th><th>Lead</th><th>Shelf</th><th>Demand/day</th>
+      <th>DC s → S</th><th>Store s → S</th><th>Cover</th><th></th></tr></thead><tbody>` +
+    s.network.map(r => `<tr>
+      <td>${esc(r.sku)}${r.a_list ? '<span class="tag">A-LIST</span>' : ''}</td>
+      <td>${esc(r.vendor)}</td>
+      <td class="num">${r.lead}d</td>
+      <td class="num">${r.shelf_life}d</td>
+      <td class="num">${r.mean_daily.toFixed(1)} <span style="color:var(--muted)">±${r.stdev.toFixed(1)}</span></td>
+      <td class="num">${r.dc_s} → ${r.dc_S}</td>
+      <td class="num">${r.store_s} → ${r.store_S}</td>
+      <td class="num">${r.cover_days}d</td>
+      <td><button class="ghost" data-propose="${esc(r.sku)}">Draft PO</button></td>
+    </tr>`).join('') + '</tbody>';
+
+  $('worst-label').textContent = s.score.worst ? 'worst: ' + s.score.worst : '';
+  $('scenarios').innerHTML = s.scenarios.map(x => `
+    <div class="scn ${x.worst ? 'worst' : ''}">
+      <div class="scn-top"><b>${esc(x.label)}</b><span>${x.score.toFixed(1)}</span></div>
+      <div class="meter ${x.score >= 85 ? 'good' : x.score >= 70 ? 'warn' : 'crit'}">
+        <i style="width:${Math.max(2, x.score).toFixed(0)}%"></i></div>
+      <div class="tile-sub">fill ${(x.fill_rate * 100).toFixed(1)}% · capital ${money(x.working_capital)}</div>
+    </div>`).join('');
+
+  $('pol-count').textContent = `${s.policies_scored} on the board`;
+  $('leaderboard').innerHTML = `<thead><tr><th>#</th><th>Proposed by</th>
+      <th>Blended</th><th>Worst case</th></tr></thead><tbody>` +
+    s.leaderboard.map(p => `<tr>
+      <td class="num">${p.id}${p.incumbent ? '<span class="tag">RUNNING</span>' : ''}</td>
+      <td>${esc(p.agent)}</td>
+      <td class="num">${p.score.toFixed(1)}</td>
+      <td class="num">${p.robust_score.toFixed(1)}</td>
+    </tr>`).join('') + '</tbody>';
+
+  $('log').innerHTML = s.log.map(l => {
+    const m = String(l).match(/^(\w+ \d+ [\d:]+)\s+(.*)$/);
+    return m ? `<div><time>${esc(m[1])}</time>${esc(m[2])}</div>`
+             : `<div>${esc(l)}</div>`;
+  }).join('') || '<div class="empty">nothing yet</div>';
+
+  document.querySelectorAll('[data-propose]').forEach(b => {
+    b.onclick = () => propose(b.dataset.propose);
+  });
 }
 
-function resolve(i, verdict) {
-  const a = approvals[i];
-  approvals.splice(i,1);
-  addLog(`${verdict === 'approved' ? 'APPROVED' : 'REJECTED'} — ${a.kind.split(' —')[0]} · ${a.meta.split(' · ')[0]}`);
-  renderApprovals();
-}
-
-const log = [
-  '11:04:22  recon-08 terminated — egress denied (host not on allowlist)',
-  '11:04:19  Critic appended syntax-tier rule to blacklist.txt',
-  '11:02:55  forge-05 wrote 3 proposals to approval queue',
-  '10:58:40  probe-03 flagged H-081: n=14 below significance threshold',
-  '10:51:07  probe-04 blocked — LinkedIn MDP scope missing',
-  '10:44:33  Measurer wrote verdict for H-079: refuted (CTR 0.4% vs 1.2% predicted)',
-  '10:44:31  Critic appended strategy-tier rule: "feature-led hooks underperform on cold audience"',
-  '10:31:12  Daily cap reset — 8 units spawned'
-];
-function addLog(msg) {
-  const t = new Date().toTimeString().slice(0,8);
-  log.unshift(`${t}  ${msg}`);
-  renderLog();
-}
-function renderLog() {
-  document.getElementById('log').innerHTML = log.map(l => {
-    const t = l.slice(0,8), rest = l.slice(8);
-    return `<div><time>${t}</time>${rest}</div>`;
+function renderGate() {
+  const g = state.gate;
+  $('gate-count').textContent = g.length ? `${g.length} parked` : '';
+  if (!g.length) {
+    $('gate').innerHTML = '<div class="empty">Nothing is waiting on you. Draft a ' +
+      'purchase order from the plan below to see what the gate asks for.</div>';
+    return;
+  }
+  $('gate').innerHTML = g.map(d => {
+    const b = d.board;
+    const ballots = b ? Object.entries(b.ballots).map(([who, v]) =>
+      `<span class="ballot ${v === true ? 'yes' : v === false ? 'no' : ''}" title="${
+        esc(b.reasons[who])}">${esc(who)}: ${
+        v === true ? 'yes' : v === false ? 'no' : 'unknown'}</span>`).join('') : '';
+    return `
+    <div class="dossier">
+      <h4>${d.qty.toLocaleString()} × ${esc(d.sku)} from ${esc(d.vendor)} — ${money(d.value)}</h4>
+      <div class="cost">waiting ${d.waited_days.toFixed(2)} days · ${money(d.wait_cost_per_day)}/day · ${money(d.cost_of_waiting)} so far</div>
+      <dl class="kv">
+        <dt>Arrives</dt><dd>${d.eta} days after release, into the ${esc(d.node)}</dd>
+        <dt>Forecast</dt><dd>${esc(d.forecast)}</dd>
+        <dt>Rollback</dt><dd>${esc(d.rollback)}</dd>
+        ${d.rationale ? `<dt>Why</dt><dd>${esc(d.rationale)}</dd>` : ''}
+        <dt>Silence</dt><dd>${esc(d.tacit_why)}</dd>
+      </dl>
+      ${ballots ? `<div class="ballots">${ballots}<span class="ballot ${b.approved ? 'yes' : 'no'}">board ${
+        esc(b.tally)}${b.approved ? '' : ' — blocked, shown anyway'}</span></div>` : ''}
+      <div class="acts">
+        <button class="approve" data-decide="approve" data-id="${d.id}">Approve</button>
+        <button class="reject"  data-decide="reject"  data-id="${d.id}">Reject</button>
+        <span class="note">recorded against your name in the permanent log</span>
+      </div>
+    </div>`;
   }).join('');
+  document.querySelectorAll('[data-decide]').forEach(b => {
+    b.onclick = () => decide(b.dataset.id, b.dataset.decide);
+  });
 }
 
-document.getElementById('reassign').onclick = () => {
-  units.forEach(u => { if (u.state==='idle'||u.state==='failed') { u.state='running'; u.el='0m 04s'; u.note='Reassigned by operator.'; } });
-  addLog('Operator reassigned 2 idle units');
-  renderUnits(); renderDetail();
+async function guard(fn) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  try {
+    await fn();
+  } catch (e) {
+    toast(/token/i.test(e.message)
+      ? 'This console is locked. Append ?token=… to the URL.' : e.message);
+  } finally {
+    busy = false;
+    document.querySelectorAll('button').forEach(b => { b.disabled = false; });
+  }
+}
+
+$('plan').onclick = () => guard(async () => {
+  toast('Planning — proposing 20 policies and scoring each on held-out demand…', 60000);
+  const d = await api('/api/plan', { rounds: 20 });
+  state = d.state;
+  render();
+  const r = d.result;
+  toast(`${r.adopted} of ${r.proposed} proposals beat the plan in place. ` +
+        `Score ${r.score.toFixed(1)} · worst case ${r.robust_score.toFixed(1)} · ` +
+        `${r.mandate_met ? 'mandate met' : 'mandate still unmet'}.`, 9000);
+});
+
+$('refresh').onclick = () => guard(load);
+
+function propose(sku) {
+  guard(async () => {
+    const d = await api('/api/propose', { sku });
+    state = d.state;
+    render();
+    toast(`Drafted ${d.commitment.qty} × ${sku} from ${d.commitment.vendor}. ` +
+          'It is parked at the gate — nothing has been ordered.');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+function decide(id, decision) {
+  guard(async () => {
+    const d = await api('/api/decide', { id: Number(id), decision });
+    if (!d.ok) { toast(d.message); return; }
+    state = d.state;
+    render();
+    toast(decision === 'approve'
+      ? 'Approved and recorded. Take the dossier to your own purchasing system — Phoenix cannot place it.'
+      : 'Rejected and recorded.');
+  });
+}
+
+$('test-guard').onclick = e => {
+  e.preventDefault();
+  guard(async () => {
+    const first = (state && (state.gate[0] || state.decided[0])) || {};
+    const d = await api('/api/place', { id: first.id || 0 });
+    toast(d.message, 10000);
+  });
 };
 
-renderUnits(); renderDetail(); renderApprovals(); renderLog();
+load();
+setInterval(() => { if (!busy) load(); }, 15000);
 </script>
 </body>
 </html>

@@ -229,6 +229,100 @@ check("because the capability does not exist at all (Article V)",
 check("a decided commitment cannot be decided twice",
       not L.decide(d2["id"], "reject", "someone-else")[0])
 
+# ── 8. the board reads evidence that moves ────────────────────────────────────
+print("\n8. The board — three seats, three signals, on this domain's numbers")
+best_policy = L.incumbent()["policy"]
+tallies = {}
+for pol, label in ((L.naive_reorder_point(), "on the wasteful baseline"),
+                   (best_policy, "on the plan in place")):
+    L.adopt(L.record_policy("board-probe", pol, L.oracle(pol), note="board probe"))
+    tallies[label] = B.vote("probe", P.board_context(600.0, 600.0))["tally"]
+check("the same three seats reach different tallies on different evidence",
+      len(set(tallies.values())) >= 2,
+      " · ".join(f"{v} {k}" for k, v in tallies.items()))
+big = B.vote("an order far beyond the plan", P.board_context(400_000.0, 0.0))
+check("an order beyond what the plan provides for is unaffordable to Ledger",
+      big["ballots"]["Ledger"] is False, big["reasons"]["Ledger"])
+planned = B.vote("the plan's own reorder", P.board_context(600.0, 600.0))
+check("the plan's own reorder is not counted as new capital",
+      planned["ballots"]["Ledger"] is True, planned["reasons"]["Ledger"])
+check("no seat is flagged as non-functional (VIII.1)", not big["degenerate"],
+      "; ".join(big["degenerate"]) or "all three vary")
+
+# ── 9. the console a person actually uses ─────────────────────────────────────
+print("\n9. The console — the operator surface, served and answering")
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import logistics_console as LC
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), LC.Handler)
+base = f"http://127.0.0.1:{srv.server_address[1]}"
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
+def _get(path):
+    with urllib.request.urlopen(base + path, timeout=10) as r:
+        return r.status, r.read().decode()
+
+
+def _post(path, body):
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+try:
+    st, page = _get("/")
+    check("GET / serves the planning console", st == 200 and "Phoenix Logistics" in page,
+          f"{len(page):,} bytes from {os.path.basename(LC.PAGE_PATH)}")
+    st, raw = _get("/api/logistics")
+    snap = json.loads(raw)
+    check("the snapshot carries what the page needs and nothing invented",
+          {"tiles", "scenarios", "network", "gate", "leaderboard", "score"} <= snap.keys()
+          and len(snap["tiles"]) == 4 and len(snap["network"]) == len(L.SKUS))
+    check("every tile is a number against a target, not a verdict",
+          all({"value", "target", "pct", "state"} <= t.keys() for t in snap["tiles"]),
+          " · ".join(f"{t['label']} {t['value']}" for t in snap["tiles"]))
+
+    st, made = _post("/api/propose", {"sku": "FRESH-01"})
+    cid = made["commitment"]["id"]
+    check("drafting a purchase order parks it — it does not place it", st == 200
+          and made["commitment"]["status"] == "pending"
+          and any(d["id"] == cid for d in made["state"]["gate"]),
+          f"{made['commitment']['qty']}× FRESH-01, ${made['commitment']['value']:,.0f}")
+    check("the parked dossier carries the board's ballots for the human to see",
+          bool(made["state"]["gate"][0].get("board")),
+          made["state"]["gate"][0]["board"]["tally"])
+
+    st, placed = _post("/api/place", {"id": cid})
+    check("the page cannot place an order, and can be made to prove it",
+          st == 403 and placed["ok"] is False, placed["message"][:64])
+
+    st, decided = _post("/api/decide", {"id": cid, "decision": "approve"})
+    check("the human's decision is the only thing that resolves the gate",
+          st == 200 and decided["ok"] and not decided["state"]["gate"])
+    st, placed2 = _post("/api/place", {"id": cid})
+    check("and approval still does not place it", st == 403 and placed2["ok"] is False)
+
+    st, bad = _post("/api/propose", {"sku": "NOT-A-SKU"})
+    check("an unknown SKU is refused with 400, not improvised", st == 400, bad["error"])
+
+    os.environ["CONSOLE_TOKEN"] = "verify-token"
+    st, locked = _post("/api/propose", {"sku": "FRESH-01"})
+    check("with CONSOLE_TOKEN set, spectating stays free and acting does not",
+          st == 401 and _get("/api/logistics")[0] == 200, locked["error"])
+finally:
+    os.environ.pop("CONSOLE_TOKEN", None)
+    srv.shutdown()
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 print(L.render_world())
 sys.exit(0 if all(results) else 1)

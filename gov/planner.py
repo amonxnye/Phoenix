@@ -241,25 +241,42 @@ def run_search(agent: str, rounds: int = SEARCH_ROUNDS) -> dict:
 
 # ── the board, reading logistics evidence ─────────────────────────────────────
 
-def board_context(value: float = 0.0) -> dict:
-    """The same three governors, the same disjoint-evidence rule, this domain's numbers:
-    Ledger reads working capital against the ceiling, Prudence reads the waste and
-    freight budgets, Growth reads whether service is actually moving (Article VIII)."""
+def board_context(value: float = 0.0, planned_value: float = 0.0) -> dict:
+    """The same three governors, the same disjoint-evidence rule, this domain's numbers.
+
+    Each seat has to read something that MOVES, or it is a label wearing a robe
+    (Article VIII.1). The obvious mappings are the degenerate ones, so:
+
+      * **Ledger — is this order new capital?** Not "does the plan's capital plus the
+        order exceed the ceiling": once a planner optimises up to the ceiling that is
+        permanently false, and Ledger becomes a constant NO. A replenishment the plan
+        already provides for is priced into the simulated working capital; only the
+        part BEYOND the plan's own cycle quantity is capital we have not accounted for,
+        and that is what gets judged against the headroom.
+      * **Prudence — how long can we burn before the ceiling?** Runway from the money
+        actually burning (waste and emergency freight), not from holding cost, which is
+        a consequence of the plan rather than a leak in it. A wasteful plan has no
+        runway; a clean one has plenty. It varies with plan quality, which is the point.
+      * **Growth — is service the blocker?** When fill is under the mandate, more stock
+        is the investment that moves the score; when service is already met, Growth
+        voting against more stock is a correct answer, not a stuck one.
+    """
     inc = ensure_incumbent()
     n = inc["verdict"]["nominal"]
     wc = n["working_capital"]
-    daily_burn = (n["waste_cost"] + n["expedite_spend"] + n["holding_cost"]) / \
-        max(n["periods"], 1)
-    hist = L.leaderboard(50)
-    prev = [p["score"] for p in hist if p["id"] != inc["id"]]
+    headroom = L.CAPITAL_CEILING - wc
+    unplanned = max(0.0, value - planned_value)
+    burning = (n["waste_cost"] + n["expedite_spend"]) / max(n["periods"], 1)
+    prev = [p["score"] for p in L.leaderboard(50) if p["id"] != inc["id"]]
     return {
-        "affordable": (wc + value) <= L.CAPITAL_CEILING,
+        "affordable": unplanned <= headroom,
         "spent": int(wc), "cap": int(L.CAPITAL_CEILING),
-        "burn_per_turn": int(daily_burn) or 1,
+        "burn_per_turn": max(1, int(round(burning))),
         "within_budget": (n["waste_cost"] <= L.WASTE_BUDGET
                           and n["expedite_spend"] <= L.EXPEDITE_BUDGET),
         "progress_delta": int(round(inc["score"] - max(prev))) if prev else None,
-        "understaffed": n["fill_rate"] < L.TARGET_FILL,
+        "understaffed": (n["fill_rate"] < L.TARGET_FILL
+                         or n["a_list_fill"] < L.A_LIST_FILL_FLOOR),
     }
 
 
@@ -273,23 +290,24 @@ def commit(agent: str, sku: str, node: str = "dc", qty: int = 0) -> dict:
 
     Nothing this function returns can move goods. ``L.place_order`` refuses always."""
     inc = ensure_incumbent()
-    if qty <= 0:
-        # The policy's own cycle quantity (order-up-to minus reorder point), floored at
-        # the lead-time cover — nobody raises a purchase order for less than the time it
-        # takes to arrive.
-        p = inc["policy"][sku][node]
-        lead = L.SKUS[sku]["lead"] if node == "dc" else L.DC_LEAD
-        qty = max(p["S"] - p["s"], int(round(L.train_stats()[sku]["mean_daily"] * lead)))
+    # The policy's own cycle quantity (order-up-to minus reorder point), floored at the
+    # lead-time cover — nobody raises a purchase order for less than the time it takes
+    # to arrive. This is also what the plan already provides for, so it is what Ledger
+    # measures an oversized order against.
+    p = inc["policy"][sku][node]
+    lead = L.SKUS[sku]["lead"] if node == "dc" else L.DC_LEAD
+    planned = max(p["S"] - p["s"], int(round(L.train_stats()[sku]["mean_daily"] * lead)))
+    qty = planned if qty <= 0 else int(qty)
     value = qty * L.SKUS[sku]["cost"]
     v = board.vote(f"commit {qty}× {sku} from {L.SKUS[sku]['vendor']} (${value:,.0f})",
-                   board_context(value))
+                   board_context(value, planned * L.SKUS[sku]["cost"]))
     did = anchor.reason_add(
         -1, agent, f"propose PO: {qty}× {sku}",
         f"policy #{inc['id']} orders up to {inc['policy'][sku][node]['S']} at the {node}; "
         f"board {v['tally']} — " + "; ".join(f"{g}: {r}" for g, r in v["reasons"].items()),
         derived_from=[f"policy:{inc['id']}"],
         authorized_by="human" if not v["approved"] else "board")
-    d = L.propose_commitment(agent, sku, qty, node, decision_id=did)
+    d = L.propose_commitment(agent, sku, qty, node, decision_id=did, board=v)
     d["board"] = v
     ok, why = L.within_envelope(d)
     d["tacit_consent_eligible"] = ok
@@ -303,8 +321,9 @@ def commit(agent: str, sku: str, node: str = "dc", qty: int = 0) -> dict:
 def sweep() -> list[dict]:
     """Article IV.7 in this domain: an hour of silence sends a parked commitment back to
     the Board — but only inside the human's pre-approved envelope, which is empty by
-    default. Outside it, silence never buys anything."""
-    return L.tacit_sweep(board.vote, board_context())
+    default. Outside it, silence never buys anything. Each parked commitment is voted
+    on against its own value, not one blurred average."""
+    return L.tacit_sweep(board.vote, lambda d: board_context(d["value"], d["value"]))
 
 
 if __name__ == "__main__":

@@ -131,7 +131,7 @@ need the platform. Separating them made every subsequent decision easy.
 | Artifact | What it is |
 |---|---|
 | `SRS-Project-Phoenix-v2.md` | Rewritten spec — trust boundary, Measurer role, capability-based safety, context compaction, spend cap, kill switch, 12 acceptance criteria with full FR coverage |
-| `phoenix-command.html` | Interactive RTS-style operator console mockup — resource meters, unit grid, idle alert, approval queue, event log |
+| `phoenix-command.html` | The operator console. Began as an RTS-style mockup with invented numbers; now the live planning surface for the logistics harness — mandate meters, the plan, disruption scores, and the purchase orders parked at the gate, all read from `gov/logistics_console.py`. No placeholder data remains in it |
 | `gov/runtime.py` | LangGraph graph, durable checkpointer, `interrupt()` at the irreversible step |
 | `gov/governor.py` | The control plane — read view over the checkpointer, hard spend cap, idle detection |
 | `gov/verify.py` | 16 acceptance checks, including durability across real process boundaries |

@@ -132,7 +132,8 @@ def init() -> None:
                   "node TEXT, qty INT, vendor TEXT, value REAL, eta INT, forecast TEXT, "
                   "rollback TEXT, cancel_by REAL, cancel_fee REAL, wait_cost_per_day REAL, "
                   "status TEXT DEFAULT 'pending', decided_by TEXT DEFAULT '', "
-                  "decided_ts REAL DEFAULT 0, why TEXT DEFAULT '', decision_id INT DEFAULT 0)")
+                  "decided_ts REAL DEFAULT 0, why TEXT DEFAULT '', decision_id INT DEFAULT 0, "
+                  "board TEXT DEFAULT '')")
         c.commit()
     finally:
         c.close()
@@ -618,7 +619,8 @@ def wait_cost_per_day(sku: str) -> float:
 
 
 def propose_commitment(agent: str, sku: str, qty: int, node: str = "dc",
-                       forecast: str = "", decision_id: int = 0) -> dict:
+                       forecast: str = "", decision_id: int = 0,
+                       board: dict | None = None) -> dict:
     """Package an irreversible act with the evidence behind it and PARK it. Nothing
     downstream of this function can make it happen — only a human can."""
     if sku not in SKUS:
@@ -641,10 +643,11 @@ def propose_commitment(agent: str, sku: str, qty: int, node: str = "dc",
     try:
         cur = c.execute(
             "INSERT INTO commitments(ts, agent, sku, node, qty, vendor, value, eta, "
-            "forecast, rollback, cancel_by, cancel_fee, wait_cost_per_day, decision_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "forecast, rollback, cancel_by, cancel_fee, wait_cost_per_day, decision_id, "
+            "board) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.time(), agent, sku, node, qty, d["vendor"], value, lead, d["forecast"],
-             d["rollback"], d["cancel_by"], cancel_fee, d["wait_cost_per_day"], decision_id))
+             d["rollback"], d["cancel_by"], cancel_fee, d["wait_cost_per_day"], decision_id,
+             json.dumps(board) if board else ""))
         c.commit()
         d["id"] = cur.lastrowid
     finally:
@@ -658,7 +661,7 @@ def commitments(status: str = "") -> list[dict]:
     try:
         q = ("SELECT id, ts, agent, sku, node, qty, vendor, value, eta, forecast, "
              "rollback, cancel_by, cancel_fee, wait_cost_per_day, status, decided_by, "
-             "why, decision_id FROM commitments")
+             "why, decision_id, board FROM commitments")
         args = []
         if status:
             q += " WHERE status=?"
@@ -668,13 +671,17 @@ def commitments(status: str = "") -> list[dict]:
         c.close()
     keys = ("id", "ts", "agent", "sku", "node", "qty", "vendor", "value", "eta",
             "forecast", "rollback", "cancel_by", "cancel_fee", "wait_cost_per_day",
-            "status", "decided_by", "why", "decision_id")
+            "status", "decided_by", "why", "decision_id", "board")
     out = [dict(zip(keys, r)) for r in rows]
     now = time.time()
     for d in out:                                   # IV.4: the running cost of waiting
         waited = max(0.0, (now - d["ts"]) / 86400.0)
         d["waited_days"] = round(waited, 3)
         d["cost_of_waiting"] = round(waited * d["wait_cost_per_day"], 2)
+        try:
+            d["board"] = json.loads(d["board"]) if d["board"] else None
+        except ValueError:
+            d["board"] = None
     return out
 
 
@@ -698,11 +705,14 @@ def decide(cid: int, decision: str, by: str, why: str = "") -> tuple[bool, str]:
     return True, f"commitment {cid} → {status} ({by})"
 
 
-def tacit_sweep(board_vote, ctx: dict, now: float | None = None) -> list[dict]:
+def tacit_sweep(board_vote, ctx, now: float | None = None) -> list[dict]:
     """Article IV.7, narrowed to this domain: an hour of human silence sends a
     commitment back to the Board — but ONLY if it sits inside the pre-approved
     envelope. Outside it, silence decides nothing, forever; the request keeps waiting
     and keeps costing (IV.4), which is the human's signal, not the model's problem.
+
+    `ctx` may be a dict or a callable taking the dossier, so each commitment can be
+    voted on against its own numbers rather than one blurred average.
     """
     now = now or time.time()
     out = []
@@ -714,7 +724,7 @@ def tacit_sweep(board_vote, ctx: dict, now: float | None = None) -> list[dict]:
             out.append({"id": d["id"], "action": "still waiting", "why": why})
             continue
         v = board_vote(f"commit {d['qty']}× {d['sku']} from {d['vendor']} "
-                       f"(${d['value']:,.0f})", ctx)
+                       f"(${d['value']:,.0f})", ctx(d) if callable(ctx) else ctx)
         if v["approved"]:
             decide(d["id"], "tacit", "board (tacit consent)",
                    f"{why}; board {v['tally']} after an hour of silence")

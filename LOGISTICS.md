@@ -2,8 +2,8 @@
 
 **Status: v1 shipped.** The constitution pointed at **supply chain and logistics**:
 planning replenishment, routing, allocation and capacity — proposing decisions a human
-commits to. Steps 1–4 of the build order are code, with 36 acceptance checks in CI
-(`gov/verify_logistics.py`, ~3s, no model and no network required).
+commits to. Steps 1–4 of the build order are code, with 50 acceptance checks in CI
+(`gov/verify_logistics.py`, ~10s, no model and no network required).
 
 > **The oracle is the simulator; the gate is the purchase order.**
 
@@ -11,8 +11,23 @@ commits to. Steps 1–4 of the build order are code, with 36 acceptance checks i
 |---|---|
 | The world | `gov/logistics_world.py` — 4 SKUs × 2 nodes, 180 days, one fixed seed |
 | The agent | `gov/planner.py` — propose a policy, get scored on demand it never saw |
-| The proof | `gov/verify_logistics.py` — 36 checks |
-| Try it | `python3 gov/planner.py --agent plan-01 --rounds 20` |
+| The console | `gov/logistics_console.py` + `phoenix-command.html` — the surface a planner works in |
+| The proof | `gov/verify_logistics.py` — 50 checks |
+| Try it | `python3 gov/logistics_console.py --seed` → <http://127.0.0.1:8790> |
+
+### The console
+
+The page answers the four questions the domain asks, and nothing else: **are we meeting
+the mandate** (fill, capital, waste, freight — each against its target, from the oracle,
+never from an agent's report), **what is the plan** (every SKU's reorder point and
+order-up-to level at both nodes), **would it survive a bad week** (the same plan under
+four disruptions), and **what needs me** (purchase orders parked at the gate, priced by
+what the wait is costing, with the board's ballots attached).
+
+Planning runs from a button because it is reversible. The one irreversible act waits for
+the person reading the page — and even their approval does not place an order. It records
+a decision for them to take to their own system; `place_order` refuses always, and the
+page has a link that makes it refuse in front of you.
 
 Of all the harnesses, this one is the closest cousin to the settlement itself. Phoenix
 already runs an economy with stock levels, storage caps, spoilage, decaying assets,
