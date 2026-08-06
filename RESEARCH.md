@@ -1,10 +1,11 @@
 # Phoenix Research — a governed organization that does science
 
-**Status:** design. The same machinery that governs a settlement and ships code,
-pointed at **scientific discovery** — hypothesis generation, literature synthesis,
-computational validation, and experiment *design*. The domain is illustrated with
-drug/therapeutic discovery, but the harness is domain-agnostic (materials, biology,
-chemistry, ML research).
+**Status:** build steps 1–2 **shipped** (`gov/research_world.py`, `gov/researcher.py`,
+40 acceptance checks in `gov/verify_research.py`, wired into CI); steps 3–5 design.
+The same machinery that governs a settlement and ships code, pointed at **scientific
+discovery** — hypothesis generation, literature synthesis, computational validation,
+and experiment *design*. The domain is illustrated with drug/therapeutic discovery,
+but the harness is domain-agnostic (materials, biology, chemistry, ML research).
 
 The one law survives the translation, and it is *more* important here than anywhere:
 
@@ -90,23 +91,60 @@ lineage engine (provenance *is* the scientific method), careers, and the console
 
 ## 6. What gets built (the new ~15%)
 
-- `research_world.py` — the validation oracle: run the citation-checker, the
-  benchmark reproduction, and the computational assays; return a score.
-- `researcher.py` — one hypothesis cycle: read the goal + prior results → propose a
-  hypothesis with cited evidence → compute/simulate → oracle scores it → contribution
+- **[built]** `research_world.py` — the validation oracle: the citation checker, the
+  benchmark reproduction, and the computational assay; returns a score.
+- **[built]** `researcher.py` — one hypothesis cycle: read the goal + prior results →
+  propose a hypothesis with cited evidence → compute → oracle scores it → contribution
   = novel, verified, reproducible advance. Feeds the same economy and careers.
-- The **dossier gate**: a candidate that clears the oracle is packaged (claim,
-  evidence chain, computed scores, limitations) and parked at the human gate — never
-  auto-published, never auto-ordered.
-- Oracle adapters per field (docking, ADMET, materials sim, ML-benchmark).
+- **[built]** The **dossier gate**: a candidate that clears the oracle is packaged
+  (claim, evidence chain, computed scores, limitations) and parked at the human gate —
+  never auto-published, never auto-ordered.
+- Oracle adapters per field (docking, ADMET, materials sim, ML-benchmark) — the toy
+  adapter is in `sandbox/corpus/assays.json`; the seam is `research_world.assay`.
+
+### How the oracle actually rules (the part worth stealing)
+
+A claim is a triple with citations. The corpus is eight toy papers of findings.
+
+- A citation that doesn't resolve, or a claim no cited finding supports → **rejected**.
+- A claim its own citation *contradicts* → **rejected**, naming the paper.
+- A claim that restates a finding verbatim → **verified but known**. Pays nothing:
+  a restatement is not an advance.
+- A claim one composed step from two cited findings, **with the direction of effect
+  right** → **novel**. This is the only thing that earns contribution.
+- The same inference with the direction wrong → **sign-error**, named as such. Two hops
+  of evidence give a *net regulatory effect*, never a direct interaction: inhibiting an
+  activator downregulates what it activated, and claiming it "inhibits" it is the
+  commonest way a plausible hypothesis is quietly false. The oracle refuses it.
+- A claim already established → **prior art**, credited to whoever got there first.
+
+Above that sit the other two layers: an agent that has not re-derived a published
+number is refused novelty outright (the reproduction gate), and a candidate needs a
+computed affinity, a clean developability filter **and** a verified claim tying it to
+the target — the best-scoring compound in the corpus fails six ADMET filters and is
+not a candidate at all. Affinity alone was never the finding.
 
 ## 7. Build order
 
-1. Literature-grounded claim oracle on a tiny toy corpus (needs no wet lab, no model
-   even — a citation must resolve and support the claim).
-2. Researcher agent v1 + benchmark-reproduction gate; contribution = verified claims.
+1. **[shipped]** Literature-grounded claim oracle on a tiny toy corpus (needs no wet
+   lab, no model even — a citation must resolve and support the claim).
+2. **[shipped]** Researcher agent v1 + benchmark-reproduction gate; contribution =
+   verified claims; the dossier parks at the human gate.
 3. Console: a "Lab bench" page — goals, hypotheses, evidence, the dossier gate.
 4. A real computational assay adapter (start with open docking / public datasets).
 5. The eval race: which frontier model runs the best governed research org.
 
 Each ships alone and is testable, exactly like the settlement and the workspace.
+
+## 8. Running it
+
+```bash
+python3 gov/verify_research.py    # 40 checks — the whole harness, no model needed
+python3 gov/research_world.py     # the world state: criteria, candidates, progress
+python3 gov/researcher.py --agent res-01 --cycles 3    # needs a configured brain
+```
+
+The verification run redirects the research database to a temp file, so it never
+disturbs a live org's memory, and it walks the full arc: every rejection mode, the
+reproduction gate, contribution accruing across five cycles, the dossier packaged with
+its limitations, an agent refused at the gate and a human deciding it.

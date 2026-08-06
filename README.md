@@ -109,7 +109,7 @@ the specification, and every article names its enforcing module.
 | **II** | Agents are born by quorum, promoted on merit, retired *before* the overshooting spend. No immortals, no zombies, never reaped to empty. | `economy.py`, `sim_console.py` |
 | **III** | Limits are read before acting. The cap has one writer; a blocked action escalates **once**, naming the value, then mutes until it changes. | `governor.py`, `sim_console._breaker` |
 | **IV** | Irreversible actions stop at the gate. The wait is priced, re-routed if unanswered, and bounded by timeout. Reversible work never pauses. | `sim.py` interrupt, `sim_console.py` |
-| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them. | `workspace.py` |
+| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them; researchers hold no procurement credential, no lab actuator, and cannot write the literature they cite. | `workspace.py`, `research_world.py` |
 | **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. | `anchor.py` |
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
@@ -133,11 +133,12 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
-python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
+# the acceptance suites (CI runs all five on every push)
+python3 gov/verify.py           # 16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py       # 36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py      # 12 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_research.py  # 40 — citation oracle, reproduction gate, dossier gate
+python3 gov/console_smoke.py    # headless console API smoke
 
 # the live console
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
@@ -228,6 +229,8 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `sim.py` | the settlement — resources, builds, decay, trade, era pricing, the gate |
 | `workspace.py` | the real-work world — the test-suite oracle, tasks, the closed sandbox |
 | `worker.py` | the coding agent — patch, test, get paid for green |
+| `research_world.py` | the research world — citation oracle, reproduction gate, assay, the dossier gate |
+| `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -250,6 +253,8 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Real board dissent — disjoint evidence, `unknown` votes, degeneracy detection
 - [x] The sandbox — Article V's execution path, first code task shipped
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
+- [x] Oracle adapter #2 — citations, benchmark reproduction and computational assays
+      (`research_world.py`); the gate is anything physical or public ([`RESEARCH.md`](RESEARCH.md))
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
@@ -275,7 +280,8 @@ not try to make agents smarter. It tries to make an organization of them account
 ## The documents
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
-[`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
+[`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`RESEARCH.md`](RESEARCH.md) ·
+[`LINEAGE.md`](LINEAGE.md) ·
 [`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 

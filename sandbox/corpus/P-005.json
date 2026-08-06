@@ -1,0 +1,22 @@
+{
+  "id": "P-005",
+  "year": 2022,
+  "title": "CMP-202 blocks ADAPTOR-Y scaffolding",
+  "venue": "J. Toy Pharmacology",
+  "abstract": "CMP-202 inhibits ADAPTOR-Y assembly. Its predicted affinity for ADAPTOR-Y is reported.",
+  "findings": [
+    {
+      "subject": "CMP-202",
+      "relation": "inhibits",
+      "object": "ADAPTOR-Y",
+      "n": 22
+    }
+  ],
+  "assays": [
+    {
+      "compound": "CMP-202",
+      "target": "ADAPTOR-Y",
+      "affinity": -10.25
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "P-006",
+  "year": 2017,
+  "title": "FACTOR-Z is an endogenous brake on KIN-X",
+  "venue": "Toy Structural Biology",
+  "abstract": "FACTOR-Z binds the KIN-X activation loop and inhibits its catalytic activity.",
+  "findings": [
+    {
+      "subject": "FACTOR-Z",
+      "relation": "inhibits",
+      "object": "KIN-X",
+      "n": 19
+    }
+  ],
+  "assays": []
+}

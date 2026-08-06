@@ -1,0 +1,16 @@
+{
+  "id": "P-007",
+  "year": 2023,
+  "title": "CMP-303 stabilises and activates FACTOR-Z",
+  "venue": "Toy Chemical Biology",
+  "abstract": "CMP-303 is an allosteric activator of FACTOR-Z. No direct effect on KIN-X was measured in this work.",
+  "findings": [
+    {
+      "subject": "CMP-303",
+      "relation": "activates",
+      "object": "FACTOR-Z",
+      "n": 25
+    }
+  ],
+  "assays": []
+}

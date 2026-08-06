@@ -20,3 +20,5 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the Research (science) acceptance checks
+        run: python3 gov/verify_research.py

@@ -1,0 +1,16 @@
+{
+  "id": "P-003",
+  "year": 2018,
+  "title": "ADAPTOR-Y drives the PATH-INFLAM programme",
+  "venue": "Toy Immunology",
+  "abstract": "ADAPTOR-Y is required for and sufficient to activate the PATH-INFLAM transcriptional programme.",
+  "findings": [
+    {
+      "subject": "ADAPTOR-Y",
+      "relation": "activates",
+      "object": "PATH-INFLAM",
+      "n": 27
+    }
+  ],
+  "assays": []
+}

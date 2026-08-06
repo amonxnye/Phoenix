@@ -1,0 +1,16 @@
+{
+  "id": "P-004",
+  "year": 2021,
+  "title": "PATH-INFLAM activity tracks fibrotic burden",
+  "venue": "Toy Translational Medicine",
+  "abstract": "Sustained PATH-INFLAM activity upregulates the PHEN-FIBROSIS phenotype in a dose-dependent manner.",
+  "findings": [
+    {
+      "subject": "PATH-INFLAM",
+      "relation": "upregulates",
+      "object": "PHEN-FIBROSIS",
+      "n": 64
+    }
+  ],
+  "assays": []
+}

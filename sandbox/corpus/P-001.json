@@ -1,0 +1,22 @@
+{
+  "id": "P-001",
+  "year": 2019,
+  "title": "CMP-101 is a selective inhibitor of the KIN-X kinase",
+  "venue": "J. Toy Pharmacology",
+  "abstract": "We characterise CMP-101, an ATP-competitive small molecule that inhibits KIN-X in biochemical assay. Predicted binding affinity is reported from the public descriptor model.",
+  "findings": [
+    {
+      "subject": "CMP-101",
+      "relation": "inhibits",
+      "object": "KIN-X",
+      "n": 48
+    }
+  ],
+  "assays": [
+    {
+      "compound": "CMP-101",
+      "target": "KIN-X",
+      "affinity": -9.11
+    }
+  ]
+}
