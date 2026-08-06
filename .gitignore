@@ -23,6 +23,10 @@ scorecard.json
 # The corpus ships empty (pocs/.gitkeep); a real engagement's PoCs stay local.
 sandbox/replica/pocs/poc_*.py
 
+# Audit pipeline: reproductions the reproducer rebuilds at runtime are generated
+# artifacts (target/invariant/poc per candidate), not source.
+sandbox/reproductions/
+
 # Python
 __pycache__/
 *.py[cod]

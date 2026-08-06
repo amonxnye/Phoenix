@@ -26,3 +26,7 @@ jobs:
         run: python3 gov/verify_security.py
       - name: Run the Sentinel (detection/telemetry) acceptance checks
         run: python3 gov/verify_sentinel.py
+      - name: Run the real-code audit (scan → rebuild → exploit → prove) checks
+        run: python3 gov/verify_audit.py
+      - name: Run the Campaign (autonomous army) acceptance checks
+        run: python3 gov/verify_campaign.py
