@@ -72,6 +72,54 @@ def _build_version() -> dict:
 
 BUILD = _build_version()
 
+# ── background scan jobs (SaaS): cloning + scanning must not block the HTTP request,
+# or a hosting gateway times it out (502). Start returns instantly; the client polls. ──
+import uuid as _uuid
+
+_SCANS: dict = {}
+_SCANS_LOCK = threading.Lock()
+
+
+def _scan_gc() -> None:
+    now = time.time()
+    with _SCANS_LOCK:
+        for k in list(_SCANS):
+            if now - _SCANS[k].get("ts", 0) > 1800:
+                _SCANS.pop(k, None)
+        while len(_SCANS) > 60:
+            oldest = min(_SCANS, key=lambda x: _SCANS[x].get("ts", 0))
+            _SCANS.pop(oldest, None)
+
+
+def _run_scan(scan_id: str, kind: str, arg: str) -> None:
+    import audit_jobs as AJ
+    import reproducer as RP
+    import scanner as SC
+    try:
+        if kind == "url":
+            jid, label, root = AJ.clone(arg)
+        elif kind == "sample":
+            jid, label, root = AJ.sample()
+        else:
+            jid, label, root = AJ.dev_path(arg)
+        res = SC.scan(root)
+        res["candidates"] = res["candidates"][:150]
+        res.update(status="done", jobId=jid, label=label, supported=RP.supported(),
+                   ts=time.time())
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = res
+        anchor.record(_S["turn"], "audit",
+                      f"scanned {label}: {res['total']} candidates across "
+                      f"{res['files_scanned']} files")
+    except (ValueError, RuntimeError) as e:
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = {"status": "error", "error": str(e)[:300], "ts": time.time()}
+    except Exception as e:
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = {"status": "error", "error": "scan failed: " + str(e)[:200],
+                               "ts": time.time()}
+
+
 _LOCK = threading.Lock()
 _FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
@@ -1683,6 +1731,12 @@ class Handler(BaseHTTPRequestHandler):
                 node_ok = False
             return self._send(200, json.dumps(
                 {"sha": BUILD["sha"], "source": BUILD["source"], "node_range": node_ok}))
+        if self.path.startswith("/api/scan/status"):
+            from urllib.parse import parse_qs, urlparse
+            sid = parse_qs(urlparse(self.path).query).get("scanId", [""])[0]
+            with _SCANS_LOCK:
+                st = dict(_SCANS.get(sid, {"status": "unknown"}))
+            return self._send(200, json.dumps(st))
         if self.path == "/api/watchdata":
             import sentinel as SN
             SN.scan()                            # correlate before reading
@@ -2089,36 +2143,31 @@ class Handler(BaseHTTPRequestHandler):
             ok = SN.acknowledge(aid, who="operator")
             return self._send(200, json.dumps({"ok": ok, "alert": aid}))
         if self.path == "/api/scan":
+            # start a BACKGROUND scan and return immediately; the client polls
+            # /api/scan/status. Cloning + scanning inline would blow the gateway timeout.
             import audit_jobs as AJ
-            import reproducer as RP
-            import scanner as SC
             body = self._read_json()
             url = (body.get("repoUrl") or "").strip()
             want_sample = bool(body.get("sample"))
             path = (body.get("path") or "").strip()
-            try:
-                if url:
-                    jid, label, root = AJ.clone(url)
-                elif want_sample:
-                    jid, label, root = AJ.sample()
-                elif path and authed:            # arbitrary local path — operators only
-                    jid, label, root = AJ.dev_path(path)
-                else:
-                    return self._send(400, json.dumps({"error":
-                        "provide repoUrl (https://github.com/owner/repo) or sample:true"}))
-            except (ValueError, RuntimeError) as e:
-                return self._send(400, json.dumps({"error": str(e)[:300]}))
-            try:
-                res = SC.scan(root)
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)[:300]}))
-            res["candidates"] = res["candidates"][:150]      # ranked head; no abspath leaks
-            res["jobId"], res["label"] = jid, label
-            res["supported"] = RP.supported()                # which classes can be proven here
-            anchor.record(_S["turn"], "audit",
-                          f"scanned {label}: {res['total']} candidates across "
-                          f"{res['files_scanned']} files")
-            return self._send(200, json.dumps(res))
+            if url:
+                if not AJ.GITHUB_URL.match(url):
+                    return self._send(400, json.dumps(
+                        {"error": "only https://github.com/<owner>/<repo> URLs are accepted"}))
+                kind, arg = "url", url
+            elif want_sample:
+                kind, arg = "sample", ""
+            elif path and authed:                # arbitrary local path — operators only
+                kind, arg = "path", path
+            else:
+                return self._send(400, json.dumps({"error":
+                    "provide repoUrl (https://github.com/owner/repo) or sample:true"}))
+            _scan_gc()
+            scan_id = "scan_" + _uuid.uuid4().hex[:12]
+            with _SCANS_LOCK:
+                _SCANS[scan_id] = {"status": "running", "ts": time.time()}
+            threading.Thread(target=_run_scan, args=(scan_id, kind, arg), daemon=True).start()
+            return self._send(200, json.dumps({"scanId": scan_id, "status": "running"}))
         if self.path == "/api/prove":
             import audit_jobs as AJ
             import reproducer as RP
@@ -3371,21 +3420,34 @@ async function scan(){
   return doScan({repoUrl:repo});
 }
 async function doScan(payload){
-  scanbtn.disabled=true; scanmeta.innerHTML='<span class=spin></span> cloning &amp; scanning… (a fresh repo can take a minute)';
-  const d=await post('/api/scan',payload);
-  scanbtn.disabled=false;
-  if(d.error){scanmeta.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
-  if(typeof d.files_scanned!=='number'){
-    scanmeta.innerHTML='<span class=no>unexpected response — the app may be out of date; redeploy the branch and hard-refresh.</span>';
-    return;
+  scanbtn.disabled=true; const t0=Date.now();
+  scanmeta.innerHTML='<span class=spin></span> starting…';
+  const start=await post('/api/scan',payload);
+  if(start.error){scanbtn.disabled=false;scanmeta.innerHTML='<span class=no>'+esc(start.error)+'</span>';return}
+  // backward-compat: an older sync server returns the full result inline
+  if(typeof start.files_scanned==='number'){scanbtn.disabled=false;return renderScan(start,payload);}
+  const sid=start.scanId;
+  if(!sid){scanbtn.disabled=false;scanmeta.innerHTML='<span class=no>unexpected response — the app may be out of date; redeploy and hard-refresh.</span>';return}
+  for(let i=0;i<400;i++){                       // poll the background job (~10 min max)
+    await new Promise(r=>setTimeout(r,1500));
+    let s; try{ s=await (await fetch('/api/scan/status?scanId='+encodeURIComponent(sid))).json(); }
+    catch(e){ continue; }
+    const secs=Math.round((Date.now()-t0)/1000);
+    if(s.status==='running'){ scanmeta.innerHTML='<span class=spin></span> cloning &amp; scanning… '+secs+'s'; continue; }
+    scanbtn.disabled=false;
+    if(s.status==='done'){ return renderScan(s,payload); }
+    scanmeta.innerHTML='<span class=no>'+esc(s.error||('scan '+(s.status||'failed')))+'</span>'; return;
   }
+  scanbtn.disabled=false; scanmeta.innerHTML='<span class=no>scan timed out</span>';
+}
+function renderScan(d,payload){
   window._jobId=d.jobId||'';
   if(d.supported) PROVABLE=new Set(Object.keys(d.supported));   // server-derived, not hardcoded
-  const label=d.label||payload.repoUrl||'the repo';
+  const label=d.label||(payload&&payload.repoUrl)||'the repo';
   scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files in <span class=loc>${esc(label)}</span> — <b>${d.total||0}</b> candidates`;
   const sevs=['critical','high','medium','low'];
-  tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${d.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
-    +Object.entries(d.by_class).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');
+  tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${(d.by_severity||{})[s]||0}</b><span>${s}</span></div>`).join('')
+    +Object.entries(d.by_class||{}).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');
   sumcard.style.display='block';
   cands.innerHTML=(d.candidates||[]).map((c,i)=>{
     const prov=PROVABLE.has(c.class);
