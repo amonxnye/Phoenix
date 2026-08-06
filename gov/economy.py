@@ -28,15 +28,16 @@ def _data_dir() -> str:
 DB = os.path.join(_data_dir(), "aoe.sqlite")
 
 # Capability tiers. Promotion is earned at `promote_at` cumulative contribution.
-# Tuned from live behaviour: at ~300 contribution and ~10k compute per work cycle,
-# these give real careers (promotion mid-career for productive agents) and budgets that
-# outlast the promotion — instead of everyone hitting delegate by turn 8.
+# Budgets re-tuned from the production audit: the 400k cohort returned 2.3x the
+# contribution-per-token of the 60k cohort, and 6-turn villager lives churned the
+# fleet (2,670 lifetime agents in a day — births, careers and reaps are data too).
+# Longer careers are both more efficient and quieter.
 TIERS = [
-    {"name": "villager", "budget": 60_000,  "promote_at": 600,
+    {"name": "villager", "budget": 150_000, "promote_at": 600,
      "can": ("gather",)},
-    {"name": "foreman",  "budget": 150_000, "promote_at": 2_500,
+    {"name": "foreman",  "budget": 300_000, "promote_at": 2_500,
      "can": ("gather", "propose_build")},
-    {"name": "delegate", "budget": 400_000, "promote_at": None,          # top tier
+    {"name": "delegate", "budget": 600_000, "promote_at": None,          # top tier
      "can": ("gather", "propose_build", "propose_spawn", "propose_advance")},
 ]
 MAX_TIER = len(TIERS) - 1

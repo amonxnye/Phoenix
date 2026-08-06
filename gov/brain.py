@@ -104,6 +104,24 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> 
         raise
 
 
+def _maybe_traceable(fn):
+    """LangSmith deep tracing (Article VII.3: observability is bought, not
+    reinvented). Active only when LANGSMITH_TRACING=true AND the langsmith package
+    is installed — otherwise the seam stays bare stdlib. Because every model call in
+    the system flows through _chat, one decorator traces the whole organization's
+    thinking, labelled by purpose (chat-reply, retrospective, worker-patch, ...)."""
+    if os.environ.get("LANGSMITH_TRACING", "").strip().lower() not in ("1", "true"):
+        return fn
+    try:
+        from langsmith import traceable
+        return traceable(run_type="llm", name="phoenix-brain")(fn)
+    except Exception:
+        return fn
+
+
+_chat = _maybe_traceable(_chat)
+
+
 def _anthropic_chat(p: dict, messages: list, max_tokens: int,
                     temperature: float) -> tuple[str, dict]:
     """Native Anthropic Messages API via stdlib urllib — no extra dependency."""

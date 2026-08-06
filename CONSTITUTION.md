@@ -87,6 +87,15 @@ Everything below is those two laws, applied.
 6. An unanswered request means the channel failed, not that the human refused. It is
    escalated once through a **different** channel, never repeated into the same one
    (`sim_console._fleet_speaks`).
+7. **Tacit consent.** A decision queued for the human for more than one hour goes
+   back to the Board for a final vote on live evidence. A quorum yes proceeds *as if
+   approved* — unmistakably labelled "by tacit consent", logged, and reported to the
+   human; a blocked vote stands the request down. This covers the gate, board-approved
+   development proposals, and the adoption of the Board's *proposed* next Vision after
+   a goal is met (silence never adopts an invented goal). The human may decide at any
+   moment before the hour, and may reverse anything reversible after it. *(Adopted by
+   the human, 2026-08-04 — silence is a decision, and this article names its owner.)*
+   Enforced by `sim_console.py` (`TACIT_CONSENT_S`, the IV.7 block in `_one_turn`).
 > Enforced by `sim.py` (the `interrupt`) and `governor.py` (the read/resume).
 
 ## Article V — Remove the capability, don't police it

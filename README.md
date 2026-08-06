@@ -153,7 +153,7 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
-| `LANGCHAIN_TRACING_V2` / `LANGCHAIN_API_KEY` | deep traces via LangSmith (Article VII) |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |
 
 Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console reads
 `$PORT` and binds `0.0.0.0`.
@@ -252,6 +252,12 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
+- [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
+      requests, stalls and tacit-consent countdowns to Slack/Discord/Telegram
+      (outbound-only, stdlib, no third-party relay in the approval path); later,
+      two-way approve/reject via our own token-gated API. Revisit the AG-UI /
+      Channels-SDK ecosystem when it matures — the *idea* is adopted, the hosted
+      middleman is not.
 - [ ] Merit decoupled from budget — agent quality measurable independently of survival
 - [ ] Disputed-knowledge flag — contradictory facts quarantined at write time
 - [ ] Raids & defence — adversarial pressure for the settlement ([`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md))
@@ -270,7 +276,7 @@ not try to make agents smarter. It tries to make an organization of them account
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
 [`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
-[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`DEPLOY.md`](DEPLOY.md) ·
+[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 
 ## License

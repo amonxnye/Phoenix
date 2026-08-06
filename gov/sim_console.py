@@ -35,7 +35,10 @@ import vision as V
 # - TICK 3s: the 2s pace saturated the process with model calls.
 # - idle threshold 2×TICK: "idle" now means genuinely stale, not "since last tick".
 G.TOKEN_CAP = 1_000_000
-TICK = 3.0
+TICK = float(os.environ.get("WORLD_TICK", "3"))
+# Article IV.7 — tacit consent: a decision queued for the human this long goes back
+# to the Board for a final vote; quorum yes proceeds AS IF approved, loudly logged.
+TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
@@ -74,16 +77,20 @@ else:
                  if r["agent"].startswith("vil-") and r["agent"].split("-")[1].isdigit()]
         _S["seq"] = max(_nums, default=0)
         anchor.config_set("seq", str(_S["seq"]))
-    if _S["heralds"] == 0:
-        _nums = [int(u.unit_id.split("-")[1]) for u in G.units(_GRAPH, _CP)
-                 if u.unit_id.startswith("herald-") and u.unit_id.split("-")[1].isdigit()]
-        _S["heralds"] = max(_nums, default=0)
-        anchor.config_set("heralds", str(_S["heralds"]))
+    # (the herald counter is persisted; no full-scan recovery — a scan of all history
+    # at boot is exactly the stall we're avoiding)
     anchor.CURRENT_TURN = _S["turn"]
     # Re-adopt only agents whose threads can still WORK. A `done` thread can never be
     # resumed — re-adopting it seats a zombie that blocks staffing and never gathers
-    # (the run-3 collapse). Unresumable roster entries are retired on the spot.
-    _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+    # (the run-3 collapse). Read ONLY the roster's candidates — a full checkpointer
+    # scan at boot walks every thread ever and stalls startup as history grows.
+    _cand = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
+    _cand += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
+    _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_cand)}
+    for _u in _threads.values():                  # an inherited gate gets its IV.7 clock
+        if _u.pending and _u.pending.get("reversible") is False:
+            _S["gate_since"] = _S["turn"]
+            _S["gate_since_ts"] = time.time()
     _S["villagers"] = []
     for _r in economy.roster():
         if not _r["agent"].startswith("vil-"):
@@ -100,6 +107,7 @@ else:
                               "struck off at boot — thread could never work again")
             if _u:
                 anchor.counter_add("lifetime_spend", _u.tokens)
+            _forget_thread(_r["agent"])
     if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
         G.TOKEN_CAP = anchor.counter_get("token_cap")
     for _c in anchor.careers(200):                # rebuild birth turns for burn math
@@ -176,6 +184,7 @@ def _propose_development():
     bv = board.vote(f"development: {prop['name']}", _board_ctx(True))
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
+    prop["born_ts"] = time.time()                 # IV.7: tacit consent clocks from here
     _S["dev_proposal"] = prop
     _narrate_vote(bv, prop.get("why", ""))
     # lineage: the proposal derives from ingested knowledge and the current lessons
@@ -188,6 +197,27 @@ def _propose_development():
     anchor.record(_S["turn"], "proposal",
                   f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
                   f"— board {bv['tally']}, awaiting the human")
+
+
+def _forget_thread(uid: str) -> None:
+    """Drop a DEAD thread's checkpoint history. The permanent record of the agent —
+    career, lineage, telemetry — lives in the anchor; the checkpointer history of the
+    dead serves nothing and grew without bound (888 lifetime agents = a fat game DB
+    and the memory climb Railway's charts showed). Best-effort: skipped silently on
+    checkpointers without delete support."""
+    try:
+        if hasattr(_CP, "delete_thread"):
+            _CP.delete_thread(uid)
+    except Exception:
+        pass
+
+
+def _live_ids() -> list:
+    """Thread ids worth reading live: the enlisted fleet plus the last few heralds.
+    NEVER full-scan the checkpointer on a hot path — history only grows."""
+    ids = list(_S["villagers"])
+    ids += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
+    return ids
 
 
 def _new_vid() -> str:
@@ -286,7 +316,7 @@ def _binding_constraint() -> str:
 
 
 def _by_uid():
-    return {u.unit_id: u for u in G.units(_GRAPH, _CP)}
+    return {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_live_ids())}
 
 
 def _vision():
@@ -302,10 +332,10 @@ def _target_villagers():
     return base
 
 
-def _adopt_vision(key: str):
-    """The human adopts a new Vision — a fresh mental update cascades to every agent.
+def _adopt_vision(key: str, actor: str = "operator"):
+    """A new Vision is adopted — a fresh mental update cascades to every agent.
     Article I.6: a met Vision is consumed; a vision identical to the standing one is
-    rejected, so success can't be re-won and re-briefs are never no-ops."""
+    rejected. Normally the human's power; IV.7 lets tacit consent exercise it."""
     if key not in V.VISIONS:
         return
     if key == _S["vision_key"]:
@@ -314,11 +344,13 @@ def _adopt_vision(key: str):
                       "choose a different goal")
         return
     _S["vision_key"] = key
+    _S["_vision_actor"] = actor
     anchor.config_set("vision_key", key)        # the adopted vision survives restarts
     _S["goal_met"] = False                      # re-open the drive toward the new goal
     for uid in _S["villagers"]:
         anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
-    anchor.record(_S["turn"], "vision-change", f"operator adopted vision → {V.get(key).name}")
+    anchor.record(_S["turn"], "vision-change",
+                  f"{_S.pop('_vision_actor', 'operator')} adopted vision → {V.get(key).name}")
 
 
 # ── operator controls (every action is logged so the Board & governor see it) ──
@@ -359,6 +391,7 @@ def _op_terminate(uid: str) -> None:
     anchor.career_add(uid, _S["turn"], "terminated", "by operator at the human gate")
     if u:
         anchor.counter_add("lifetime_spend", u.tokens)
+    _forget_thread(uid)
 
 
 def _op_order(uid: str, resource: str) -> bool:
@@ -713,7 +746,8 @@ def _fleet_speaks():
                 anchor.msg_send("all", "Board",
                                 f"ESCALATION (IV.6): {u.unit_id} has waited {waited} turns at the "
                                 f"gate — {u.pending['action']}. The wait is costing "
-                                f"~{_S.get('last_spoil_loss', 0):,} food/turn in spoilage.")
+                                f"~{_S.get('last_spoil_loss', 0):,} food/turn in spoilage. At the "
+                                f"one-hour mark we proceed by tacit consent (IV.7).")
                 seen.add(f"gate2:{u.unit_id}")
         r = roster_by.get(u.unit_id)
         if r and r["budget"] and u.tokens / r["budget"] > 0.8 and f"ow:{u.unit_id}" not in seen:
@@ -764,9 +798,14 @@ def _one_turn():
     staff_key = f"staff|{G.TOKEN_CAP}"            # cap value in the key → auto-unmute on change
     while (not _S["goal_met"]                     # stewardship: hold, don't grow
            and len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"])):
-        if _S.setdefault("breaker", {}).get(staff_key, 0) >= 3:
-            break                                 # muted after 3 identical blocks (III.1)
         ok, reason = G.may_spawn(views)
+        muted = _S.setdefault("breaker", {}).get(staff_key, 0) >= 3
+        if muted and ok:
+            _S["breaker"].pop(staff_key, None)    # the blocker cleared → unmute NOW
+        elif muted and t % 10:
+            break                                 # probe sparsely while genuinely blocked
+        elif muted:
+            break
         if not ok:
             _breaker(staff_key, f"spawning is blocked by the compute cap ({reason}). "
                                 "Raising the cap or retiring agents unblocks it.")
@@ -833,6 +872,7 @@ def _one_turn():
                                                  "complete and could never work again")
             if u:
                 anchor.counter_add("lifetime_spend", u.tokens)
+            _forget_thread(uid)
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
             if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
@@ -861,20 +901,25 @@ def _one_turn():
                               f"Article II: budget {u.tokens:,}/{r['budget']:,} — retired "
                               f"BEFORE overshoot; rank {r['role']}, contribution {r['contribution']:,}")
             anchor.counter_add("lifetime_spend", u.tokens)   # burned forever, tracked forever
+            _forget_thread(uid)
 
     status = _by_uid()
     for uid in _S["villagers"]:
         u = status.get(uid)
+        if _S["goal_met"] and t % 5:
+            break                                 # stewardship: maintain, don't grind —
+                                                  # a met world needs no 24/7 harvest
         if u and u.status in ("awaiting_approval", "idle"):
             if _S["orders"].get(uid):
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
-            did = anchor.reason_add(t, "director", f"{uid} → gather {res}", why,
-                                    derived_from=(["yield:" + res] if "learned yield" in why else []),
-                                    authorized_by=("human" if "standing order" in why else "policy"))
-            if _S.setdefault("last_res", {}).get(uid) != res:  # career notes changes, not every turn
-                _S["last_res"][uid] = res
+            did = None
+            if _S.setdefault("last_res", {}).get(uid) != res:  # a CHANGE is a decision;
+                _S["last_res"][uid] = res                      # repetition is not
+                did = anchor.reason_add(t, "director", f"{uid} → gather {res}", why,
+                                        derived_from=(["yield:" + res] if "learned yield" in why else []),
+                                        authorized_by=("human" if "standing order" in why else "policy"))
                 anchor.career_add(uid, t, "retask", f"gather {res} — {why}")
                 if "learned yield" in why:        # acting on stored wisdom pays
                     economy.credit(uid, 5)
@@ -895,7 +940,8 @@ def _one_turn():
             anchor.observe_yield(res, sim.effective_yield(res))
             gev = anchor.record(t, "gather",
                                 f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
-            anchor.decision_close(did, gev, outcome=f"+{got} {res}")     # measured result
+            if did:
+                anchor.decision_close(did, gev, outcome=f"+{got} {res}")  # measured result
             _S["_acted"] = True
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
@@ -968,18 +1014,24 @@ def _one_turn():
     # part of the overflow into gold before the rest rots.
     sold, got_gold = sim.trade_surplus()
     if sold:
-        anchor.record(t, "trade", f"market sold {sold:,} surplus food for {got_gold:,} gold "
-                                  "(overflow converted instead of rotting)")
+        _S["trade_accum"] = [_S.get("trade_accum", [0, 0])[0] + sold,
+                             _S.get("trade_accum", [0, 0])[1] + got_gold]
         _S["_acted"] = True
     loss, fcap = sim.spoil_tick()
     if loss:
-        anchor.record(t, "spoilage", f"{loss} food rotted — stores over capacity {fcap:,}; "
-                                     "spend it or advance the age")
+        _S["spoil_accum"] = _S.get("spoil_accum", 0) + loss
         _S["spoil_since_report"] = _S.get("spoil_since_report", 0) + loss
         _S["last_spoil_loss"] = loss
-        # the LESSON pays net of spoilage: rot debits food's learned yield, so the
-        # anchor stops recommending the resource it is simultaneously losing
-        anchor.observe_yield("food", -loss)
+        anchor.observe_yield("food", -loss)       # lessons pay net of spoilage
+    if t % 5 == 0:                                # aggregate lines — data follows activity,
+        ta = _S.pop("trade_accum", None)          # but the log needn't be a metronome
+        if ta and ta[0]:
+            anchor.record(t, "trade", f"market sold {ta[0]:,} surplus food for {ta[1]:,} gold "
+                                      "over the last 5 turns (converted, not rotted)")
+        sp = _S.pop("spoil_accum", 0)
+        if sp:
+            anchor.record(t, "spoilage", f"{sp:,} food rotted over the last 5 turns — stores "
+                                         f"over capacity {fcap:,}; spend it or advance the age")
 
     # Age development: exponential growth (each age costs 100x the one before), and the
     # herald only goes to the human gate once the BOARD judges the treasury ready —
@@ -1016,6 +1068,7 @@ def _one_turn():
             anchor.decision_close(did, gate_ev)
             _S["herald_decision"] = did           # the human's verdict closes it
             _S["gate_since"] = t                  # IV.4: the wait is priced from here
+            _S["gate_since_ts"] = time.time()     # IV.7: tacit consent clocks from here
 
     # Article IX — liveness: inaction is an action, and it is gated too. A turn with
     # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
@@ -1043,31 +1096,94 @@ def _one_turn():
             _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
         _S["stall"] = None
 
-    # IV.4 timeout: a herald that has waited 50 turns STANDS DOWN — logged as a
-    # timeout, never as an approval or a refusal. The board re-dispatches while the
-    # treasury still allows, so the human gets fresh windows instead of one eternal one.
-    gate_wait = t - _S.get("gate_since", t)
-    if gate_wait >= 50:
+    # Article IV.7 — TACIT CONSENT: a decision queued for the human for more than an
+    # hour goes back to the Board for a final vote with live evidence. Quorum yes →
+    # the Governor proceeds as approved-by-tacit-consent, loudly logged and messaged;
+    # a blocked vote stands the request down. The human can decide any time before
+    # the hour, and every tacit action is unmistakably labelled — never silent.
+    now_ts = time.time()
+    if _S.get("gate_since_ts") and now_ts - _S["gate_since_ts"] > TACIT_CONSENT_S:
+        waited_m = int((now_ts - _S["gate_since_ts"]) / 60)
         for u in _by_uid().values():
             if u.pending and u.pending.get("reversible") is False:
-                sim.resume(_GRAPH, u.unit_id, "reject")
-                anchor.record(t, "gate", f"{u.unit_id} stood down by TIMEOUT after {gate_wait} "
-                                         "turns — taken by timeout, not decided by you")
-                anchor.career_add(u.unit_id, t, "gate",
-                                  f"stood down by timeout ({gate_wait} turns unanswered)")
-        if _S.get("herald_decision"):
-            anchor.decision_close(_S["herald_decision"],
-                                  outcome=f"timeout after {gate_wait} turns — no human decision")
-            _S["herald_decision"] = None
+                bv = board.vote(f"TACIT CONSENT: {u.pending.get('action', '')[:80]}",
+                                _board_ctx(True))
+                _narrate_vote(bv, f"human silent {waited_m} min — Article IV.7 final vote")
+                if bv["approved"]:
+                    sim.resume(_GRAPH, u.unit_id, "approve")
+                    anchor.record(t, "gate", f"{u.unit_id} APPROVED BY TACIT CONSENT — human "
+                                             f"silent {waited_m} min, board {bv['tally']} "
+                                             f"(Article IV.7): {u.pending.get('action', '')[:100]}")
+                    anchor.career_add(u.unit_id, t, "gate",
+                                      f"approved by tacit consent after {waited_m} min "
+                                      f"(board {bv['tally']}, Article IV.7)")
+                    anchor.msg_send("chief", "Chief Governor",
+                                    f"You were silent for {waited_m} minutes, so under Article "
+                                    f"IV.7 the board voted {bv['tally']} and we proceeded: "
+                                    f"{u.pending.get('action', '')[:120]}")
+                    if _S.get("herald_decision"):
+                        anchor.decision_close(_S["herald_decision"],
+                                              outcome=f"tacit consent after {waited_m} min — "
+                                                      f"board {bv['tally']}, age now "
+                                                      f"{sim.world()['age']}")
+                else:
+                    sim.resume(_GRAPH, u.unit_id, "reject")
+                    anchor.record(t, "gate", f"{u.unit_id} stood down — tacit-consent vote "
+                                             f"BLOCKED {bv['tally']} after {waited_m} min")
+                    anchor.career_add(u.unit_id, t, "gate",
+                                      f"stood down: tacit-consent vote blocked {bv['tally']}")
+                    if _S.get("herald_decision"):
+                        anchor.decision_close(_S["herald_decision"],
+                                              outcome=f"tacit-consent vote blocked {bv['tally']}")
+        _S["herald_decision"] = None
         _S.pop("gate_since", None)
+        _S.pop("gate_since_ts", None)
         _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
+
+    # IV.7 for a board-approved development proposal awaiting the human
+    prop = _S.get("dev_proposal")
+    if (prop and prop.get("born_ts") and prop.get("board_approved")
+            and now_ts - prop["born_ts"] > TACIT_CONSENT_S):
+        waited_m = int((now_ts - prop["born_ts"]) / 60)
+        ok2, msg2 = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
+                                prop.get("value", 0), prop.get("resource", ""),
+                                prop.get("rank", 2), prop.get("source", ""))
+        dev_ev = anchor.record(t, "development",
+                               f"'{prop['name']}' ADOPTED BY TACIT CONSENT — human silent "
+                               f"{waited_m} min, board had approved {prop.get('board', '')} "
+                               f"(Article IV.7)" if ok2 else f"tacit adopt failed: {msg2}")
+        if prop.get("did"):
+            anchor.decision_close(prop["did"], dev_ev,
+                                  outcome=f"tacit consent after {waited_m} min"
+                                  if ok2 else f"tacit adopt failed: {msg2}")
+        anchor.msg_send("chief", "Chief Governor",
+                        f"Under Article IV.7 (you were silent {waited_m} min) we adopted the "
+                        f"board-approved development '{prop['name']}'.")
+        _S["dev_proposal"] = None
+
+    # IV.7 for the next Vision after a goal is met: silence delegates the adoption
+    # of the BOARD'S proposed vision (never an invented one)
+    if (_S["goal_met"] and _S.get("goal_met_ts")
+            and now_ts - _S["goal_met_ts"] > TACIT_CONSENT_S):
+        waited_m = int((now_ts - _S["goal_met_ts"]) / 60)
+        nxt_key = V.MORE_AMBITIOUS.get(_S["vision_key"])
+        if nxt_key:
+            anchor.record(t, "vision-change",
+                          f"TACIT CONSENT (IV.7): human silent {waited_m} min after the vision "
+                          f"was met — adopting the board's proposal '{V.get(nxt_key).name}'")
+            anchor.msg_send("chief", "Chief Governor",
+                            f"The vision was met and you were silent {waited_m} min; under "
+                            f"Article IV.7 we adopted the board's proposal: {V.get(nxt_key).name}")
+            _adopt_vision(nxt_key, actor="tacit consent (board proposal)")
+        _S.pop("goal_met_ts", None)
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
     spent = G.spent(views)
-    anchor.record(t, "governor",
-                  f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
-                  f"cap {'OK' if spent < G.TOKEN_CAP else 'REACHED'}")
+    if t % 5 == 0 or spent >= G.TOKEN_CAP:        # a heartbeat, not a metronome
+        anchor.record(t, "governor",
+                      f"spend {spent:,}/{G.TOKEN_CAP:,} · {len(_S['villagers'])} agents · "
+                      f"cap {'OK' if spent < G.TOKEN_CAP else 'REACHED'}")
 
     sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     spend_ratio = spent / G.TOKEN_CAP if G.TOKEN_CAP else 1.0
@@ -1091,8 +1207,10 @@ def _one_turn():
                 anchor.record(t, "reap", f"{uid} retired — vision met")
                 anchor.career_add(uid, t, "retired", "vision met — honourable discharge")
                 anchor.counter_add("lifetime_spend", u.tokens)
+                _forget_thread(uid)
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
+        _S["goal_met_ts"] = time.time()           # IV.7: tacit consent clocks from here
     if _S["goal_met"] and f"steward:{t // 25}" not in _S["notified"]:
         # IV.4: the queued decision shows its running cost, on a different channel
         # each cycle boundary — never a repeat into the void
@@ -1105,13 +1223,40 @@ def _one_turn():
 
 
 def _health_sampler():
-    """Every 5 seconds, write one vitals sample per living agent into the PERMANENT
-    health table — the medical chart behind each career. Runs beside the driver."""
+    """Every 30 seconds, write one vitals sample per living agent into the PERMANENT
+    health table. Raw samples older than 48h are rolled into per-hour aggregates —
+    the record stays permanent, at sane resolution (the 5s firehose was ~70k
+    rows/day). Runs beside the driver."""
+    beat = 0
     while True:
-        time.sleep(5.0)
+        time.sleep(30.0)
+        beat += 1
+        if beat % 120 == 0:                       # ~hourly: roll up old raw samples
+            try:
+                anchor.health_rollup()
+            except Exception:
+                pass
+        # WATCHDOG: if no turn has completed for 5 minutes, the driver is dead or
+        # wedged. Dump every thread's stack to the data dir (so the next boot can
+        # tell us where), record it, and exit — the platform restarts us clean.
+        try:
+            stale = time.time() - _S.get("last_turn_ts", time.time())
+            if stale > max(20 * TICK, 300):
+                import faulthandler
+                dump_path = os.path.join(os.path.dirname(anchor.EVENTS_PATH),
+                                         "driver-wedge-stacks.txt")
+                with open(dump_path, "w") as fh:
+                    fh.write(f"driver wedged: no turn for {stale:.0f}s at "
+                             f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC\n")
+                    faulthandler.dump_traceback(file=fh)
+                anchor.record(_S["turn"], "error",
+                              f"WATCHDOG: driver wedged {stale:.0f}s — stacks dumped, restarting")
+                os._exit(1)
+        except Exception:
+            pass
         try:
             with _LOCK:
-                views = G.units(_GRAPH, _CP)
+                views = G.units(_GRAPH, _CP, only=_live_ids())
                 roster_by = {r["agent"]: r for r in economy.roster()}
                 turn = _S["turn"]
             gen = anchor.generation()
@@ -1134,8 +1279,9 @@ def _health_sampler():
 
 def _drive():
     while True:
-        time.sleep(TICK)
         try:
+            time.sleep(TICK)
+            _S["driver_beat"] = time.time()       # the watchdog reads this pulse
             was_met = _S["goal_met"]
             with _LOCK:
                 _one_turn()                       # fast game mechanics only
@@ -1161,12 +1307,43 @@ def _drive():
             elif _S["turn"] > 0 and _S["turn"] % 30 == 0:
                 _run_retrospective("periodic")
         except Exception as e:                    # never let the loop die silently
-            anchor.record(_S["turn"], "error", str(e)[:300])
+            import traceback
+            traceback.print_exc()
+            try:
+                anchor.record(_S["turn"], "error", str(e)[:300])
+            except Exception:
+                pass                              # even a broken anchor can't kill the loop
+
+
+_SNAP_CACHE = {"ts": 0.0, "data": None}
+_SNAP_LOCK = threading.Lock()
 
 
 def _snapshot() -> dict:
+    # One computation serves every viewer for a second — N pollers used to mean N
+    # full snapshots per second, which is how popularity became an outage. Stale-
+    # while-revalidate: exactly one request rebuilds; everyone else gets the last
+    # snapshot instantly.
+    now = time.time()
+    if _SNAP_CACHE["data"] is not None and now - _SNAP_CACHE["ts"] < 1.0:
+        return _SNAP_CACHE["data"]
+    if not _SNAP_LOCK.acquire(blocking=False):
+        if _SNAP_CACHE["data"] is not None:
+            return _SNAP_CACHE["data"]
+        _SNAP_LOCK.acquire()                       # first-ever build: wait for it
+        try:
+            return _SNAP_CACHE["data"] or {}
+        finally:
+            _SNAP_LOCK.release()
+    try:
+        return _snapshot_build(now)
+    finally:
+        _SNAP_LOCK.release()
+
+
+def _snapshot_build(now: float) -> dict:
     with _LOCK:
-        views = G.units(_GRAPH, _CP)
+        views = G.units(_GRAPH, _CP, only=_live_ids())
         sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
         roster_by = {r["agent"]: r for r in economy.roster()}
         # spend = the LIVING fleet's outstanding compute (what the cap governs);
@@ -1212,6 +1389,9 @@ def _snapshot() -> dict:
             human_gate = (f"{gate_unit.unit_id}: {gate_unit.pending.get('action', '')} — "
                           f"waiting {waited} turns"
                           + (f", costing ~{cost:,} food/turn in rot" if cost else ""))
+            if _S.get("gate_since_ts"):
+                left = max(0, TACIT_CONSENT_S - (time.time() - _S["gate_since_ts"]))
+                human_gate += f" · tacit consent in {int(left // 60)}m (IV.7)"
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
@@ -1266,7 +1446,7 @@ def _snapshot() -> dict:
             "failed_turns": _S.get("failed_turns", 0),
             "tick_s": TICK,
         }
-        return {
+        out = {
             "vision": {"name": _vision().name, **sc},
             "strategy": {
                 "current_key": _S["vision_key"], "current": _vision().name,
@@ -1299,6 +1479,8 @@ def _snapshot() -> dict:
             "resources": list(sim.RESOURCES),
             "turn": _S["turn"], "goal_met": _S["goal_met"],
         }
+    _SNAP_CACHE["data"], _SNAP_CACHE["ts"] = out, now
+    return out
 
 
 def _constitution_text() -> str:
@@ -1693,6 +1875,7 @@ class Handler(BaseHTTPRequestHandler):
                                 f"gate the moment we can pay.")
             if uid.startswith("herald"):
                 _S.pop("gate_since", None)        # the wait is over; stop pricing it
+                _S.pop("gate_since_ts", None)
                 _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
             if uid.startswith("herald") and _S.get("herald_decision"):
                 anchor.decision_close(_S["herald_decision"],

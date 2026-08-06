@@ -356,6 +356,36 @@ def eval_runs(limit: int = 50) -> list[dict]:
         c.close()
 
 
+def health_rollup(keep_raw_s: int = 48 * 3600) -> int:
+    """Telemetry has resolution tiers: raw samples stay for `keep_raw_s`, then are
+    rolled into per-agent-per-hour aggregates (min/avg/max health, avg load, samples)
+    and the raw rows are deleted. The permanent record keeps every hour of every
+    agent's life forever — at 1 row/agent/hour instead of 120. Returns rows rolled."""
+    cutoff = time.time() - keep_raw_s
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS health_hourly("
+                  "gen INT, uid TEXT, hour INT, samples INT, "
+                  "h_min INT, h_avg INT, h_max INT, util_avg INT, "
+                  "PRIMARY KEY(gen, uid, hour))")
+        rows = c.execute(
+            "SELECT gen, uid, CAST(ts/3600 AS INT), COUNT(*), MIN(health), "
+            "ROUND(AVG(health)), MAX(health), ROUND(AVG(utilisation)) "
+            "FROM health WHERE ts < ? GROUP BY gen, uid, CAST(ts/3600 AS INT)",
+            (cutoff,)).fetchall()
+        for r in rows:
+            c.execute("INSERT INTO health_hourly VALUES(?,?,?,?,?,?,?,?) "
+                      "ON CONFLICT(gen, uid, hour) DO UPDATE SET "
+                      "samples=samples+excluded.samples, "
+                      "h_min=MIN(h_min, excluded.h_min), h_avg=excluded.h_avg, "
+                      "h_max=MAX(h_max, excluded.h_max), util_avg=excluded.util_avg", r)
+        cur = c.execute("DELETE FROM health WHERE ts < ?", (cutoff,))
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
 def health_add_many(rows: list[dict]) -> None:
     """Batch-insert one telemetry sample per living agent. Called by the sampler."""
     if not rows:
@@ -669,18 +699,28 @@ def record(turn: int, kind: str, note: str, caused_by: int | None = None) -> int
             f.write(json.dumps({"turn": turn, "kind": kind, "note": note,
                                 "ts": round(time.time(), 2),
                                 "id": eid, "caused_by": caused_by}) + "\n")
+        global _EVENT_COUNT
+        if _EVENT_COUNT is not None:
+            _EVENT_COUNT += 1
     except OSError:
         pass
     return eid
 
 
 def event_log(limit: int = 200) -> list[str]:
-    """The permanent event log, newest first. Read from the append-only file so it
-    survives even if the game DB is reset."""
+    """The permanent event log, newest first. TAIL-read: seek near the end and parse
+    only what's needed — reading the whole multi-MB file per poller per second is
+    what wedged the live server at turn ~7,000."""
     try:
-        with open(EVENTS_PATH) as f:
-            lines = f.readlines()
-    except OSError:
+        with open(EVENTS_PATH, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(size, max(64_000, limit * 400))
+            f.seek(size - chunk)
+            lines = f.read().decode(errors="replace").splitlines()
+            if size > chunk and lines:
+                lines = lines[1:]                  # drop the partial first line
+    except (OSError, ValueError):
         return []
     out = []
     for ln in lines[-limit:]:
@@ -774,13 +814,20 @@ def external_count() -> int:
         c.close()
 
 
+_EVENT_COUNT: int | None = None                    # cached; record() keeps it fresh
+
+
 def event_count() -> int:
-    """Total events ever recorded in the permanent log."""
-    try:
-        with open(EVENTS_PATH) as f:
-            return sum(1 for _ in f)
-    except OSError:
-        return 0
+    """Total events ever recorded in the permanent log. Counted ONCE per process,
+    then maintained incrementally — never re-scanned per poll."""
+    global _EVENT_COUNT
+    if _EVENT_COUNT is None:
+        try:
+            with open(EVENTS_PATH, "rb") as f:
+                _EVENT_COUNT = sum(1 for _ in f)
+        except OSError:
+            _EVENT_COUNT = 0
+    return _EVENT_COUNT
 
 
 def observe_yield(resource: str, amount: int) -> None:
