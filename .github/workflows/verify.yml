@@ -20,3 +20,16 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the Logistics unit tests
+        run: python3 -m unittest discover -s gov -p "test_*.py" -v
+      - name: Run the Logistics (supply network) acceptance checks
+        run: python3 gov/verify_logistics.py
+      - name: Smoke-test the Logistics console end to end, with agent performance
+        run: python3 gov/smoke_logistics.py --json smoke-report.json
+      - name: Keep the smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logistics-smoke-report
+          path: smoke-report.json
+          if-no-files-found: ignore
