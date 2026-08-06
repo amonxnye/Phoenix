@@ -50,7 +50,46 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+_BOOT: dict = {}
+
+
+def boot_state() -> dict:
+    """What was actually found on disk when this process started.
+
+    'Persistent' is a claim about a path; this is the evidence. A volume that has been
+    unmounted, or a GOV_DATA_DIR pointed somewhere new, leaves the app reading an empty
+    directory while still reporting a persistent configuration — the settlement's whole
+    memory silently absent, and every counter starting from one. Recording what was
+    there at boot is the difference between 'configured to persist' and 'persisted'."""
+    return dict(_BOOT)
+
+
 def init() -> None:
+    if not _BOOT:
+        existed = os.path.exists(DB)
+        _BOOT.update({"db_path": DB, "db_existed": existed, "data_dir": _DATA_DIR,
+                      "gov_data_dir_set": bool(os.environ.get("GOV_DATA_DIR", "").strip()),
+                      "events_at_boot": 0, "careers_at_boot": 0, "generation_at_boot": 0})
+        if existed:
+            try:
+                c0 = _conn()
+                try:
+                    for key, sql in (("events_at_boot", "SELECT COUNT(*) FROM knowledge"),
+                                     ("careers_at_boot", "SELECT COUNT(*) FROM careers")):
+                        try:
+                            _BOOT[key] = c0.execute(sql).fetchone()[0]
+                        except sqlite3.OperationalError:
+                            pass                   # table not created yet — count zero
+                    try:
+                        row = c0.execute("SELECT value FROM config WHERE key='generation'"
+                                         ).fetchone()
+                        _BOOT["generation_at_boot"] = int(row[0]) if row else 0
+                    except (sqlite3.OperationalError, ValueError):
+                        pass
+                finally:
+                    c0.close()
+            except sqlite3.Error:
+                pass
     c = _conn()
     try:
         c.execute("CREATE TABLE IF NOT EXISTS knowledge("

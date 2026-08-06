@@ -111,3 +111,43 @@ class TestRetrospectiveIntegration(_env.Base):
                 A.skill_add(1, text)
         # four retrospectives, one piece of advice
         self.assertEqual(A.skills_count(), 1)
+
+
+class TestBootState(_env.Base):
+    """Persistence has to be observed, not assumed — the difference between a volume
+    that is configured and one that actually carried the record forward."""
+
+    def test_a_fresh_directory_is_reported_as_fresh(self):
+        import os
+        import tempfile
+        # a path nothing has ever written to — the case a detached volume produces
+        was = A.DB
+        A.DB = os.path.join(tempfile.mkdtemp(prefix="phoenix-fresh-"), "anchor.sqlite")
+        try:
+            A._BOOT.clear()
+            A.init()
+            boot = A.boot_state()
+            self.assertFalse(boot["db_existed"])
+            self.assertEqual(boot["events_at_boot"], 0)
+            self.assertEqual(boot["careers_at_boot"], 0)
+        finally:
+            A.DB = was
+            A._BOOT.clear()
+
+    def test_an_existing_record_is_counted_at_boot(self):
+        A.record(1, "test", "something happened")
+        A.career_add("vil-01", 1, "born", "for the test")
+        A._BOOT.clear()
+        A.init()                                    # simulate a restart on the same disk
+        boot = A.boot_state()
+        self.assertTrue(boot["db_existed"])
+        self.assertGreaterEqual(boot["events_at_boot"], 1)
+        self.assertGreaterEqual(boot["careers_at_boot"], 1)
+
+    def test_boot_state_is_captured_once_not_per_call(self):
+        A._BOOT.clear()
+        A.init()
+        first = A.boot_state()
+        A.record(1, "test", "later event")
+        A.init()
+        self.assertEqual(A.boot_state(), first)     # a later init must not rewrite it

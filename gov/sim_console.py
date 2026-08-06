@@ -1458,6 +1458,12 @@ def _snapshot_build(now: float) -> dict:
                 human_gate += f" · tacit consent in {int(left // 60)}m (IV.7)"
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
+        # Configured-to-persist is not the same as persisted. A detached volume, or a
+        # GOV_DATA_DIR pointed at a new path, leaves the app reading an empty directory
+        # while still reporting "persistent" — the settlement's entire memory gone and
+        # every counter quietly restarting at one.
+        boot = anchor.boot_state()
+        memory_lost = persistent and not boot.get("db_existed")
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
         # other. Deferred maintenance and a waiting human gate are LIABILITIES.
         w0 = sim.world()
@@ -1501,7 +1507,17 @@ def _snapshot_build(now: float) -> dict:
             "birth_throttle": (anchor.config_get("birth_throttle", "1")
                                if _S["turn"] < anchor.counter_get("throttle_until") else "1"),
             "errors_recent": errors_recent,
-            "storage": "volume (persistent)" if persistent else "ephemeral (resets on redeploy)",
+            "storage": ("volume (persistent) — carried "
+                        f"{boot.get('events_at_boot', 0):,} event"
+                        f"{'' if boot.get('events_at_boot') == 1 else 's'} "
+                        "from a previous boot"
+                        if persistent and not memory_lost else
+                        "durable path set, but it was EMPTY at boot — nothing carried "
+                        "over. Expected on a first deploy; otherwise the volume is not "
+                        "mounted where GOV_DATA_DIR points"
+                        if memory_lost else "ephemeral (resets on redeploy)"),
+            "memory_lost": memory_lost,
+            "boot": boot,
             # the anchor (skills, reasoning, chats, knowledge) lives in its own DB and
             # is never deleted — not even by a world reset
             "memory": "permanent (own DB, survives world resets)",
@@ -1748,6 +1764,7 @@ class Handler(BaseHTTPRequestHandler):
                     "driver_ok": sysd["driver_ok"], "stall": sysd["stall"],
                     "human_gate": sysd["human_gate"], "brain": s["brain"],
                     "storage": sysd["storage"], "uptime_s": sysd["uptime_s"],
+                    "memory_lost": sysd.get("memory_lost", False),
                 },
                 "world": {r: s["world"][r] for r in s["resources"]},
                 "fleet": {
@@ -2598,6 +2615,14 @@ async function load(){
   if(L.stall) al.push(`<div class="alert stall"><div class=txt>
     <div class=lbl>stalled</div>${esc(L.stall)}</div>
     <a class="btn ghost" href="/console">Investigate &rarr;</a></div>`);
+  if(L.memory_lost) al.push(`<div class="alert stall"><div class=txt>
+    <div class=lbl>the permanent record is missing</div>
+    A durable data directory is configured, but it was <b>empty when this process
+    started</b> — no events, no careers, no lessons were carried over, and the settlement
+    is running from zero. That is expected on a first deploy. If it is not one, the
+    volume holding the previous record is not mounted where GOV_DATA_DIR points: fix the
+    mount before this world writes a history that replaces the one you are looking
+    for.</div></div>`);
   const F=d.fleet||{};
   if(F.over_budget) al.push(`<div class="alert stall"><div class=txt>
     <div class=lbl>the cap is not binding</div>
