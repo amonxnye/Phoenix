@@ -454,9 +454,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Railway (and most PaaS hosts) inject PORT and expect the process to bind
+    # 0.0.0.0 — a container listening only on 127.0.0.1 is unreachable from the
+    # platform's edge proxy, so the deploy silently never becomes healthy and the
+    # PLATFORM KEEPS SERVING THE LAST GOOD BUILD, which looks exactly like "the new
+    # code never shipped" even though it did. sim_console.py already gets this
+    # right; this matches it — 0.0.0.0 when PORT is set (i.e. in production),
+    # 127.0.0.1 for a plain local run, HOST always wins if set explicitly.
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8788)))
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default=os.environ.get("HOST")
+                    or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"))
     a = ap.parse_args()
     anchor.init()
     REP.init()
