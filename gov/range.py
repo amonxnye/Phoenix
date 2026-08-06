@@ -173,7 +173,7 @@ class NodeRange(Range):
             f.write(_NETBLOCK)
         with open(os.path.join(job_dir, "runner.mjs"), "w") as f:
             f.write(_JS_RUNNER)
-        cmd = [NODE, "--experimental-permission",
+        cmd = [NODE, "--experimental-permission", "--experimental-sqlite",
                f"--allow-fs-read={job_dir}", f"--allow-fs-write={job_dir}",
                "--import", os.path.join(job_dir, "netblock.mjs"),
                os.path.join(job_dir, "runner.mjs")]

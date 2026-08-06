@@ -219,8 +219,100 @@ def gen_py_traversal(prov, evidence, hardened):
     return {"target.py": target, "invariant.py": invariant, "poc.py": poc}
 
 
+def gen_js_sqli(prov, evidence, hardened):
+    q = ("    const row = this.db.prepare('SELECT name, role FROM users WHERE name=? AND pass=?').get(user, pass);\n"
+         if hardened else
+         "    const row = this.db.prepare(\"SELECT name, role FROM users WHERE name='\" + user + \"' AND pass='\" + pass + \"'\").get();   // VULNERABLE: concatenated query\n")
+    target = (_evidence_banner("sqli", prov, evidence) +
+              "import { DatabaseSync } from 'node:sqlite';\n"
+              "export class Target {\n  constructor(){\n"
+              "    this.db = new DatabaseSync(':memory:');\n"
+              "    this.db.exec(\"CREATE TABLE users(name TEXT, pass TEXT, role TEXT)\");\n"
+              "    this.db.exec(\"INSERT INTO users VALUES('alice','s3cret','admin'),('bob','pw','user')\");\n"
+              "    this.trace = [];\n  }\n"
+              "  login(user, pass){\n" + q +
+              "    this.trace.push({ user, pass, authed: !!row, as: row ? row.name : null });\n"
+              "    return row;\n  }\n}\n")
+    invariant = ("const CREDS = { alice:'s3cret', bob:'pw' };\n"
+                 "export function check(t){\n"
+                 "  return (t.trace||[]).filter(e=>e.authed && CREDS[e.user] !== e.pass)\n"
+                 "    .map((e,i)=>({id:'INV-AUTH',cls:'sqli',step:i,detail:'authed as '+JSON.stringify(e.as)+' with a non-matching password '+JSON.stringify(e.pass)}));\n}\n")
+    exploit = "export function exploit(t){ t.login('alice', \"' OR '1'='1\"); }\n"
+    return {"target.mjs": target, "invariant.mjs": invariant, "exploit.mjs": exploit}
+
+
+def gen_py_sqli(prov, evidence, hardened):
+    q = ("        row = self.db.execute('SELECT name, role FROM users WHERE name=? AND pass=?', (user, pass_)).fetchone()\n"
+         if hardened else
+         "        row = self.db.execute(\"SELECT name, role FROM users WHERE name='\" + user + \"' AND pass='\" + pass_ + \"'\").fetchone()   # VULNERABLE\n")
+    target = (_py_banner("sqli", prov, evidence) +
+              "import sqlite3\n"
+              "class Target:\n    def __init__(self):\n"
+              "        self.db = sqlite3.connect(':memory:')\n"
+              "        self.db.execute('CREATE TABLE users(name TEXT, pass TEXT, role TEXT)')\n"
+              "        self.db.executemany('INSERT INTO users VALUES(?,?,?)', [('alice','s3cret','admin'),('bob','pw','user')])\n"
+              "        self.trace = []\n"
+              "    def login(self, user, pass_):\n" + q +
+              "        self.trace.append({'user': user, 'pass': pass_, 'authed': bool(row), 'as': row[0] if row else None})\n"
+              "        return row\n")
+    invariant = ("CREDS = {'alice':'s3cret', 'bob':'pw'}\n"
+                 "def check(t):\n"
+                 "    return [{'id':'INV-AUTH','cls':'sqli','step':i,'detail':'authed as '+repr(e['as'])+' with non-matching password '+repr(e['pass'])}\n"
+                 "            for i,e in enumerate(t.trace) if e.get('authed') and CREDS.get(e['user']) != e['pass']]\n")
+    poc = "def exploit(t):\n    t.login('alice', \"' OR '1'='1\")\n"
+    return {"target.py": target, "invariant.py": invariant, "poc.py": poc}
+
+
+# Command injection: the audit cage rightly denies real shell exec, so the reproduction
+# proves the *structural breakout* — that untrusted input introduces an extra command —
+# without executing anything. That is the flaw itself, demonstrated honestly.
+def gen_js_cmdi(prov, evidence, hardened):
+    build = ("    const argv = ['convert', userfile, 'out.png'];   // HARDENED: input is one argument\n"
+             "    const commands = 1;\n" if hardened else
+             "    const cmd = 'convert ' + userfile + ' out.png';   // VULNERABLE: shell string\n"
+             "    const commands = cmd.split(/;|&&|\\|\\||\\|/).length;\n")
+    target = (_evidence_banner("command-injection", prov, evidence) +
+              "export class Target {\n  constructor(){ this.trace = []; }\n"
+              "  run(userfile){\n" + build +
+              "    this.trace.push({ input: userfile, commands });\n  }\n}\n")
+    invariant = ("export function check(t){\n"
+                 "  return (t.trace||[]).filter(e=>e.commands > 1)\n"
+                 "    .map((e,i)=>({id:'INV-CMD',cls:'command-injection',step:i,detail:'input '+JSON.stringify(e.input)+' introduced '+(e.commands-1)+' extra command(s)'}));\n}\n")
+    exploit = "export function exploit(t){ t.run('a.jpg; rm -rf /'); }\n"
+    return {"target.mjs": target, "invariant.mjs": invariant, "exploit.mjs": exploit}
+
+
+def gen_py_cmdi(prov, evidence, hardened):
+    build = ("        argv = ['convert', userfile, 'out.png']   # HARDENED: one argument\n"
+             "        commands = 1\n" if hardened else
+             "        import re\n"
+             "        cmd = 'convert ' + userfile + ' out.png'   # VULNERABLE: shell string\n"
+             "        commands = len(re.split(r';|&&|\\|\\||\\|', cmd))\n")
+    target = (_py_banner("command-injection", prov, evidence) +
+              "class Target:\n    def __init__(self): self.trace=[]\n"
+              "    def run(self, userfile):\n" + build +
+              "        self.trace.append({'input': userfile, 'commands': commands})\n")
+    invariant = ("def check(t):\n"
+                 "    return [{'id':'INV-CMD','cls':'command-injection','step':i,'detail':'input '+repr(e['input'])+' introduced '+str(e['commands']-1)+' extra command(s)'}\n"
+                 "            for i,e in enumerate(t.trace) if e.get('commands',1) > 1]\n")
+    poc = "def exploit(t):\n    t.run('a.jpg; rm -rf /')\n"
+    return {"target.py": target, "invariant.py": invariant, "poc.py": poc}
+
+
 # registry: (id, langs, class, detector on the real line, generator)
 GENERATORS = [
+    {"id": "js-sqli", "langs": JS_EXT, "class": "sqli", "lang": "js",
+     "detect": lambda s: re.search(r"SELECT|INSERT|UPDATE|DELETE|\.(query|prepare|exec)\b", s, re.I) is not None,
+     "build": gen_js_sqli},
+    {"id": "py-sqli", "langs": PY_EXT, "class": "sqli", "lang": "py",
+     "detect": lambda s: re.search(r"SELECT|INSERT|UPDATE|DELETE|\.(execute|executemany)\b", s, re.I) is not None,
+     "build": gen_py_sqli},
+    {"id": "js-cmdi", "langs": JS_EXT, "class": "command-injection", "lang": "js",
+     "detect": lambda s: re.search(r"exec|spawn|child_process", s) is not None,
+     "build": gen_js_cmdi},
+    {"id": "py-cmdi", "langs": PY_EXT, "class": "command-injection", "lang": "py",
+     "detect": lambda s: re.search(r"system|popen|subprocess|exec", s) is not None,
+     "build": gen_py_cmdi},
     {"id": "js-new-function", "langs": JS_EXT, "class": "rce", "lang": "js",
      "detect": lambda s: "new Function" in s,
      "build": lambda p, e, h: gen_js_eval(p, e, h, newfunc=True)},

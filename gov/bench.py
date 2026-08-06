@@ -42,6 +42,12 @@ SKILL = {
     "py-eval": "py-eval: eval/exec on input is RCE; parse and allow arithmetic AST only.",
     "py-traversal": "py-traversal: os.path.join on a name escapes via ../; realpath and "
                     "assert the prefix.",
+    "js-sqli": "js-sqli: a concatenated SQL query lets `' OR '1'='1` bypass auth; use "
+               "parameterised statements.",
+    "py-sqli": "py-sqli: string-built SQL is injectable; pass values as query parameters.",
+    "js-cmdi": "js-cmdi: input in a shell string introduces extra commands; pass an argv "
+               "array, never a concatenated command.",
+    "py-cmdi": "py-cmdi: shell=True on a built string injects; use an args list without a shell.",
 }
 
 

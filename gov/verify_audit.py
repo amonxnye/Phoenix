@@ -153,6 +153,25 @@ unsup = RP.prove({"class": "xss", "file": "a.tsx", "line": 1, "snippet": "el.inn
 check("an unsupported sink is declined, not faked", not unsup["confirmed"]
       and "no reproduction generator" in unsup.get("error", ""))
 
+# sqli (real SQLite auth-bypass) and command-injection (structural breakout), both langs
+sq_js = RP.prove({"class": "sqli", "file": "a.ts", "line": 1,
+                  "snippet": "db.prepare(\"SELECT * FROM u WHERE n='\"+user+\"'\")"})
+sq_py = RP.prove({"class": "sqli", "file": "a.py", "line": 1,
+                  "snippet": "db.execute(\"SELECT * FROM u WHERE n='\"+user+\"'\")"})
+check("sqli confirmed via real SQLite (js + py)",
+      sq_js["confirmed"] and sq_py["confirmed"],
+      f"js:{sq_js['vulnerable'].get('elapsed_ms')}ms py:{sq_py['vulnerable'].get('elapsed_ms')}ms")
+check("the sqli fix (parameterised) stops the bypass",
+      not sq_js["hardened"]["reproduced"] and not sq_py["hardened"]["reproduced"])
+ci_js = RP.prove({"class": "command-injection", "file": "a.ts", "line": 1,
+                  "snippet": "execSync('convert '+f)"})
+ci_py = RP.prove({"class": "command-injection", "file": "a.py", "line": 1,
+                  "snippet": "subprocess.run('convert '+f, shell=True)"})
+check("command-injection confirmed as a structural breakout (js + py)",
+      ci_js["confirmed"] and ci_py["confirmed"])
+check("the argv-array fix stops the injection",
+      not ci_js["hardened"]["reproduced"] and not ci_py["hardened"]["reproduced"])
+
 # ── G. isolation (SaaS: concurrent guests) ───────────────────────────────────
 print("\nG. Isolation — concurrent proves get distinct dirs and clean up")
 import glob
