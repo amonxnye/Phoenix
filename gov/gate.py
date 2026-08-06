@@ -58,9 +58,59 @@ LOG_LINES = 400                       # per session, ring buffer
 RUN_TIMEOUT = 15 * 60
 
 # Abuse control for an unauthenticated service. Agent budgets (Article II) already
-# bound what one fleet can spend; these bound how often a stranger can start one.
-MAX_RUNS_PER_GUEST = int(os.environ.get("GATE_MAX_RUNS", "8") or 8)
+# bound what one fleet may spend; these bound how often a stranger can start one.
+#
+# A per-session cap alone is not a cap: clearing a cookie buys a fresh session. So
+# there are three ceilings, and a run must pass all of them — the session's, the
+# address's, and the instance's. The last one is the only one that actually bounds
+# the bill, because it is the only one an attacker cannot get more of.
+# The defaults are sized for a public demo with a real API key behind it, because
+# that is the case where being wrong costs money. An operator who wants more raises
+# them deliberately; nobody has to remember to lower them.
+MAX_RUNS_PER_GUEST = int(os.environ.get("GATE_MAX_RUNS", "3") or 3)
 MAX_CONCURRENT_RUNS = int(os.environ.get("GATE_MAX_CONCURRENT", "2") or 2)
+MAX_RUNS_PER_IP_HOUR = int(os.environ.get("GATE_MAX_RUNS_PER_IP", "6") or 6)
+MAX_RUNS_PER_HOUR = int(os.environ.get("GATE_MAX_RUNS_PER_HOUR", "25") or 25)
+MAX_WORKSPACES_PER_IP_HOUR = int(os.environ.get("GATE_MAX_WORKSPACES_PER_IP", "12") or 12)
+
+# X-Forwarded-For is a header, and a header is whatever the client typed. It may be
+# trusted only when something in front of the service is known to rewrite it — set
+# this on a platform that terminates TLS for you (Railway, Fly, a reverse proxy).
+TRUST_PROXY = os.environ.get("GATE_TRUST_PROXY", "").strip() in ("1", "true", "yes")
+
+SWEEP_EVERY = 3600
+
+
+class Ceiling:
+    """A sliding-window counter: how many times `key` did something in the window.
+
+    Deliberately in memory. Restarting the process forgives everyone, which is the
+    right failure mode for a limiter whose job is to bound a bill rather than to
+    enforce a policy — and it keeps a hot path off the database."""
+
+    def __init__(self, limit: int, window: float = 3600):
+        self.limit, self.window = limit, window
+        self.seen: dict[str, list] = {}
+        self.lock = threading.Lock()
+
+    def check(self, key: str) -> bool:
+        """True if `key` is under its ceiling. Does not record — a request that is
+        going to be refused for some other reason should not spend an allowance."""
+        with self.lock:
+            return len(self._live(key)) < self.limit
+
+    def take(self, key: str) -> None:
+        with self.lock:
+            self._live(key).append(time.time())
+
+    def _live(self, key: str) -> list:
+        cutoff = time.time() - self.window
+        kept = [t for t in self.seen.get(key, []) if t > cutoff]
+        self.seen[key] = kept
+        if len(self.seen) > 4096:                # unbounded keys are a leak, not a limit
+            for k in [k for k, v in self.seen.items() if not v][:2048]:
+                self.seen.pop(k, None)
+        return kept
 
 
 class Service:
@@ -79,10 +129,32 @@ class Service:
         self.runs: dict[str, dict] = {}
         self.lock = threading.Lock()
         self.slots = threading.Semaphore(MAX_CONCURRENT_RUNS)
+        self.per_ip = Ceiling(MAX_RUNS_PER_IP_HOUR)
+        self.per_instance = Ceiling(MAX_RUNS_PER_HOUR)
+        self.builds_per_ip = Ceiling(MAX_WORKSPACES_PER_IP_HOUR)
+        self.sweeper: threading.Thread | None = None
         os.makedirs(self.workspaces, exist_ok=True)
         guests.init()
         B.init()
         M.init()
+
+    def start_sweeper(self) -> None:
+        """Collect expired workspaces on a timer. A disposable sandbox that is never
+        collected is just a disk leak, and a service that fills its disk stops being
+        able to `git init` long before anyone notices why."""
+        if self.sweeper or not self.serve_guests:
+            return
+
+        def loop():
+            while True:
+                time.sleep(SWEEP_EVERY)
+                try:
+                    self.sweep()
+                except Exception:               # a failed sweep must not kill the timer
+                    pass
+
+        self.sweeper = threading.Thread(target=loop, daemon=True)
+        self.sweeper.start()
 
     # ── authority ────────────────────────────────────────────────────────────
     def repo_for(self, sid: str) -> str:
@@ -114,7 +186,7 @@ class Service:
                        "BRAIN_API_KEY (or DEEPSEEK_API_KEY) and restart to let agents work")
 
     # ── workspaces ───────────────────────────────────────────────────────────
-    def provision(self, sid: str, name: str = "") -> dict:
+    def provision(self, sid: str, name: str = "", ip: str = "") -> dict:
         """Give this session a fresh starter repository, replacing any it had.
 
         The old directory goes first: a guest who asks for a reset is asking for the
@@ -122,6 +194,11 @@ class Service:
         with abandoned worktrees."""
         if self.operator_repo:
             raise PermissionError("this console is pinned to one repository")
+        if ip and self.serve_guests and not self.builds_per_ip.check(ip):
+            raise PermissionError("this address has built too many workspaces in the "
+                                  "last hour — try again later")
+        if ip and self.serve_guests:
+            self.builds_per_ip.take(ip)
         old = (guests.get(sid) or {}).get("workspace") or ""
         dest = os.path.join(self.workspaces, sid_dir(sid))
         if old and os.path.isdir(old):
@@ -142,7 +219,7 @@ class Service:
                     "error": r.get("error", ""), "report": r.get("report")}
 
     def start_run(self, sid: str, kind: str = "builder", agents: int = 1,
-                  rounds: int = 4) -> tuple[bool, str]:
+                  rounds: int = 4, ip: str = "") -> tuple[bool, str]:
         repo = self.repo_for(sid)
         if not repo:
             return False, "no workspace yet"
@@ -153,11 +230,26 @@ class Service:
             if self.runs.get(sid, {}).get("active"):
                 return False, "a run is already going for this session"
         g = guests.get(sid) or {}
-        if self.serve_guests and g.get("runs", 0) >= MAX_RUNS_PER_GUEST:
-            return False, (f"this session has used its {MAX_RUNS_PER_GUEST} runs — "
-                           "start a new one to keep going")
+        if self.serve_guests:
+            if g.get("runs", 0) >= MAX_RUNS_PER_GUEST:
+                return False, (f"this session has used its {MAX_RUNS_PER_GUEST} runs — "
+                               "start a new one to keep going")
+            # A new session is one cleared cookie away, so the session cap is not the
+            # cap. These two are.
+            if ip and not self.per_ip.check(ip):
+                return False, (f"this address has started {MAX_RUNS_PER_IP_HOUR} runs "
+                               "in the last hour — try again later")
+            if not self.per_instance.check("*"):
+                return False, ("this instance is at its hourly run budget — agents cost "
+                               "real money and the ceiling is deliberate; try again later")
         if not self.slots.acquire(blocking=False):
             return False, "the service is at its concurrent-run limit; try again shortly"
+        if self.serve_guests:
+            # taken only once the run is certain to start: a refusal must not spend
+            # somebody's allowance
+            if ip:
+                self.per_ip.take(ip)
+            self.per_instance.take("*")
 
         state = {"active": True, "kind": kind, "run_id": "", "started": time.time(),
                  "log": deque(maxlen=LOG_LINES), "error": "", "report": None}
@@ -315,6 +407,18 @@ def make_handler(service: Service):
             secure = (self.headers.get("X-Forwarded-Proto", "") == "https")
             return sid, guests.cookie_header(sid, secure=secure)
 
+        def _client_ip(self) -> str:
+            """Who to charge a rate limit to.
+
+            X-Forwarded-For is a header and a header is whatever the client typed, so
+            it counts only when something in front of this service is known to rewrite
+            it. Otherwise every attacker is a different address for free."""
+            if TRUST_PROXY:
+                fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                if fwd:
+                    return fwd[:60]
+            return self.client_address[0] if self.client_address else ""
+
         def _same_origin(self) -> bool:
             """A cross-site page must not be able to spend a guest's session.
 
@@ -382,7 +486,10 @@ def make_handler(service: Service):
                 if service.operator_repo:
                     return self._err(403, "this console is pinned to one repository")
                 try:
-                    ws = service.provision(sid, str(body.get("starter") or "")[:40])
+                    ws = service.provision(sid, str(body.get("starter") or "")[:40],
+                                           ip=self._client_ip())
+                except PermissionError as e:
+                    return self._err(429, str(e))
                 except Exception as e:
                     return self._err(500, f"could not build a workspace: {str(e)[:200]}")
                 return self._send(200, json.dumps({"ok": True, "workspace": ws,
@@ -393,7 +500,8 @@ def make_handler(service: Service):
                 kind = "campaign" if body.get("kind") == "campaign" else "builder"
                 agents = max(1, min(4, int(body.get("agents") or 1)))
                 rounds = max(1, min(6, int(body.get("rounds") or 4)))
-                ok, msg = service.start_run(sid, kind, agents, rounds)
+                ok, msg = service.start_run(sid, kind, agents, rounds,
+                                            ip=self._client_ip())
                 return self._send(200 if ok else 409,
                                   json.dumps({"ok": ok, "message": msg,
                                               "state": service.snapshot(sid)}),
@@ -454,10 +562,17 @@ def main(argv=None) -> int:
 
     srv, service = build(repo=a.repo, serve_guests=a.serve or not a.repo,
                          host=a.host, port=a.port)
+    service.start_sweeper()
     ok, why = service.can_solve()
     print(f"phoenix gate → http://{a.host}:{a.port}")
     print(f"  mode: {'one repository — ' + service.operator_repo if service.operator_repo else 'guests, one workspace each'}")
     print(f"  model: {'ready' if ok else why}")
+    if service.serve_guests:
+        print(f"  ceilings: {MAX_RUNS_PER_GUEST}/session · {MAX_RUNS_PER_IP_HOUR}/address/h "
+              f"· {MAX_RUNS_PER_HOUR}/instance/h · {MAX_CONCURRENT_RUNS} at once")
+        if not TRUST_PROXY:
+            print("  NOTE: GATE_TRUST_PROXY is off, so per-address limits count the "
+                  "socket peer. Behind a proxy that is one address for everybody.")
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         print("  NOTE: reachable off this machine. Approving merges code — put it "
               "behind TLS and something that limits who can reach it.")

@@ -440,6 +440,66 @@ check("and the tests it must satisfy, read-only",
       req_seen and req_seen[0].get("test_sources"))
 
 # ─────────────────────────────────────────────────────────────────────────────
+section("Ceilings — what bounds an anonymous stranger")
+
+c = gate.Ceiling(limit=2, window=3600)
+check("a fresh key is under its ceiling", c.check("1.2.3.4"))
+check("checking does not spend the allowance", c.check("1.2.3.4") and c.check("1.2.3.4"))
+c.take("1.2.3.4")
+c.take("1.2.3.4")
+check("taking to the limit closes it", not c.check("1.2.3.4"))
+check("another key is unaffected", c.check("5.6.7.8"))
+
+old = gate.Ceiling(limit=1, window=0.2)
+old.take("k")
+check("a full window refuses", not old.check("k"))
+time.sleep(0.25)
+check("and forgives once the window passes", old.check("k"))
+
+# the ceilings must bind the service, not merely exist on it
+lim_srv, lim_service = gate.build(host="127.0.0.1", port=0, serve_guests=True,
+                                  solve=scripted(misses=0))
+lim_port = lim_srv.server_address[1]
+threading.Thread(target=lim_srv.serve_forever, daemon=True).start()
+saved_port, PORT = PORT, lim_port
+
+_, _, lim_cookie_raw = http("GET", "/api/state")
+lim_cookie = jar(lim_cookie_raw)
+http("POST", "/api/workspace", {"starter": "inventory"}, cookie=lim_cookie)
+
+lim_service.per_instance = gate.Ceiling(limit=0)
+status, refused, _ = http("POST", "/api/run", {"kind": "builder"}, cookie=lim_cookie)
+check("the instance-wide hourly budget refuses a run", status == 409
+      and "budget" in refused.get("message", ""), refused.get("message", "")[:60])
+
+lim_service.per_instance = gate.Ceiling(limit=100)
+lim_service.per_ip = gate.Ceiling(limit=0)
+status, refused, _ = http("POST", "/api/run", {"kind": "builder"}, cookie=lim_cookie)
+check("the per-address ceiling refuses a run", status == 409
+      and "address" in refused.get("message", ""), refused.get("message", "")[:60])
+
+lim_service.per_ip = gate.Ceiling(limit=100)
+lim_service.builds_per_ip = gate.Ceiling(limit=0)
+status, refused, _ = http("POST", "/api/workspace", {"starter": "orders"}, cookie=lim_cookie)
+check("building workspaces is rate limited too, and answers 429", status == 429,
+      refused.get("error", "")[:60])
+
+lim_service.builds_per_ip = gate.Ceiling(limit=100)
+status, allowed, _ = http("POST", "/api/run", {"kind": "builder"}, cookie=lim_cookie)
+check("with the ceilings clear the run is allowed again",
+      status == 200 and allowed.get("ok"), allowed.get("message", ""))
+wait_for_run(lim_cookie)
+
+before_spend = len(lim_service.per_instance.seen.get("*", []))
+lim_service.solve = None                       # no model configured in this suite
+_, _, _ = http("POST", "/api/run", {"kind": "builder"}, cookie=lim_cookie)
+check("a refused run does not spend the instance allowance",
+      len(lim_service.per_instance.seen.get("*", [])) == before_spend)
+
+PORT = saved_port
+lim_srv.shutdown()
+
+# ─────────────────────────────────────────────────────────────────────────────
 section("Operator mode and housekeeping")
 
 op_repo = tempfile.mkdtemp(prefix="phoenix-operator-")
