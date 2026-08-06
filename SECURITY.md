@@ -1,9 +1,22 @@
 # Phoenix Security — a governed organization that hardens systems
 
-**Status:** design. The constitution pointed at **defensive security work on systems
-you own or are authorized to test**: finding vulnerabilities in your own code,
-writing the regression tests that prove they're fixed, hardening configurations, and
-running CTF-style exercises.
+**Status:** shipped (build order §6.1–§6.4). The constitution pointed at **defensive
+security work on systems you own or are authorized to test**: finding vulnerabilities
+in your own code, writing the regression tests that prove they're fixed, hardening
+configurations, and running CTF-style exercises.
+
+**What runs today**
+
+| Piece | File | The safety property, made structural |
+|---|---|---|
+| Sandboxed replica | `sandbox/replica/vault.py` | a deliberately vulnerable toy service (sqli, traversal, authz, rce) — no socket, no credential |
+| The oracle | `sandbox/replica/invariants.py` | judges a *recorded request trace*, not the PoC's claim; agents cannot write it |
+| Behaviour contract | `sandbox/replica/tests/` | a fix that deletes the feature fails here — hardening must keep the service working |
+| The PoC cage | `gov/pocrunner.py` | an audit hook removes network, subprocess and out-of-box writes before the PoC imports — Article V, not policy |
+| The world + gate | `gov/redteam.py` | reproduce-twice-honestly oracle; `apply_patch` refuses the oracle/tests/corpus; the dossier gate parks the irreversible |
+| The analyst agent | `gov/analyst.py` | find→prove→fix through the one brain seam; paid by the oracle, recorded in careers/lineage |
+| Console | `/security` in `gov/sim_console.py` | findings, the checklist, and the human's gate decisions, live |
+| Acceptance | `gov/verify_security.py` | 22 model-free checks proving all of the above (wired into CI) |
 
 > **The oracle is a reproducing proof-of-concept in a sandbox; the gate is any system
 > you do not own.**
@@ -69,14 +82,19 @@ attached. That's a *report you can act on*, not a scanner dump.
 
 ## 6. Build order
 
-1. Sandbox replica + repro oracle on a deliberately vulnerable toy app (no network,
-   no creds) — the security twin of `sandbox/calculator.py`.
-2. Analyst agent v1: hunt one class → PoC → adversarial verify → contribution.
-3. Fix loop: patch + regression test, paid only when the test proves the fix.
-4. The dossier gate: findings packaged with scope, evidence, PoC, fix, and lineage —
-   parked for the human before any disclosure or prod deploy.
+1. ✅ Sandbox replica + repro oracle on a deliberately vulnerable toy app (no network,
+   no creds) — the security twin of `sandbox/calculator.py`. → `sandbox/replica/`
+2. ✅ Analyst agent v1: hunt one class → PoC → adversarial verify → contribution.
+   The first two adversarial refutations are structural and free: a PoC that fabricates
+   its evidence, or one that doesn't reproduce identically twice, is killed before any
+   model opinion is asked. → `gov/analyst.py`, `gov/redteam.py`
+3. ✅ Fix loop: patch + regression test, paid only when the test proves the fix *and*
+   the service's own behaviour suite stays green. → `gov/analyst.py`
+4. ✅ The dossier gate: findings packaged with scope, evidence, PoC, fix, and lineage —
+   parked for the human before any disclosure or prod deploy. Approval releases the
+   *dossier*; no code path performs the irreversible act. → `redteam.gate_request`, `/security`
 5. Detection-side telemetry for the org itself (what its own agents did) — the
-   ADR-style watch layer, native.
+   ADR-style watch layer, native. *(next)*
 
 ## 7. Scope of this harness
 

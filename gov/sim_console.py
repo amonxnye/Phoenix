@@ -1615,6 +1615,24 @@ class Handler(BaseHTTPRequestHandler):
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
             }))
+        if self.path == "/security":
+            self._count_view()
+            return self._send(200, SECURITY_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/secdata":
+            import redteam as RT
+            RT.init()
+            return self._send(200, json.dumps({
+                "world": RT.world(),
+                "scope": RT.SCOPE,
+                "vision": RT.VISION,
+                "findings": RT.findings(),
+                "gates": RT.gates(),
+                "checklist": RT.classes(),
+                "titles": RT.titles(),
+                "brain": brain.brain_name(),
+                "recent": [e for e in anchor.event_log(200)
+                           if "[work]" in e or "[waste]" in e][:12],
+            }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
@@ -1950,6 +1968,46 @@ class Handler(BaseHTTPRequestHandler):
             anchor.record(_S["turn"], "operator",
                           f"sandbox reset — {', '.join(restored)} restored; training tasks reopen")
             return self._send(200, json.dumps({"ok": True, "restored": restored}))
+        if self.path in ("/api/secfind", "/api/secfix"):
+            # one analyst cycle against the live brain — model call + sandboxed PoC/patch
+            import analyst as AN
+            import redteam as RT
+            RT.init()
+            if not brain.available():
+                return self._send(400, json.dumps(
+                    {"error": "no brain configured — the analyst needs a model"}))
+            body = self._read_json()
+            agent = (body.get("agent") or "sec-01").strip()[:24] or "sec-01"
+            try:
+                if self.path == "/api/secfind":
+                    result = AN.find_cycle(agent, (body.get("class") or "").strip())
+                else:
+                    result = AN.fix_cycle(agent, int(body.get("finding") or 0))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            return self._send(200, json.dumps(result))
+        if self.path == "/api/secreset":
+            import redteam as RT
+            RT.init()
+            restored = RT.reset_replica()
+            anchor.record(_S["turn"], "operator",
+                          f"replica reset — {', '.join(restored)} restored to vulnerable state")
+            return self._send(200, json.dumps({"ok": True, "restored": restored}))
+        if self.path == "/api/secgate":
+            # the human's decision on a parked irreversible act (Article IV). Releasing
+            # the dossier is the whole action — nothing here performs disclosure/deploy.
+            import redteam as RT
+            RT.init()
+            body = self._read_json()
+            try:
+                gid = int(body.get("gate") or 0)
+            except (TypeError, ValueError):
+                return self._send(400, json.dumps({"error": "gate id required"}))
+            dec = RT.gate_decide(gid, (body.get("decision") or "").strip(), who="operator")
+            if dec.get("ok"):
+                anchor.record(_S["turn"], "operator",
+                              f"gate #{gid} {dec['decision']}d by the human (Article IV)")
+            return self._send(200 if dec.get("ok") else 400, json.dumps(dec))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2090,6 +2148,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/work">Workboard &rarr;</a>
+    <a class=navlink href="/security">Security &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2798,7 +2858,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/security">Security</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2850,6 +2910,126 @@ async function runWorker(){
     result.textContent=JSON.stringify(await r.json(),null,2);
   }catch(e){ result.textContent='error: '+e }
   runbtn.disabled=false; load();
+}
+load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+SECURITY_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Security — governed hardening</title>
+<style>
+:root{--bg:#120b0b;--panel:#1c1010;--line:#3a1e1e;--ink:#f0e6e6;--dim:#c09a9a;--gold:#e0b23a;--green:#7bd88f;--red:#f8837b;--crit:#ff5b5b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#211010}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.p{padding:12px 14px}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.tag{padding:1px 9px;border:1px solid var(--line);border-radius:20px;font-size:11px}
+.s-reproduced{color:var(--red)}.s-fixed{color:var(--green)}.s-refuted{color:var(--dim)}
+.sev-critical{color:var(--crit);font-weight:700}.sev-high{color:var(--red)}.sev-medium{color:var(--gold)}
+.bar{height:10px;background:#170c0c;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
+.fill{height:100%;background:var(--green);transition:width .5s}
+button{background:#261414;color:var(--red);border:1px solid #4a2c2c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
+button:disabled{opacity:.4;cursor:wait}
+input{background:#170c0c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:100px}
+#result{white-space:pre-wrap;color:var(--dim)}
+.log div{color:var(--dim);padding:1px 14px;font-size:12px}
+.scope{color:var(--dim);font-size:12px}.scope b{color:var(--ink)}
+.gate{border:1px solid #4a3a1a;background:#1f1a0f;border-radius:8px;padding:8px 12px;margin:6px 0}
+.pending{color:var(--gold)}.approved{color:var(--green)}.rejected{color:var(--dim)}
+.uncov{color:var(--gold)}
+</style>
+<header><h1>&#9670; SECURITY — governed defensive hardening</h1>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <span class=meta>brain: <b id=br>&mdash;</b> &middot; a reproducing PoC is the oracle</span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class="card wide"><h2>Authorization is code, not documentation</h2><div class=p>
+    <div class=scope>scope: <b id=scope>&mdash;</b> &middot; <span id=auth></span></div>
+    <div class=scope style="margin-top:6px">vision: <span id=vision></span></div></div></div>
+  <div class="card wide"><h2>The milestone — every class closed by a proven fix</h2><div class=p>
+    <b id=prog>&mdash;</b> &middot; <span id=progmeta>&mdash;</span>
+    <div class=bar><div class=fill id=fill style="width:0%"></div></div>
+    <div class=scope style="margin-top:8px" id=uncov></div></div></div>
+  <div class=card><h2>Findings — reproduced twice, or they earn nothing</h2>
+    <table><thead><tr><th>#</th><th>Class</th><th>Severity</th><th>Status</th><th>By</th></tr></thead>
+      <tbody id=findings></tbody></table></div>
+  <div class=card><h2>Run an analyst</h2><div class=p>
+    Agent id <input id=agent value="sec-01">
+    <div style="margin-top:8px">
+      <button id=findbtn onclick=runFind()>Hunt &amp; prove a class</button>
+      <button id=fixbtn onclick=runFix()>Fix an open finding</button>
+      <button onclick=resetReplica() style="color:var(--gold);border-color:#5a4a1a;background:#241f0f">Reset replica</button></div>
+    <div style="margin-top:10px" id=result>The analyst hunts one uncovered class, writes a PoC through the
+    live brain, and the oracle judges it in a no-network, no-subprocess sandbox. Then a
+    fix must kill the PoC while keeping the service's own tests green. It cannot edit the
+    invariants, the tests, or the PoC corpus.</div></div></div>
+  <div class="card wide"><h2>The gate (Article IV) — disclosure &amp; export stop at a human</h2>
+    <div class=p id=gates>no parked decisions</div></div>
+  <div class="card wide"><h2>Recent security events</h2><div class=log id=log></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function tok(){return localStorage.getItem('ctok')||''}
+async function load(){
+  let d; try{ d=await (await fetch('/api/secdata')).json() }catch(e){ return }
+  br.textContent=d.brain;
+  scope.textContent=d.scope.target; auth.textContent=esc(d.scope.authorization);
+  vision.textContent=esc(d.vision);
+  const w=d.world;
+  prog.textContent=`${w.classes_fixed}/${w.classes_total} classes hardened`;
+  progmeta.textContent=`${w.classes_found} found · ${w.open_findings} open · ${w.refuted} refuted · service ${w.functional_passing}/${w.functional_total} green · ${w.progress_pct}%`;
+  fill.style.width=w.progress_pct+'%';
+  uncov.innerHTML=(w.uncovered||[]).length? 'not yet hunted: <span class=uncov>'+w.uncovered.map(esc).join(', ')+'</span>':'every class in the checklist has a finding';
+  findings.innerHTML=(d.findings||[]).map(f=>`<tr><td>${f.id}</td><td>${esc(f.class)} — ${esc(f.title)}</td>
+    <td class="sev-${esc(f.severity)}">${esc(f.severity)}</td>
+    <td><span class="tag s-${esc(f.status)}">${esc(f.status)}</span></td>
+    <td>${esc(f.status==='fixed'?f.fixed_by:f.found_by)}</td></tr>`).join('')||'<tr><td colspan=5>no findings yet</td></tr>';
+  const gp=(d.gates||[]);
+  gates.innerHTML=gp.length? gp.map(g=>`<div class=gate><b>gate #${g.id}</b> · ${esc(g.kind)} on finding #${g.finding_id}
+    · <span class=${esc(g.status)}>${esc(g.status)}</span> · requested by ${esc(g.requested_by)}
+    ${g.detail?`<div class=scope>${esc(g.detail)}</div>`:''}
+    ${g.status==='pending'?`<div style="margin-top:6px"><button onclick="decideGate(${g.id},'approve')">Approve (release dossier)</button>
+      <button onclick="decideGate(${g.id},'reject')" style="color:var(--dim)">Reject</button></div>`:`<div class=scope>decided by ${esc(g.decided_by)}</div>`}</div>`).join('')
+    :'no parked decisions — nothing irreversible has been requested';
+  log.innerHTML=(d.recent||[]).map(e=>`<div>${esc(e)}</div>`).join('')||'<div>no work yet</div>';
+}
+async function post(url,body,btn){
+  if(btn)btn.disabled=true;
+  try{
+    let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})});
+    if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);if(btn)btn.disabled=false;return post(url,body,btn)}return null}
+    return await r.json();
+  }finally{ if(btn)btn.disabled=false }
+}
+async function runFind(){
+  result.textContent='hunting… (model writes a PoC, sandbox judges it, ~10-30s)';
+  const r=await post('/api/secfind',{agent:agent.value},findbtn);
+  if(r)result.textContent=JSON.stringify(r,null,2); load();
+}
+async function runFix(){
+  result.textContent='hardening… (model proposes a fix, oracle proves it, ~10-30s)';
+  const r=await post('/api/secfix',{agent:agent.value},fixbtn);
+  if(r)result.textContent=JSON.stringify(r,null,2); load();
+}
+async function resetReplica(){
+  const r=await post('/api/secreset',{}); if(r)result.textContent='replica restored to its vulnerable state; findings reopened.'; load();
+}
+async function decideGate(id,decision){
+  await post('/api/secgate',{gate:id,decision}); load();
 }
 load(); setInterval(load,4000);
 </script>

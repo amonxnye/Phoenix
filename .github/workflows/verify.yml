@@ -20,3 +20,7 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the replica's own functional suite
+        run: python3 -m unittest discover -s sandbox/replica/tests
+      - name: Run the Security (governed hardening) acceptance checks
+        run: python3 gov/verify_security.py

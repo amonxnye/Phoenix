@@ -10,8 +10,15 @@ gov/aoe-anchor.sqlite-wal
 gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
+gov/redteam.sqlite
+gov/redteam.sqlite-wal
+gov/redteam.sqlite-shm
 gov/scorecard.json
 scorecard.json
+
+# Security harness: PoCs the analyst generates at runtime are evidence, not source.
+# The corpus ships empty (pocs/.gitkeep); a real engagement's PoCs stay local.
+sandbox/replica/pocs/poc_*.py
 
 # Python
 __pycache__/

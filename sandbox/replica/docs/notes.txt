@@ -1,0 +1,5 @@
+Operator notes
+--------------
+- migrate the login query off string concatenation (never got to it)
+- /calc was a two-hour hack for the finance team; it is still in the router
+- the admin listing checks that you are logged in. that felt like enough at the time
