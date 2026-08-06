@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phoenix Builder — a fleet of coding agents you can leave running</title>
+<meta name="description" content="Governed autonomous software development: the test suite is the oracle, the merge is the gate, and the score can never go backwards.">
+<style>
+  :root {
+    color-scheme: light;
+    --ground:   #f4f5f6;
+    --surface:  #ffffff;
+    --sunken:   #eceef0;
+    --ink:      #12151b;
+    --ink-2:    #3d444f;
+    --muted:    #6e7681;
+    --rule:     #d9dce0;
+    --rule-2:   #c3c8cf;
+    --accent:   #8f6620;
+    --pass:     #2c7a46;
+    --fail:     #b8403a;
+    --term-bg:  #14181f;
+    --term-ink: #d6dae1;
+    --term-dim: #7b8494;
+    --term-pass:#4fbf74;
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+    --measure: 66ch;
+    --gap: 1.15rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --ground:   #12151b;
+      --surface:  #191d25;
+      --sunken:   #0e1116;
+      --ink:      #e8eaee;
+      --ink-2:    #b3bac4;
+      --muted:    #8b939f;
+      --rule:     #262c36;
+      --rule-2:   #333b47;
+      --accent:   #e0a94f;
+      --pass:     #4fbf74;
+      --fail:     #e0685e;
+      --term-bg:  #0e1116;
+      --term-ink: #d6dae1;
+      --term-dim: #737c8b;
+      --term-pass:#4fbf74;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:   #12151b;
+    --surface:  #191d25;
+    --sunken:   #0e1116;
+    --ink:      #e8eaee;
+    --ink-2:    #b3bac4;
+    --muted:    #8b939f;
+    --rule:     #262c36;
+    --rule-2:   #333b47;
+    --accent:   #e0a94f;
+    --pass:     #4fbf74;
+    --fail:     #e0685e;
+    --term-bg:  #0e1116;
+    --term-ink: #d6dae1;
+    --term-dim: #737c8b;
+    --term-pass:#4fbf74;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ground:   #f4f5f6;
+    --surface:  #ffffff;
+    --sunken:   #eceef0;
+    --ink:      #12151b;
+    --ink-2:    #3d444f;
+    --muted:    #6e7681;
+    --rule:     #d9dce0;
+    --rule-2:   #c3c8cf;
+    --accent:   #8f6620;
+    --pass:     #2c7a46;
+    --fail:     #b8403a;
+    --term-bg:  #14181f;
+    --term-ink: #d6dae1;
+    --term-dim: #7b8494;
+    --term-pass:#4fbf74;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px;
+  }
+  p { margin: 0; max-width: var(--measure); }
+  code { font-family: var(--mono); font-size: 0.875em; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+    margin: 0;
+  }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  .masthead { border-bottom: 1px solid var(--rule); background: var(--surface); }
+  .masthead .wrap {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap; padding-top: 0.9rem; padding-bottom: 0.9rem;
+  }
+  .wordmark {
+    font-family: var(--mono); font-size: 0.95rem; font-weight: 700;
+    letter-spacing: -0.01em; margin: 0;
+  }
+  .wordmark span { color: var(--accent); }
+  .masthead nav {
+    display: flex; gap: 1.1rem; font-family: var(--mono); font-size: 0.78rem;
+    flex-wrap: wrap;
+  }
+  .masthead nav a { color: var(--ink-2); text-decoration: none; }
+  .masthead nav a:hover { color: var(--accent); text-decoration: underline; }
+
+  /* ── hero ─────────────────────────────────────────────────── */
+  .hero .wrap { padding-top: 3.5rem; padding-bottom: 2.5rem; }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.9rem, 4.6vw, 3.05rem);
+    line-height: 1.08;
+    letter-spacing: -0.035em;
+    font-weight: 700;
+    margin: 0.9rem 0 0;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .standfirst {
+    margin-top: 1.1rem; font-size: 1.075rem; color: var(--ink-2);
+    max-width: 54ch;
+  }
+
+  .laws {
+    margin-top: 2rem; display: grid; gap: 0.55rem;
+    border-left: 2px solid var(--accent); padding-left: 1.1rem;
+  }
+  .laws b {
+    font-family: var(--mono); font-size: 0.94rem; font-weight: 600;
+    letter-spacing: -0.01em; display: block;
+  }
+
+  /* ── terminal ─────────────────────────────────────────────── */
+  .term {
+    background: var(--term-bg); color: var(--term-ink);
+    border: 1px solid var(--rule-2); border-radius: 6px;
+    font-family: var(--mono); font-size: 0.79rem; line-height: 1.62;
+    overflow-x: auto; margin: 2.4rem 0 0;
+  }
+  .term-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: 0.5rem 0.85rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--term-dim);
+  }
+  .term-body { padding: 0.85rem; white-space: pre; min-height: 21rem; }
+  .term .dim  { color: var(--term-dim); }
+  .term .win  { color: var(--term-pass); }
+  .term .champ{ color: #e0a94f; font-weight: 600; }
+  .term .lose { color: var(--term-dim); }
+  .cursor {
+    display: inline-block; width: 0.55em; height: 1.05em; background: #e0a94f;
+    vertical-align: text-bottom; animation: blink 1.05s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .scoreboard {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.06em;
+    color: var(--term-dim); white-space: nowrap;
+  }
+  .track {
+    width: 4.5rem; height: 4px; border-radius: 2px;
+    background: rgba(255,255,255,0.13); overflow: hidden;
+  }
+  .track i {
+    display: block; height: 100%; width: 17%; background: var(--term-pass);
+    transition: width 320ms ease;
+  }
+  .score { color: var(--term-ink); font-variant-numeric: tabular-nums; }
+
+  .readout {
+    margin-top: 0.9rem; font-family: var(--mono); font-size: 0.76rem;
+    color: var(--muted); display: flex; gap: 1.4rem; flex-wrap: wrap;
+    max-width: none;
+  }
+  .readout b { color: var(--ink); font-weight: 600; }
+
+  /* ── sections ─────────────────────────────────────────────── */
+  section { border-top: 1px solid var(--rule); }
+  section > .wrap { padding-top: 3rem; padding-bottom: 3rem; }
+  h2 {
+    font-family: var(--mono); font-size: 1.45rem; line-height: 1.2;
+    letter-spacing: -0.025em; font-weight: 700; margin: 0.6rem 0 0;
+    text-wrap: balance;
+  }
+  .lede { margin-top: 0.9rem; color: var(--ink-2); }
+
+  .grid { display: grid; gap: var(--gap); margin-top: 1.9rem; }
+  @media (min-width: 46rem) { .cols-4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 62rem) { .cols-4 { grid-template-columns: repeat(4, 1fr); } }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 5px; padding: 1.05rem 1.15rem;
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .card h3 {
+    font-family: var(--mono); font-size: 0.86rem; font-weight: 700;
+    letter-spacing: -0.005em; margin: 0;
+  }
+  .card p { font-size: 0.92rem; color: var(--ink-2); }
+  .card .cannot {
+    font-family: var(--mono); font-size: 0.71rem; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--accent);
+    border-top: 1px solid var(--rule); padding-top: 0.5rem; margin-top: auto;
+  }
+
+  /* ── numbered run ─────────────────────────────────────────── */
+  .run { counter-reset: step; margin-top: 2rem; display: grid; gap: 1.6rem; }
+  .step {
+    display: grid; gap: 0.9rem;
+    grid-template-columns: 2.4rem 1fr; align-items: start;
+  }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+    color: var(--accent); border: 1px solid var(--rule-2);
+    border-radius: 50%; width: 1.7rem; height: 1.7rem;
+    display: grid; place-items: center; margin-top: 0.05rem;
+  }
+  .step-body { display: grid; gap: 0.6rem; min-width: 0; }
+  .step-body h3 {
+    font-family: var(--sans); font-size: 1rem; font-weight: 650; margin: 0;
+    line-height: 1.35;
+  }
+  .step-body p { font-size: 0.93rem; color: var(--ink-2); }
+
+  /* Grid and flex children default to min-width:auto, so a wide <pre> inside one
+     widens its whole column instead of scrolling. Every code block sits in a track
+     that is allowed to be narrower than its content. */
+  .step-body > *, .pick > article, .pick article > *, .cmd { min-width: 0; }
+
+  .cmd { position: relative; }
+  .cmd pre {
+    margin: 0; background: var(--sunken); border: 1px solid var(--rule);
+    border-radius: 5px; padding: 0.7rem 4.1rem 0.7rem 0.85rem;
+    font-family: var(--mono); font-size: 0.79rem; line-height: 1.65;
+    overflow-x: auto; color: var(--ink);
+  }
+  .cmd pre .c { color: var(--muted); }
+  .copy {
+    position: absolute; top: 0.42rem; right: 0.42rem;
+    font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 0.22rem 0.5rem; cursor: pointer;
+  }
+  .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .copy[data-done="1"] { color: var(--pass); border-color: var(--pass); }
+
+  .note {
+    font-size: 0.87rem; color: var(--muted); max-width: var(--measure);
+    border-left: 2px solid var(--rule-2); padding-left: 0.85rem;
+  }
+
+  /* ── which command ────────────────────────────────────────── */
+  .pick { margin-top: 1.9rem; display: grid; gap: var(--gap); }
+  @media (min-width: 46rem) { .pick { grid-template-columns: 1fr 1fr; } }
+  .pick article {
+    border: 1px solid var(--rule); border-radius: 5px; background: var(--surface);
+    display: flex; flex-direction: column; gap: 0.7rem; padding: 1.15rem;
+  }
+  .pick h3 { font-family: var(--mono); font-size: 0.95rem; margin: 0; }
+  .pick .when {
+    font-size: 0.82rem; color: var(--accent); font-family: var(--mono);
+    letter-spacing: -0.005em;
+  }
+  .pick p { font-size: 0.92rem; color: var(--ink-2); }
+  .pick .cmd { margin-top: auto; }
+
+  /* ── gate ─────────────────────────────────────────────────── */
+  .gate-out {
+    margin-top: 1.7rem; background: var(--sunken); border: 1px solid var(--rule);
+    border-radius: 5px; padding: 0.95rem 1rem; overflow-x: auto;
+    font-family: var(--mono); font-size: 0.78rem; line-height: 1.7;
+    white-space: pre; color: var(--ink-2);
+  }
+  .gate-out b { color: var(--ink); font-weight: 600; }
+  .gate-out .add { color: var(--pass); }
+  .gate-out .del { color: var(--fail); }
+  .gate-out .flag { color: var(--accent); font-weight: 600; }
+  .gate-out .prompt { color: var(--muted); }
+
+  /* ── limits ───────────────────────────────────────────────── */
+  .limits { margin: 1.8rem 0 0; padding: 0; list-style: none; display: grid; gap: 0.85rem; }
+  .limits li {
+    display: grid; grid-template-columns: 9rem 1fr; gap: 1rem;
+    padding-bottom: 0.85rem; border-bottom: 1px solid var(--rule);
+    font-size: 0.93rem; color: var(--ink-2); align-items: baseline;
+  }
+  .limits li:last-child { border-bottom: 0; padding-bottom: 0; }
+  .limits dfn {
+    font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); font-style: normal;
+  }
+  @media (max-width: 34rem) { .limits li { grid-template-columns: 1fr; gap: 0.2rem; } }
+
+  footer { border-top: 1px solid var(--rule); background: var(--surface); }
+  footer .wrap {
+    padding-top: 1.6rem; padding-bottom: 2.4rem;
+    font-family: var(--mono); font-size: 0.76rem; color: var(--muted);
+    display: flex; gap: 1.3rem; flex-wrap: wrap; justify-content: space-between;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="wordmark">phoenix<span>/</span>builder</p>
+    <nav>
+      <a href="#guarantees">Guarantees</a>
+      <a href="#start">Run it</a>
+      <a href="#gate">The gate</a>
+      <a href="#limits">Limits</a>
+      <a href="https://github.com/amonxnye/Phoenix">Source</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Governed autonomous software development</p>
+    <h1>A fleet of coding agents you can <em>leave running</em>.</h1>
+    <p class="standfirst">
+      Point it at a git repository with a test suite. It works the failing tests in
+      isolated worktrees, keeps only what the test runner proves, and parks a
+      reviewable diff for you. Your checkout is never written to.
+    </p>
+
+    <div class="laws">
+      <b>Tests are the oracle.</b>
+      <b>The merge is the gate.</b>
+      <b>The score can never go backwards.</b>
+    </div>
+
+    <div class="term" role="img" aria-label="A campaign transcript: four agents raise a failing test suite from 1 of 6 passing to 6 of 6 across six rounds, with most individual attempts rejected.">
+      <div class="term-bar">
+        <span>campaign · transcript</span>
+        <span class="scoreboard">
+          <span>suite</span>
+          <span class="track"><i id="bar"></i></span>
+          <span class="score" id="score">1/6</span>
+        </span>
+      </div>
+      <div class="term-body" id="out"></div>
+    </div>
+
+    <p class="readout">
+      <span><b>24</b> sorties</span>
+      <span><b>19</b> rejected by the oracle</span>
+      <span><b>2</b> dry rounds survived</span>
+      <span><b>0</b> lines merged without a human</span>
+    </p>
+  </div>
+</div>
+
+<section id="guarantees">
+  <div class="wrap">
+    <p class="eyebrow">What it cannot do</p>
+    <h2>The safety is structural, not behavioural.</h2>
+    <p class="lede">
+      None of this depends on the model being well behaved. Each one is a capability
+      the agents simply do not have.
+    </p>
+
+    <div class="grid cols-4">
+      <div class="card">
+        <h3>It works elsewhere</h3>
+        <p>
+          Every attempt runs in its own <code>git worktree</code> on its own branch,
+          cut from your last commit. Four agents at once never collide.
+        </p>
+        <p class="cannot">Cannot touch your checkout</p>
+      </div>
+      <div class="card">
+        <h3>The runner scores it</h3>
+        <p>
+          A patch is kept only if your test command reports more passing and nothing
+          broken. An agent's account of its own work counts for nothing.
+        </p>
+        <p class="cannot">Cannot mark its own homework</p>
+      </div>
+      <div class="card">
+        <h3>The exam is read-only</h3>
+        <p>
+          Tests, <code>conftest.py</code>, runner config, packaging, CI workflows and
+          <code>.git</code> refuse writes — the attempt is wasted, not slipped through.
+        </p>
+        <p class="cannot">Cannot weaken the tests</p>
+      </div>
+      <div class="card">
+        <h3>You merge</h3>
+        <p>
+          Finished work parks as a dossier: branch, diff, test delta, risk class.
+          Merging is the one irreversible act, and it is yours.
+        </p>
+        <p class="cannot">Cannot push anywhere</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <p class="eyebrow">Getting started</p>
+    <h2>Python 3.11 and git. No install step.</h2>
+    <p class="lede">
+      The builder is standard library only. <code>pip install openai</code> is needed
+      just for OpenAI-compatible endpoints — the Anthropic path runs on
+      <code>urllib</code>.
+    </p>
+
+    <div class="run">
+      <div class="step">
+        <div class="step-body">
+          <h3>Get the code</h3>
+          <div class="cmd">
+<pre>git clone https://github.com/amonxnye/Phoenix.git &amp;&amp; cd Phoenix
+git checkout claude/software-development-agent-5bv0iw</pre>
+            <button class="copy" type="button">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-body">
+          <h3>Prove the machinery before you trust it — no API key needed</h3>
+          <p>
+            Both suites build throwaway repositories with real defects and run the
+            whole system against them using scripted agents. If they pass on your
+            machine, only the model is untested.
+          </p>
+          <div class="cmd">
+<pre>python3 gov/verify_builder.py   <span class="c"># 51/51</span>
+python3 gov/verify_campaign.py  <span class="c"># 37/37</span></pre>
+            <button class="copy" type="button">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-body">
+          <h3>Give it a brain</h3>
+          <div class="cmd">
+<pre>export BRAIN_BASE_URL=https://api.anthropic.com
+export BRAIN_API_KEY=sk-ant-...
+<span class="c"># or, with `pip install openai`:  export DEEPSEEK_API_KEY=...</span></pre>
+            <button class="copy" type="button">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-body">
+          <h3>Point it at a repository</h3>
+          <p>
+            Start with <code>--limit 1</code>. Nothing can be lost either way, but you
+            want to read its judgement before you trust its volume.
+          </p>
+          <div class="cmd">
+<pre>python3 gov/builder.py run --repo ~/yourrepo \
+    --test-cmd "python -m pytest -q" --limit 1</pre>
+            <button class="copy" type="button">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-body">
+          <h3>Read the diff, then decide</h3>
+          <div class="cmd">
+<pre>python3 gov/builder.py gate                <span class="c"># what is waiting, and why</span>
+python3 gov/builder.py show    --id 1      <span class="c"># the full diff + test delta</span>
+python3 gov/builder.py approve --id 1      <span class="c"># merge into the base branch</span>
+python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
+            <button class="copy" type="button">Copy</button>
+          </div>
+          <p class="note">
+            Rejecting deletes the branch, leaves your base commit exactly where it
+            was, and files your reason as a lesson the next run is handed.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="commands">
+  <div class="wrap">
+    <p class="eyebrow">Two ways to work</p>
+    <h2>One agent per test, or a fleet on one problem.</h2>
+
+    <div class="pick">
+      <article>
+        <h3>builder run</h3>
+        <p class="when">for a backlog of ordinary failures</p>
+        <p>
+          Takes each failing test in turn. One agent, a few attempts, and every retry
+          is told what its predecessor did to the suite. Each fix parks separately, so
+          you can approve the good ones and reject the rest.
+        </p>
+        <div class="cmd">
+<pre>python3 gov/builder.py run --repo ~/r \
+    --test-cmd "python -m pytest -q"</pre>
+          <button class="copy" type="button">Copy</button>
+        </div>
+      </article>
+
+      <article>
+        <h3>campaign run</h3>
+        <p class="when">for the one that keeps not working</p>
+        <p>
+          Sends several agents at the same problem with genuinely different briefs —
+          smallest fix, read the test as a contract, widen the search, rewrite,
+          contrarian. Each round starts from the best result so far and gets stranger
+          as it gets stuck. The whole thing parks as one diff.
+        </p>
+        <div class="cmd">
+<pre>python3 gov/campaign.py run --repo ~/r \
+    --agents 4 --rounds 6</pre>
+          <button class="copy" type="button">Copy</button>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="gate">
+  <div class="wrap">
+    <p class="eyebrow">The gate</p>
+    <h2>Work arrives as a diff and a measurement.</h2>
+    <p class="lede">
+      Whether one agent or twenty-four sorties produced it, the dossier is the same
+      shape — because what a reviewer needs is the same.
+    </p>
+
+    <div class="gate-out"><span class="prompt">$ python3 gov/builder.py gate</span>
+
+1 branch(es) awaiting a human:
+
+  <b>#1  phoenix/campaign/campaign-1786002513</b>
+      make 5 failing test(s) pass  (campaign/4 agents, 6 attempt(s))
+      suite <b>1/6 -&gt; 6/6</b>; green: test_discount_code, test_eta, test_eta_express,
+             test_shipping_express_surcharge, test_shipping_scales_with_weight
+      files: src/orders.py
+      <span class="flag">HIGH RISK — money</span>
+
+<span class="prompt">$ python3 gov/builder.py show --id 1</span>
+
+ def shipping(weight_kg, express=False):
+<span class="del">-    return 5.0</span>
+<span class="add">+    base = weight_kg * 1.5</span>
+<span class="add">+    return base * 2 if express else base</span>
+
+ def eta_days(distance_km, express=False):
+<span class="del">-    return 99</span>
+<span class="add">+    return 1 if express else max(1, round(distance_km / 167))</span></div>
+
+    <p class="note" style="margin-top:1.4rem">
+      Risk is matched by path, never judged by a model — anything touching auth,
+      secrets, migrations, infrastructure, CI or payments is flagged HIGH, and no
+      amount of silence approves it.
+    </p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="wrap">
+    <p class="eyebrow">Before you point it somewhere real</p>
+    <h2>What it does not do yet.</h2>
+
+    <ul class="limits">
+      <li>
+        <dfn>Needs red tests</dfn>
+        <span>It only fixes failing tests. A green suite means it does nothing — to
+        hand it a feature, write the failing test first.</span>
+      </li>
+      <li>
+        <dfn>Python source</dfn>
+        <span>Your test command can be anything, but the logic that decides
+        <em>which file to edit</em> only considers <code>.py</code>. A JavaScript
+        repository will not work yet.</span>
+      </li>
+      <li>
+        <dfn>Cost scales</dfn>
+        <span>A campaign is up to <code>agents × rounds</code> model calls, each
+        carrying a source file and the test output. Try <code>--agents 2 --rounds 3</code>
+        first.</span>
+      </li>
+      <li>
+        <dfn>Local merges</dfn>
+        <span>Approving merges into your base branch. It does not open a pull request,
+        and it never pushes unless you set <code>BUILDER_ALLOW_PUSH=1</code>.</span>
+      </li>
+      <li>
+        <dfn>Command line</dfn>
+        <span>The gate and campaigns are CLI-only. The web console still shows the
+        older single-agent workboard.</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Phoenix — safe because it is governed, not because it is trusted.</span>
+    <span><a href="https://github.com/amonxnye/Phoenix">github.com/amonxnye/Phoenix</a> · MIT</span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var TRANSCRIPT = [
+    { t: "CAMPAIGN make 5 failing test(s) pass" },
+    { t: "  repo orders · oracle `python -m pytest -q` · base 1/6 · fleet dev-01…dev-04", c: "dim" },
+    { t: "" },
+    { t: "round 1  [direct, read-the-test, widen, rewrite]  from champion 1/6", c: "dim" },
+    { t: "   ** dev-01  direct         kept — 1 newly green, suite 2/6", c: "win" },
+    { t: "   ** dev-02  read-the-test  kept — 1 newly green, suite 2/6", c: "win" },
+    { t: "      dev-03  widen          reverted — broke test_subtotal", c: "lose" },
+    { t: "   ** dev-04  rewrite        kept — 2 newly green, suite 3/6", c: "win" },
+    { t: "   -> CHAMPION 3/6 (dev-04, rewrite)", c: "champ", score: 3 },
+    { t: "" },
+    { t: "round 2  [read-the-test, widen, rewrite, contrarian]  from champion 3/6", c: "dim" },
+    { t: "   ** dev-01  read-the-test  kept — 1 newly green, suite 4/6", c: "win" },
+    { t: "      dev-02  widen          no change the oracle can see", c: "lose" },
+    { t: "   -> CHAMPION 4/6 (dev-01, read-the-test)", c: "champ", score: 4 },
+    { t: "" },
+    { t: "round 3  [widen, rewrite, contrarian, decompose]  from champion 4/6", c: "dim" },
+    { t: "      all four sorties rejected", c: "lose" },
+    { t: "   -> no improvement (1/2 dry rounds) — champion holds at 4/6", c: "dim" },
+    { t: "" },
+    { t: "round 4  [rewrite, contrarian, decompose, direct]  from champion 4/6", c: "dim" },
+    { t: "   ** dev-04  direct         kept — 1 newly green, suite 5/6", c: "win" },
+    { t: "   -> CHAMPION 5/6 (dev-04, direct)", c: "champ", score: 5 },
+    { t: "" },
+    { t: "round 6  [decompose, direct, read-the-test, widen]  from champion 5/6", c: "dim" },
+    { t: "   ** dev-04  widen          kept — 1 newly green, suite 6/6", c: "win" },
+    { t: "   -> CHAMPION 6/6 (dev-04, widen)", c: "champ", score: 6 },
+    { t: "" },
+    { t: "SOLVED — 1/6 -> 6/6 in 6 round(s)", c: "champ" },
+    { t: "branch phoenix/campaign/… waiting at the gate as #1", c: "dim" },
+    { t: "review with:  python3 gov/builder.py show --id 1", c: "dim" }
+  ];
+
+  var out = document.getElementById("out");
+  var bar = document.getElementById("bar");
+  var score = document.getElementById("score");
+  if (!out || !bar || !score) { return; }
+
+  function setScore(n) {
+    score.textContent = n + "/6";
+    bar.style.width = Math.round((n / 6) * 100) + "%";
+  }
+
+  function line(item) {
+    var el = document.createElement("div");
+    if (item.c) { el.className = item.c; }
+    el.textContent = item.t || " ";
+    return el;
+  }
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduced) {
+    TRANSCRIPT.forEach(function (item) { out.appendChild(line(item)); });
+    setScore(6);
+    return;
+  }
+
+  var caret = document.createElement("span");
+  caret.className = "cursor";
+  out.appendChild(caret);
+
+  var i = 0;
+  function step() {
+    if (i >= TRANSCRIPT.length) { caret.remove(); return; }
+    var item = TRANSCRIPT[i++];
+    out.insertBefore(line(item), caret);
+    if (item.score) { setScore(item.score); }
+    // a new champion lands with a beat; blank lines pass quickly
+    setTimeout(step, item.score ? 500 : (item.t === "" ? 90 : 160));
+  }
+  setTimeout(step, 350);
+})();
+
+(function () {
+  "use strict";
+
+  function fallback(text, done) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); done(); } catch (e) { /* nothing to do */ }
+    ta.remove();
+  }
+
+  document.querySelectorAll(".copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var pre = btn.parentElement.querySelector("pre");
+      if (!pre) { return; }
+      // comments are for reading, not for pasting into a shell
+      var text = Array.prototype.map.call(pre.childNodes, function (n) {
+        return (n.nodeType === 1 && n.classList.contains("c")) ? "" : n.textContent;
+      }).join("").replace(/[ \t]+$/gm, "").trim();
+
+      var done = function () {
+        btn.textContent = "Copied";
+        btn.dataset.done = "1";
+        setTimeout(function () {
+          btn.textContent = "Copy";
+          delete btn.dataset.done;
+        }, 1600);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+      } else {
+        fallback(text, done);
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>

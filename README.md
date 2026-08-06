@@ -63,6 +63,9 @@ python3 gov/builder.py approve --id 1    # the one irreversible act, taken by yo
 hard problem — different agents given genuinely different strategies, escalating as
 they get stuck, keeping a champion commit that only ever advances. See **CAMPAIGN.md**.
 
+New here? Open **`index.html`** — the guarantees, a five-step start, and an honest
+list of what it does not do yet.
+
 Each task is worked in its own git worktree and branch, so your checkout is never
 written to — not even mid-run. Attempts are capped and budgeted; a patch is kept only
 if the repo's own suite says it helped and broke nothing; and every success parks a
