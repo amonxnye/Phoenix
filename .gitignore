@@ -13,6 +13,9 @@ gov/workspace.sqlite
 gov/redteam.sqlite
 gov/redteam.sqlite-wal
 gov/redteam.sqlite-shm
+gov/sentinel.sqlite
+gov/sentinel.sqlite-wal
+gov/sentinel.sqlite-shm
 gov/scorecard.json
 scorecard.json
 

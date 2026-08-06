@@ -29,6 +29,7 @@ import anchor
 import brain
 import economy
 import redteam as R
+import sentinel as S
 
 CREDIT_REPRODUCED = 120       # a finding that survives the oracle
 CREDIT_FIXED = 180            # a finding closed by a proven, non-destructive fix
@@ -83,6 +84,17 @@ def prove_and_score(agent: str, vuln_class: str, src: str) -> dict:
     R.init()
     poc_rel = R.write_poc(vuln_class, src, agent)
     verdict = R.reproduce(poc_rel)
+
+    # Detection: whatever the cage denied or the oracle rejected is a signal the blue
+    # layer records (SECURITY.md §6.5), independent of the red-team scoring below.
+    for kind in S.classify_denials(verdict.get("denied", [])):
+        S.emit(agent, kind, detail=f"while hunting {vuln_class}",
+               target=R.SCOPE["target"])
+    if verdict.get("dishonest"):
+        S.emit(agent, "poc.fabricated", detail=verdict.get("error", "")[:200],
+               target=vuln_class)
+    elif verdict.get("flaky"):
+        S.emit(agent, "poc.flaky", detail=verdict.get("error", "")[:200], target=vuln_class)
 
     if not verdict["reproduced"]:
         why = verdict.get("error") or "did not reproduce"
@@ -160,7 +172,7 @@ def patch_and_score(agent: str, f: dict, content: str) -> dict:
     functional suite must stay green. Either failure reverts the patch."""
     R.init()
     old = R.read_file("vault.py")
-    ok, msg = R.apply_patch("vault.py", content)
+    ok, msg = R.apply_patch("vault.py", content, actor=agent)   # refusals → Sentinel
     if not ok:
         anchor.record(-1, "waste", f"{agent} fix refused: {msg}")
         return {"agent": agent, "did": "refused", "reason": msg}

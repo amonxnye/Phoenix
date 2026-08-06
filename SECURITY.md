@@ -15,8 +15,9 @@ configurations, and running CTF-style exercises.
 | The PoC cage | `gov/pocrunner.py` | an audit hook removes network, subprocess and out-of-box writes before the PoC imports — Article V, not policy |
 | The world + gate | `gov/redteam.py` | reproduce-twice-honestly oracle; `apply_patch` refuses the oracle/tests/corpus; the dossier gate parks the irreversible |
 | The analyst agent | `gov/analyst.py` | find→prove→fix through the one brain seam; paid by the oracle, recorded in careers/lineage |
-| Console | `/security` in `gov/sim_console.py` | findings, the checklist, and the human's gate decisions, live |
-| Acceptance | `gov/verify_security.py` | 22 model-free checks proving all of the above (wired into CI) |
+| The Sentinel | `gov/sentinel.py` | the org watching itself: every refusal the cage/oracle already made, correlated into named alerts — an alert fires from a *recorded signal*, not a model's opinion |
+| Console | `/security` + `/watch` in `gov/sim_console.py` | findings and the human's gate decisions; and the blue-team watch layer, live |
+| Acceptance | `gov/verify_security.py`, `gov/verify_sentinel.py` | 22 + 14 model-free checks proving all of the above (wired into CI) |
 
 > **The oracle is a reproducing proof-of-concept in a sandbox; the gate is any system
 > you do not own.**
@@ -93,8 +94,14 @@ attached. That's a *report you can act on*, not a scanner dump.
 4. ✅ The dossier gate: findings packaged with scope, evidence, PoC, fix, and lineage —
    parked for the human before any disclosure or prod deploy. Approval releases the
    *dossier*; no code path performs the irreversible act. → `redteam.gate_request`, `/security`
-5. Detection-side telemetry for the org itself (what its own agents did) — the
-   ADR-style watch layer, native. *(next)*
+5. ✅ Detection-side telemetry for the org itself (what its own agents did) — the
+   watch layer, native. The red team hunts flaws; the Sentinel watches inward. Every
+   boundary the cage denied (a PoC reaching for the network, a subprocess, a write out
+   of the box), every reward-hack attempt (a fabricated proof, an edit to the oracle),
+   and every parked irreversible act becomes a structured signal, correlated by a named
+   ruleset into severity-ranked alerts with provenance. Detection rules are data, and a
+   reusable asset (§2, "Structures"). The discipline holds: an alert fires from a
+   recorded refusal, never from a model's opinion. → `gov/sentinel.py`, `/watch`
 
 ## 7. Scope of this harness
 

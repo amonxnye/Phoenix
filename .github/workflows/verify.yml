@@ -24,3 +24,5 @@ jobs:
         run: python3 -m unittest discover -s sandbox/replica/tests
       - name: Run the Security (governed hardening) acceptance checks
         run: python3 gov/verify_security.py
+      - name: Run the Sentinel (detection/telemetry) acceptance checks
+        run: python3 gov/verify_sentinel.py

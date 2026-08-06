@@ -1633,6 +1633,19 @@ class Handler(BaseHTTPRequestHandler):
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
             }))
+        if self.path == "/watch":
+            self._count_view()
+            return self._send(200, WATCH_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/watchdata":
+            import sentinel as SN
+            SN.scan()                            # correlate before reading
+            return self._send(200, json.dumps({
+                "summary": SN.summary(),
+                "alerts": SN.alerts(limit=100),
+                "signals": SN.signals(limit=60),
+                "ruleset": [{"kind": k, "rule": v[0], "severity": v[1], "meaning": v[2]}
+                            for k, v in SN.SIGNAL_RULES.items()],
+            }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
@@ -2008,6 +2021,15 @@ class Handler(BaseHTTPRequestHandler):
                 anchor.record(_S["turn"], "operator",
                               f"gate #{gid} {dec['decision']}d by the human (Article IV)")
             return self._send(200 if dec.get("ok") else 400, json.dumps(dec))
+        if self.path == "/api/watchack":
+            import sentinel as SN
+            body = self._read_json()
+            try:
+                aid = int(body.get("alert") or 0)
+            except (TypeError, ValueError):
+                return self._send(400, json.dumps({"error": "alert id required"}))
+            ok = SN.acknowledge(aid, who="operator")
+            return self._send(200, json.dumps({"ok": ok, "alert": aid}))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2150,6 +2172,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/skills">Skills &rarr;</a>
     <a class=navlink href="/work">Workboard &rarr;</a>
     <a class=navlink href="/security">Security &rarr;</a>
+    <a class=navlink href="/watch">Watch &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2948,7 +2971,7 @@ input{background:#170c0c;color:var(--ink);border:1px solid var(--line);border-ra
 .uncov{color:var(--gold)}
 </style>
 <header><h1>&#9670; SECURITY — governed defensive hardening</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>&mdash;</b> &middot; a reproducing PoC is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3030,6 +3053,87 @@ async function resetReplica(){
 }
 async function decideGate(id,decision){
   await post('/api/secgate',{gate:id,decision}); load();
+}
+load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+WATCH_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Watch — the org sees itself</title>
+<style>
+:root{--bg:#0a0f14;--panel:#101821;--line:#1e2c3a;--ink:#e6eef5;--dim:#8fa3b5;--gold:#e0b23a;--green:#7bd88f;--info:#6ab7ff;--med:#e0b23a;--high:#f8a37b;--crit:#ff5b5b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0e1620}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.p{padding:12px 14px}
+.tiles{display:flex;gap:10px;flex-wrap:wrap;padding:12px 14px}
+.tile{flex:1;min-width:90px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-align:center}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.pill{padding:1px 8px;border-radius:20px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid}
+.sev-info{color:var(--info);border-color:var(--info)}.sev-low{color:var(--dim);border-color:var(--line)}
+.sev-medium{color:var(--med);border-color:var(--med)}.sev-high{color:var(--high);border-color:var(--high)}
+.sev-critical{color:var(--crit);border-color:var(--crit);font-weight:700}
+.rule{color:var(--ink);font-weight:600}.mono{color:var(--dim);font-size:12px}
+button{background:#14212c;color:var(--info);border:1px solid #2c4256;border-radius:7px;padding:4px 12px;cursor:pointer;font:inherit;font-size:12px}
+.clean{color:var(--green);padding:16px 14px}
+.log div{color:var(--dim);padding:2px 14px;font-size:12px;border-bottom:1px solid #16212c}
+.k{color:var(--dim)}.ack{opacity:.45}
+</style>
+<header><h1>&#9670; WATCH — the security org sees its own agents</h1>
+  <a href="/">Console</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
+  <span class=meta>a signal is a refusal that happened, not an opinion &middot; open: <b id=open>&mdash;</b></span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class="card wide"><h2>Open alerts by severity</h2><div class=tiles id=tiles></div></div>
+  <div class="card wide"><h2>Alerts — correlated from recorded refusals, most severe first</h2>
+    <table><thead><tr><th>Sev</th><th>Rule</th><th>Actor</th><th>What the cage/oracle caught</th><th></th></tr></thead>
+      <tbody id=alerts></tbody></table>
+    <div class=clean id=clean style="display:none">&#10003; nothing to see — no boundary has been tripped.</div></div>
+  <div class=card><h2>Signal feed — the raw refusals as they land</h2><div class=log id=feed></div></div>
+  <div class=card><h2>The ruleset — detection rules are a reusable asset</h2>
+    <table><thead><tr><th>Signal</th><th>Rule</th><th>Sev</th></tr></thead><tbody id=rules></tbody></table></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const SEVS=['critical','high','medium','low','info'];
+function tok(){return localStorage.getItem('ctok')||''}
+async function load(){
+  let d; try{ d=await (await fetch('/api/watchdata')).json() }catch(e){ return }
+  const sm=d.summary; open.textContent=sm.open;
+  tiles.innerHTML=SEVS.map(s=>`<div class=tile><b class="sev-${s}">${sm.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
+    +`<div class=tile><b>${sm.signals}</b><span>signals</span></div>`;
+  const al=d.alerts||[];
+  clean.style.display=al.length?'none':'block';
+  alerts.innerHTML=al.map(a=>`<tr class="${a.status==='ack'?'ack':''}">
+    <td><span class="pill sev-${esc(a.severity)}">${esc(a.severity)}</span></td>
+    <td class=rule>${esc(a.rule)}${a.count>1?` <span class=mono>&times;${a.count}</span>`:''}</td>
+    <td>${esc(a.actor)}</td>
+    <td>${esc(a.summary)} <span class=mono>[signal ${a.refs.join(', ')}]</span></td>
+    <td>${a.status==='open'?`<button onclick="ack(${a.id})">ack</button>`:'<span class=mono>ack&#8217;d</span>'}</td></tr>`).join('');
+  feed.innerHTML=(d.signals||[]).map(s=>`<div><span class="pill sev-${esc(s.severity)}">${esc(s.severity)}</span>
+    <span class=k>${esc(s.actor)}</span> ${esc(s.kind)} <span class=mono>${esc(s.detail||'')}</span></div>`).join('')||'<div class=mono>no signals yet</div>';
+  rules.innerHTML=(d.ruleset||[]).map(r=>`<tr><td class=mono>${esc(r.kind)}</td><td class=rule>${esc(r.rule)}</td>
+    <td><span class="pill sev-${esc(r.severity)}">${esc(r.severity)}</span></td></tr>`).join('');
+}
+async function ack(id){
+  let r=await fetch('/api/watchack',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify({alert:id})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return ack(id)}return}
+  load();
 }
 load(); setInterval(load,4000);
 </script>

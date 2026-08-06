@@ -342,25 +342,55 @@ def read_file(rel_path: str) -> str:
         return f.read()
 
 
-def apply_patch(rel_path: str, content: str) -> tuple[bool, str]:
+def apply_patch(rel_path: str, content: str, actor: str = "") -> tuple[bool, str]:
     """Write a file inside the replica. Refuses anything outside it, the invariants,
     the functional tests, and the PoC corpus — every artefact an agent could edit to
-    make itself look successful instead of being successful."""
+    make itself look successful instead of being successful.
+
+    A refusal is a detection signal, not just a return value: when ``actor`` is given,
+    the Sentinel is told (SECURITY.md §6.5), so an attempt to edit the oracle or escape
+    scope shows up on the watch layer whether or not the caller does anything with it.
+    """
+    def _refuse(msg: str) -> tuple[bool, str]:
+        if actor:
+            kind = _sentinel_refusal_kind(msg)
+            if kind:
+                _emit(actor, kind, detail=msg, target=rel_path)
+        return False, msg
+
     try:
         p = _safe_path(rel_path)
     except ValueError as e:
-        return False, str(e)
+        return _refuse(str(e))
     rel = os.path.relpath(p, REPLICA)
     head = rel.split(os.sep)[0]
     if head == ORACLE_FILE:
-        return False, "REFUSED: the invariants are the oracle and are not writable"
+        return _refuse("REFUSED: the invariants are the oracle and are not writable")
     if head == TESTS_DIR:
-        return False, "REFUSED: the behaviour tests are not writable"
+        return _refuse("REFUSED: the behaviour tests are not writable")
     if head == POCS_DIR:
-        return False, "REFUSED: the PoC corpus is evidence and is not patchable"
+        return _refuse("REFUSED: the PoC corpus is evidence and is not patchable")
     with open(p, "w") as f:
         f.write(content)
     return True, f"wrote {rel} ({len(content)} bytes)"
+
+
+# ── Sentinel wiring (best-effort: detection must never break the work path) ───
+
+def _emit(actor: str, kind: str, detail: str = "", target: str = "") -> None:
+    try:
+        import sentinel
+        sentinel.emit(actor, kind, detail=detail, target=target)
+    except Exception:
+        pass
+
+
+def _sentinel_refusal_kind(message: str) -> str:
+    try:
+        import sentinel
+        return sentinel.refusal_kind(message)
+    except Exception:
+        return ""
 
 
 def _safe_path(rel_path: str) -> str:
@@ -434,6 +464,8 @@ def gate_request(finding_id: int, kind: str, agent: str, detail: str = "") -> di
         gid = cur.lastrowid
     finally:
         c.close()
+    _emit(agent, "gate.requested", detail=f"{kind}: {GATED[kind]}",
+          target=f"finding:{finding_id}")
     return {"ok": True, "gate": gid, "status": "pending",
             "act": GATED[kind], "decided_by": "a human being, Article IV"}
 
