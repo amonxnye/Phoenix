@@ -172,6 +172,28 @@ check("command-injection confirmed as a structural breakout (js + py)",
 check("the argv-array fix stops the injection",
       not ci_js["hardened"]["reproduced"] and not ci_py["hardened"]["reproduced"])
 
+# evidence with a triple-quote must not break the python reproduction (banner uses #)
+dq, pq = _fixture('def load(name):\n    """docstring with triple quotes"""\n'
+                  "    return open('docs/' + name).read()\n", "dq.py")
+outq = RP.prove({"class": "traversal", "file": "dq.py", "line": 3, "abspath": pq,
+                 "snippet": "return open('docs/' + name).read()"})
+check("extracted source containing a docstring doesn't break the reproduction",
+      outq["pattern_exploitable"], outq.get("verdict", "")[:50])
+
+# site triage: trusted-input site is flagged a likely false positive; attacker site isn't
+dt, pt = _fixture("import os\ndef boot():\n    for name in os.listdir('x'):\n"
+                  "        open(os.path.join('x', name)).read()\n", "trust.py")
+tr = RP.prove({"class": "traversal", "file": "trust.py", "line": 4, "abspath": pt,
+               "snippet": "open(os.path.join('x', name)).read()"})
+check("a trusted-input site (listdir) is flagged likely-false-positive",
+      tr["pattern_exploitable"] and tr["site_likely_fp"], tr["site"]["reachability"])
+da, pa = _fixture("def handler(request):\n    name = request.query['n']\n"
+                  "    return open('docs/' + name).read()\n", "att.py")
+at = RP.prove({"class": "traversal", "file": "att.py", "line": 3, "abspath": pa,
+               "snippet": "return open('docs/' + name).read()"})
+check("an attacker-reachable, unguarded site is not flagged FP",
+      at["pattern_exploitable"] and not at["site_likely_fp"], at["site"]["reachability"])
+
 # ── G. isolation (SaaS: concurrent guests) ───────────────────────────────────
 print("\nG. Isolation — concurrent proves get distinct dirs and clean up")
 import glob

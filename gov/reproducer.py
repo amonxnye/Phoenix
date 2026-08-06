@@ -117,10 +117,12 @@ def _evidence_banner(cls: str, prov: str, evidence: dict) -> str:
 
 
 def _py_banner(cls: str, prov: str, evidence: dict) -> str:
+    # plain `#` comment lines (never a docstring): extracted source may itself contain
+    # a triple-quote, which would otherwise terminate the reproduction's docstring early.
     real = evidence.get("enclosing") or evidence.get("sink_line", "")
-    real = "\n".join("# " + ln for ln in real.splitlines()[:24])
-    return (f'"""Reproduction of a {cls} flaw. Models: {prov}\n'
-            f"--- real code extracted from source ---\n{real}\n\"\"\"\n")
+    lines = "\n".join("# " + ln for ln in real.splitlines()[:24])
+    return (f"# Reproduction of a {cls} flaw. Models: {prov}\n"
+            f"# --- real code extracted from source ---\n{lines}\n# ---\n")
 
 
 def gen_js_eval(prov, evidence, hardened, newfunc=False):
@@ -359,6 +361,58 @@ def _write(job_dir: str, files: dict) -> None:
             f.write(content)
 
 
+# ── site triage: is THIS line reachable/unguarded, or just a pattern match? ───
+# The reproduction proves a *class* is exploitable. Whether the specific scanned line is
+# actually exploitable depends on (a) whether its input is attacker-controlled and
+# (b) whether a guard already neutralises it. We can't do full taint analysis, but the
+# enclosing code we extracted carries strong cheap signals. This keeps the engine honest:
+# "the pattern is exploitable" is not the same claim as "this line is a bug".
+_GUARD = {
+    "traversal": re.compile(r"realpath|abspath|commonpath|_safe_path|normpath|"
+                            r"startswith|\.resolve\(|path\.relative", re.I),
+    "rce": re.compile(r"ast\.parse|isdigit|allow|whitelist|arith|compile\(|Number\(", re.I),
+    "sqli": re.compile(r"\?|%s|:\w+\b|prepare\([^)]*\?|execute\([^,]+,", re.I),
+    "command-injection": re.compile(r"shlex|execFile|spawn\([^,]+,\s*\[|args\s*=\s*\[|"
+                                    r"shell\s*=\s*False", re.I),
+}
+_ATTACKER = re.compile(r"\breq\b|request|\bparams\b|\bquery\b|\bbody\b|\bargv\b|sys\.argv|"
+                       r"\binput\(|\bevent\b|@app\.route|@router|flask|express|ctx\.request|"
+                       r"getParam|searchParams", re.I)
+_TRUSTED = re.compile(r"listdir|__file__|os\.getcwd|\bglob\.|dirname\(|walk\(", re.I)
+
+
+def assess_site(evidence: dict, cls: str) -> dict:
+    """Cheap reachability/guard triage of the actual scanned line, from its enclosing
+    code. Returns a signal, never a verdict — the reproduction is what's certain."""
+    code = evidence.get("enclosing") or evidence.get("sink_line", "")
+    if not code:
+        return {"guarded": False, "reachability": "unknown", "likely_fp": None,
+                "note": "no source context — reachability unknown"}
+    guarded = bool(_GUARD.get(cls) and _GUARD[cls].search(code))
+    attacker = _ATTACKER.search(code) is not None
+    trusted = _TRUSTED.search(code) is not None
+    if attacker and not trusted:
+        reach = "attacker-reachable"
+    elif trusted and not attacker:
+        reach = "trusted-input"
+    else:
+        reach = "unknown"
+    likely_fp = guarded or reach == "trusted-input"
+    if guarded:
+        note = "a guard is present at this site — the pattern reproduces in isolation, " \
+               "but this line looks already defended; likely a false positive"
+    elif reach == "trusted-input":
+        note = "the input here looks trusted (e.g. a directory listing/constant), not " \
+               "attacker-controlled — likely a false positive; confirm the source"
+    elif reach == "attacker-reachable":
+        note = "the enclosing code takes attacker-influenced input with no visible guard " \
+               "— treat as a probable real finding and confirm the input path"
+    else:
+        note = "reachability is unclear from the local context — review whether the input " \
+               "is attacker-controlled and unguarded"
+    return {"guarded": guarded, "reachability": reach, "likely_fp": likely_fp, "note": note}
+
+
 def prove(candidate: dict, root: str | None = None) -> dict:
     """Rebuild → host → exploit → prove, in the source language, in an isolated job dir.
     Confirmed iff the vulnerable build reproduces and the hardened build refuses it."""
@@ -383,10 +437,26 @@ def prove(candidate: dict, root: str | None = None) -> dict:
         _write(fdir, gen["build"](prov, evidence, True))
         v = rng.run(vdir)
         f = rng.run(fdir)
-        confirmed = bool(v.get("reproduced")) and not f.get("reproduced")
+        # "confirmed" = the CLASS is exploitable and the fix stops it (both proven here).
+        pattern_ok = bool(v.get("reproduced")) and not f.get("reproduced")
+        site = assess_site(evidence, candidate.get("class"))
+        if not pattern_ok:
+            verdict = "not confirmed — the exploit did not reproduce, or the fix did not stop it"
+        elif site["likely_fp"]:
+            verdict = (f"the {candidate.get('class')} pattern is exploitable and the fix "
+                       f"stops it — but this SITE is likely a false positive: {site['note']}")
+        elif site["reachability"] == "attacker-reachable":
+            verdict = (f"the {candidate.get('class')} pattern is exploitable and this site "
+                       f"takes attacker-influenced input with no visible guard — probable "
+                       f"real finding; confirm the input path")
+        else:
+            verdict = (f"the {candidate.get('class')} pattern is exploitable and the fix "
+                       f"stops it; reachability of this line is unverified — {site['note']}")
         return {
-            "confirmed": confirmed, "class": candidate.get("class"), "lang": gen["lang"],
-            "sink": gen["id"], "provenance": prov,
+            "confirmed": pattern_ok, "pattern_exploitable": pattern_ok,
+            "site_likely_fp": bool(site["likely_fp"]),
+            "class": candidate.get("class"), "lang": gen["lang"],
+            "sink": gen["id"], "provenance": prov, "site": site,
             "evidence": {"resolved": evidence.get("resolved", False),
                          "sink_line": evidence.get("sink_line", ""),
                          "enclosing": evidence.get("enclosing", "")},
@@ -395,9 +465,7 @@ def prove(candidate: dict, root: str | None = None) -> dict:
                            "elapsed_ms": v.get("elapsed_ms")},
             "hardened": {"reproduced": f.get("reproduced"), "error": f.get("error"),
                          "elapsed_ms": f.get("elapsed_ms")},
-            "verdict": ("exploit proven on the reproduction; the fix stops it"
-                        if confirmed else
-                        "not confirmed — the exploit did not reproduce, or the fix did not stop it"),
+            "verdict": verdict,
         }
     finally:
         shutil.rmtree(job, ignore_errors=True)      # per-job cleanup — SaaS-safe

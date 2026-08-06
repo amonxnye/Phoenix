@@ -3345,6 +3345,7 @@ tr.reprovable td{cursor:default}
 .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700}
 .badge.y{background:#123020;color:var(--green);border:1px solid #2c4a3c}
 .badge.n{background:#301818;color:var(--red);border:1px solid #4a2c2c}
+.badge.w{background:#2a2410;color:var(--gold);border:1px solid #5a4a1a}
 .hint{color:var(--dim);font-size:12px;margin-top:6px}
 .spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;display:inline-block;animation:s 1s linear infinite;vertical-align:-3px}
 @keyframes s{to{transform:rotate(360deg)}}
@@ -3470,16 +3471,21 @@ async function prove(i){
   if(btn){btn.disabled=false;btn.textContent='Prove'}
   if(!d){vhead.textContent='';return}
   if(d.error){vhead.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
-  const yes=d.confirmed;
-  vhead.innerHTML=`<span class="badge ${yes?'y':'n'}">${yes?'✓ EXPLOIT PROVEN':'✗ NOT CONFIRMED'}</span>
-    &nbsp;<b>${esc(d.class)}</b> <span class=muted>modelling ${esc(d.provenance||'')}</span>`;
+  const ok=d.pattern_exploitable!==undefined?d.pattern_exploitable:d.confirmed;
+  const fp=d.site_likely_fp;
+  // three states: pattern exploitable + site looks real (green) / + site likely FP (amber) / not reproduced (red)
+  const cls = !ok?'n':(fp?'w':'y');
+  const label = !ok?'✗ NOT REPRODUCED':(fp?'▲ PATTERN EXPLOITABLE · SITE LIKELY FALSE POSITIVE':'✓ PATTERN EXPLOITABLE · SITE LOOKS REACHABLE');
+  vhead.innerHTML=`<span class="badge ${cls}">${label}</span>
+    &nbsp;<b>${esc(d.class)}</b> <span class=muted>at ${esc(d.provenance||'')}</span>`;
   const lines=[];
   if(d.vulnerable){lines.push(`vulnerable rebuild → reproduced: ${d.vulnerable.reproduced?'YES':'no'}`);
     (d.vulnerable.violations||[]).forEach(v=>lines.push(`   ${v.id} [${v.cls||v.class||''}] ${v.detail}`));
     if(d.vulnerable.denied&&d.vulnerable.denied.length)lines.push(`   cage denied: ${d.vulnerable.denied.join(', ')}`);
     if(d.vulnerable.error)lines.push(`   note: ${d.vulnerable.error}`);}
   if(d.hardened)lines.push(`hardened rebuild → same exploit reproduced: ${d.hardened.reproduced?'YES (still vulnerable!)':'no — the fix stops it'}`);
-  lines.push('');lines.push(`verdict: ${d.verdict||''}`);
+  if(d.site)lines.push('',`site triage → reachability: ${esc(d.site.reachability)}${d.site.guarded?' · guard present':''}`);
+  lines.push('',`verdict: ${d.verdict||''}`);
   verdict.textContent=lines.join('\\n');
 }
 window.addEventListener('DOMContentLoaded',()=>{const l=document.getElementById('ldr');if(l)l.remove()});
