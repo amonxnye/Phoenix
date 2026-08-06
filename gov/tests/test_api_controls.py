@@ -188,6 +188,32 @@ class TestHomePayload(ApiBase):
         self.assertEqual(a["you"]["guest"], b["you"]["guest"])
 
 
+class TestUnlockedDeployment(ApiBase):
+    """With no CONSOLE_TOKEN configured the settlement is open to everyone. That is a
+    legitimate way to run it — but the page must say so, not tell each visitor they
+    personally hold a token nobody set."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("CONSOLE_TOKEN", None)
+
+    def tearDown(self):
+        os.environ["CONSOLE_TOKEN"] = TOKEN
+        super().tearDown()
+
+    def test_an_anonymous_visitor_can_act_but_the_page_is_told_it_is_unlocked(self):
+        _, d = self.get("/api/home")
+        self.assertTrue(d["you"]["can_act"])
+        self.assertFalse(d["token_required"])
+
+    def test_actions_still_record_which_visitor_took_them(self):
+        # everyone is "operator" only in the sense that nothing stops them; the record
+        # must still be able to answer who
+        status, _ = self.post("/api/vision", {"vision": "consolidate"})
+        self.assertEqual(status, 200)
+        self.assertTrue(any("by " in e for e in A.event_log(20)))
+
+
 class TestGuestsAreRefused(ApiBase):
 
     def test_a_guest_cannot_answer_the_gate(self):

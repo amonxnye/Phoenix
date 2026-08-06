@@ -2645,17 +2645,22 @@ async function post(url,body){
   return d;
 }
 function desk(d){
-  const you=d.you||{}, can=you.can_act;
-  // one world, many guests: say who is here and what this visitor may actually do
-  tokstate.innerHTML=(can
-    ?'<span class=ok>you hold the operator token</span> — these powers are live'
-    :'<span class=bad>you are a guest</span> — these powers need the operator token')
+  const you=d.you||{}, can=you.can_act, locked=d.token_required;
+  // Three states, not two. "I may act" and "nobody is stopping anyone" are different
+  // facts, and a deployment with no token configured must not tell six strangers that
+  // each of them holds it.
+  tokstate.innerHTML=(!locked
+    ?'<span class=bad>this settlement is UNLOCKED</span> — no operator token is '+
+     'configured, so <b>every visitor</b> can act. Set CONSOLE_TOKEN to close it.'
+    :can?'<span class=ok>you hold the operator token</span> — these powers are live'
+        :'<span class=bad>you are a guest</span> — these powers need the operator token')
     +` · <b>${num(you.watching||1)}</b> watching now · you are <b>${esc(you.guest||'?')}</b>`;
   document.querySelectorAll('#gatecard button,.desk-ctl button')
     .forEach(b=>{b.disabled=!can;b.title=can?'':'the operator token is required'});
-  sharednote.textContent=can
-    ?'This is one shared settlement. What you decide here changes it for everyone watching, and the log records it against you.'
-    :'This is one shared settlement — anyone here can watch it, and the operator decides for it.';
+  sharednote.textContent=!locked
+    ?'This is one shared settlement and it is open to everyone here. Whatever you decide changes it for all of them, and the log records it against your visitor id.'
+    :can?'This is one shared settlement. What you decide here changes it for everyone watching, and the log records it against you.'
+        :'This is one shared settlement — anyone here can watch it, and the operator decides for it.';
   // the gate
   const g=d.gate;
   gatecard.style.display=g?'block':'none';
