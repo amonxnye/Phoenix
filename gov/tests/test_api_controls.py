@@ -188,6 +188,26 @@ class TestHomePayload(ApiBase):
         self.assertEqual(a["you"]["guest"], b["you"]["guest"])
 
 
+class TestFleetBudgetVisibility(ApiBase):
+    """A suspended lifecycle is unbounded, so the overrun has to be a number the page
+    can show. Found in production: two agents at 10.6x their budget while the console
+    reported 100% utilisation and no stall."""
+
+    def test_the_payload_reports_how_far_past_budget_the_fleet_is(self):
+        _, d = self.get("/api/home")
+        self.assertIn("fleet", d)
+        for key in ("over_budget", "worst_pct", "size"):
+            self.assertIn(key, d["fleet"])
+
+    def test_budget_use_is_reported_uncapped(self):
+        _, snap = self.get("/api/state")
+        for a in snap["agents"]:
+            self.assertIn("budget_used_pct", a)
+            self.assertIn("over_budget", a)
+            # the clamped number is for the bar; the true one must not be clamped
+            self.assertGreaterEqual(a["budget_used_pct"], a["utilisation_pct"])
+
+
 class TestUnlockedDeployment(ApiBase):
     """With no CONSOLE_TOKEN configured the settlement is open to everyone. That is a
     legitimate way to run it — but the page must say so, not tell each visitor they

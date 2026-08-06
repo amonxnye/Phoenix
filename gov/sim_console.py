@@ -928,10 +928,17 @@ def _one_turn():
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
             if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
-                if _breaker(f"floor|{G.TOKEN_CAP}",
-                            "the fleet is at its floor and replacements are blocked "
-                            "by the cap — reaping suspended (Article II.5); raise the "
-                            "cap to resume the lifecycle."):
+                # The floor rule is right — an empty world governs nothing — but the
+                # cost of holding it must not go quiet. The breaker key carries the
+                # overrun MULTIPLE, so every further doubling escalates again instead
+                # of muting behind the first warning.
+                mult = int(u.tokens / max(1, r["budget"]))
+                if _breaker(f"floor|{G.TOKEN_CAP}|{mult}",
+                            f"the fleet is at its floor and replacements are blocked "
+                            f"by the cap — reaping suspended (Article II.5). {uid} has "
+                            f"now spent {u.tokens:,} against a {r['budget']:,} budget "
+                            f"({mult}x). Raise the cap to resume the lifecycle, or "
+                            f"adopt a new Vision so the floor crew has work worth doing."):
                     continue
                 continue                          # II.5: may run understaffed, never empty
             sim.resume(_GRAPH, uid, "dismiss")
@@ -1425,6 +1432,11 @@ def _snapshot_build(now: float) -> dict:
                 "age_turns": age_turns,
                 "burn_per_turn": burn,
                 "utilisation_pct": round(100 * min(1, ratio)),
+                # Article II.5 can suspend reaping at the fleet floor, and a suspended
+                # lifecycle is unbounded: the crew keeps burning. A display that clamps
+                # at 100% makes a 10x overrun look exactly like a full budget.
+                "budget_used_pct": round(100 * ratio),
+                "over_budget": ratio > 1,
                 "efficiency": round(eff, 2),
                 "eta_turns": (max(0, budget - u.tokens) // burn) if burn else None,
             })
@@ -1738,6 +1750,12 @@ class Handler(BaseHTTPRequestHandler):
                     "storage": sysd["storage"], "uptime_s": sysd["uptime_s"],
                 },
                 "world": {r: s["world"][r] for r in s["resources"]},
+                "fleet": {
+                    "over_budget": sum(1 for a in s["agents"] if a.get("over_budget")),
+                    "worst_pct": max([a.get("budget_used_pct", 0) for a in s["agents"]]
+                                     or [0]),
+                    "size": sysd["fleet"],
+                },
                 "counts": {
                     "events": s["event_count"], "decisions": anchor.reasons_count(),
                     "lessons": s["skills_count"], "agents_ever": agents_ever,
@@ -2580,6 +2598,14 @@ async function load(){
   if(L.stall) al.push(`<div class="alert stall"><div class=txt>
     <div class=lbl>stalled</div>${esc(L.stall)}</div>
     <a class="btn ghost" href="/console">Investigate &rarr;</a></div>`);
+  const F=d.fleet||{};
+  if(F.over_budget) al.push(`<div class="alert stall"><div class=txt>
+    <div class=lbl>the cap is not binding</div>
+    ${F.over_budget} of ${F.size} agents are working past their budget — the worst is at
+    <b>${F.worst_pct}%</b> of it. At the fleet floor the lifecycle is suspended so the
+    world is never left empty (Article II.5), and the crew keeps spending. Adopt a new
+    Vision to give them work worth doing, or raise the cap so replacements can be born.</div>
+    <a class="btn ghost" href="/agents">Per-agent detail &rarr;</a></div>`);
   alerts.innerHTML=al.join('');
   desk(d);
   stats.innerHTML=`
