@@ -20,6 +20,7 @@ the board may withhold a power, never the fact that it did.
 
 from collections import deque
 
+import models
 import vision as V
 
 GOVERNORS = ("Prudence", "Growth", "Ledger")
@@ -66,9 +67,13 @@ def vote(proposal: str, ctx: dict) -> dict:
          within_budget(bool)      —   "        "       : side-effect budget intact
          progress_delta(int|None) — Growth's evidence: Vision points moved recently
          understaffed(bool)       —   "       "      : fleet below target
+         offline(list[str])       — seats whose assigned model is failing (Article X.3)
 
     Members may vote None (unknown) when their evidence is missing; quorum counts
     only yes votes, so unknown never approves anything.
+
+    A seat whose model is OFFLINE abstains and says so. It is never filled by another
+    model: a silent substitution would change who governs, in secret (Article X.3).
     """
     cap = ctx.get("cap") or 0
     spent = ctx.get("spent", 0)
@@ -107,6 +112,13 @@ def vote(proposal: str, ctx: dict) -> dict:
 
     ballots = {"Prudence": prudence, "Growth": growth, "Ledger": ledger}
     reasons = {"Prudence": p_why, "Growth": g_why, "Ledger": l_why}
+    off = ctx.get("offline")
+    if off is None:                    # ask the switchboard directly — the rule holds
+        off = models.offline_seats()   # at every call site, present and future
+    offline = [g for g in off if g in GOVERNORS]
+    for g in offline:                  # an outage is an abstention, never a substitution
+        ballots[g] = None
+        reasons[g] = "model unavailable — abstains; the seat is not filled by another"
     for g in GOVERNORS:
         _history[g].append(ballots[g])
     yes = sum(1 for v in ballots.values() if v is True)
@@ -119,6 +131,7 @@ def vote(proposal: str, ctx: dict) -> dict:
         "approved": yes >= QUORUM,
         "tally": f"{yes}/{len(GOVERNORS)}",
         "degenerate": degenerate_members(),
+        "abstained": offline,
     }
 
 

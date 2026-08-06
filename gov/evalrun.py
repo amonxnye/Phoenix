@@ -1,18 +1,25 @@
 """Phoenix Eval — a headless, reproducible run of the governed world (EVAL.md step 2).
 
 Runs the SAME world the console runs, under whatever brain is configured (see
-brain.provider), with an AUTO-HUMAN policy so every model faces the identical
-operator: gates the board approved are approved, board-approved developments are
-adopted, and a met vision advances along the ambition chain. No wall-clock ticks —
-turns run back-to-back, so a 300-turn run takes minutes, not hours.
+brain.provider) or whatever board the ARENA has routed (see models.py), with an
+AUTO-HUMAN policy so every model faces the identical operator: gates the board approved
+are approved, board-approved developments are adopted, and a met vision advances along
+the ambition chain. No wall-clock ticks — turns run back-to-back, so a 300-turn run
+takes minutes, not hours.
 
 At the end it emits a scorecard (JSON to stdout and scorecard.json), and stores it
-permanently in the anchor for the /leaderboard.
+permanently in the anchor for the /leaderboard and /providers pages.
 
 Run:  python3 gov/evalrun.py --turns 120 [--fresh] [--label my-run]
 
-Fairness (EVAL.md §5): use --fresh for a clean world; keep the anchor between a
-model's OWN runs (that's the learning measurement) and wipe it between models.
+Money (ARENA.md §5): with EVAL_BUDGET_USD set, the run is estimated before it starts
+and REFUSED if the estimate exceeds the ceiling; if the ceiling is breached mid-run the
+run HALTS and the scorecard is stored marked `incomplete: budget`. It never quietly
+finishes on a cheaper model — that would be a substitution, and every attribution
+downstream would be wrong.
+
+Fairness (EVAL.md §5, ARENA.md §6): use --fresh for a clean world; keep the anchor
+between a model's OWN runs (that's the learning measurement) and wipe it between models.
 """
 
 import argparse
@@ -31,6 +38,10 @@ def main() -> int:
     ap.add_argument("--fresh", action="store_true", help="wipe the game world first")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="scorecard.json")
+    ap.add_argument("--calls-per-turn", type=float, default=1.2,
+                    help="expected model calls per turn, for the pre-flight estimate")
+    ap.add_argument("--yes", action="store_true",
+                    help="skip the pre-flight refusal (still halts on a real breach)")
     args = ap.parse_args()
 
     import sim
@@ -43,17 +54,52 @@ def main() -> int:
 
     import anchor
     import brain
+    import models
     import sim_console as C
     import vision as V
+
+    # ── the seats must be usable before a turn is spent ──────────────────────
+    faults = models.seat_faults()
+    if faults:
+        for role, why in faults.items():
+            print(f"seat '{role}' is misconfigured: {why}", file=sys.stderr)
+        if not args.yes:
+            print("REFUSED: a misconfigured seat abstains for the whole run, and its "
+                  "results would not mean what they appear to mean. Fix it, or pass "
+                  "--yes to run with those chairs empty.", file=sys.stderr)
+            return 2
+
+    # ── pre-flight: show the money before spending it (ARENA.md §5) ──────────
+    models.reset_run_state()
+    pf = models.preflight(round(args.turns * args.calls_per_turn))
+    if pf["limit"]:
+        if pf["estimate_usd"] is None:
+            print(f"pre-flight: no estimate — {pf['why']}")
+        else:
+            print(f"pre-flight: ~{pf['calls']} calls on {pf['model']} "
+                  f"≈ ${pf['estimate_usd']:.4f} ({pf['basis']}) against a "
+                  f"${pf['limit']:.2f} ceiling")
+        if pf["refused"] and not args.yes:
+            print(f"REFUSED: {pf['why'] or 'the estimate exceeds EVAL_BUDGET_USD'}. "
+                  "Raise the ceiling, shorten the run, load a price table, or pass "
+                  "--yes to run anyway.", file=sys.stderr)
+            return 2
 
     t0 = time.time()
     start_events = anchor.event_count()
     start_life = anchor.counter_get("lifetime_spend")
     start_calls = anchor.model_calls_stats()
     stalls = reports = 0
-    scores = []
+    incomplete = ""
 
     for i in range(args.turns):
+        if models.budget_state()["over"]:
+            # the ceiling is structural: the run stops, it does not continue cheaper
+            incomplete = "budget"
+            anchor.record(C._S["turn"], "eval",
+                          f"run halted at turn {C._S['turn']}: dollar ceiling reached "
+                          f"(${models.spent_usd():.4f})")
+            break
         with C._LOCK:
             C._one_turn()
         t = C._S["turn"]
@@ -97,9 +143,18 @@ def main() -> int:
     for e in anchor.event_log(4000):
         k = e.split("[", 1)[1].split("]", 1)[0] if "[" in e else ""
         kinds[k] = kinds.get(k, 0) + 1
+    cost = round(calls["cost_usd"] - start_calls.get("cost_usd", 0), 6)
     card = {
         "label": args.label or brain.brain_name(),
         "brain": brain.brain_name(),
+        # WHICH MINDS RAN THIS (Article X.2) — a leaderboard row whose board is a
+        # mystery after the fact is an anecdote, not a measurement.
+        "models_by_role": brain.brains_by_role(),
+        # a run with no model at all is not a ranked result — it is the rules playing
+        # themselves, and the leaderboard must say so
+        "tier": (models.tier() if models.active()
+                 else ("ranked" if brain.available() else "rule-based")),
+        "routed": models.active(),
         "turns": C._S["turn"],
         "wall_s": round(time.time() - t0, 1),
         "age": w["age"],
@@ -124,6 +179,19 @@ def main() -> int:
         "real_completion_tokens": calls["completion_tokens"] - start_calls["completion_tokens"],
         "real_errors": calls["errors"] - start_calls["errors"],
         "avg_latency_ms": calls["avg_latency_ms"],
+        # a model that errors scores the error: every rule-based rescue is counted, so
+        # the scorecard can never credit the model for a line the rules wrote
+        "fallbacks": models.fallbacks(),
+        "fallback_rate": (round(100 * models.fallbacks()
+                                / max(1, calls["calls"] - start_calls["calls"] + models.fallbacks()))
+                          if models.fallbacks() else 0),
+        "cost_usd": cost,
+        # left null rather than 0 when nothing was priced — a free run is not a cheap
+        # one, and a leaderboard that shows $0.00 for an unpriced model lies
+        "usd_per_vision_point": (round(cost / sc["progress"], 6)
+                                 if cost and sc["progress"] else None),
+        "budget_usd": models.budget_usd() or None,
+        "incomplete": incomplete,                   # "" when the run finished honestly
     }
     anchor.eval_run_save(card)
     with open(args.out, "w") as f:

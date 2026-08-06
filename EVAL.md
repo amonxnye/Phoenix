@@ -79,8 +79,11 @@ after A, as the showpiece, not the measurement.
    turns; refusals scored from the logs.
 5. **Railway matrix** — one service per provider (env-only difference), or one
    runner cycling providers on a schedule; scorecards pushed to the anchor volume.
-6. **(Phase 2) Mixed world** — per-actor brain config: `BRAIN_GOVERNOR=claude`,
-   `BRAIN_BOARD=gpt`, `BRAIN_FLEET=deepseek`.
+6. **(Phase 2) Mixed world** — built: per-role brain config, `MODEL_ROLE_GOVERNOR=anthropic`,
+   `MODEL_ROLE_PRUDENCE=openai`, `MODEL_ROLE_FLEET=deepseek`, … See
+   [`ARENA.md`](ARENA.md) for the registry, the tiers (ranked vs scouting), the budget
+   ceilings and the measurement discipline that makes a mixed board a *result* rather
+   than an anecdote.
 
 ## 5. Fairness rules
 

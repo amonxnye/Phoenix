@@ -50,7 +50,60 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+_BOOT: dict = {}
+
+
+def _on_own_device(path: str) -> bool | None:
+    """Is this path on a filesystem of its own — i.e. an actual mount?
+
+    A mounted volume has a different device id from the container's root. This is the
+    difference between "GOV_DATA_DIR is set" (a claim about configuration) and "the
+    record will survive a redeploy" (the thing anyone actually cares about). Returns
+    None where the answer cannot be determined rather than guessing either way."""
+    try:
+        return os.stat(path).st_dev != os.stat("/").st_dev
+    except OSError:
+        return None
+
+
+def boot_state() -> dict:
+    """What was actually found on disk when this process started.
+
+    'Persistent' is a claim about a path; this is the evidence. A volume that has been
+    unmounted, or a GOV_DATA_DIR pointed somewhere new, leaves the app reading an empty
+    directory while still reporting a persistent configuration — the settlement's whole
+    memory silently absent, and every counter starting from one. Recording what was
+    there at boot is the difference between 'configured to persist' and 'persisted'."""
+    return dict(_BOOT)
+
+
 def init() -> None:
+    if not _BOOT:
+        existed = os.path.exists(DB)
+        _BOOT.update({"db_path": DB, "db_existed": existed, "data_dir": _DATA_DIR,
+                      "gov_data_dir_set": bool(os.environ.get("GOV_DATA_DIR", "").strip()),
+                      "on_own_device": _on_own_device(_DATA_DIR),
+                      "events_at_boot": 0, "careers_at_boot": 0, "generation_at_boot": 0})
+        if existed:
+            try:
+                c0 = _conn()
+                try:
+                    for key, sql in (("events_at_boot", "SELECT COUNT(*) FROM knowledge"),
+                                     ("careers_at_boot", "SELECT COUNT(*) FROM careers")):
+                        try:
+                            _BOOT[key] = c0.execute(sql).fetchone()[0]
+                        except sqlite3.OperationalError:
+                            pass                   # table not created yet — count zero
+                    try:
+                        row = c0.execute("SELECT value FROM config WHERE key='generation'"
+                                         ).fetchone()
+                        _BOOT["generation_at_boot"] = int(row[0]) if row else 0
+                    except (sqlite3.OperationalError, ValueError):
+                        pass
+                finally:
+                    c0.close()
+            except sqlite3.Error:
+                pass
     c = _conn()
     try:
         c.execute("CREATE TABLE IF NOT EXISTS knowledge("
@@ -111,6 +164,12 @@ def init() -> None:
             c.execute("ALTER TABLE skills ADD COLUMN stale INT DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # Article X.2 — every decision records the model that made it
+        try:
+            c.execute("ALTER TABLE decisions ADD COLUMN model TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        _model_calls_table(c)                      # role + cost columns on old DBs too
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -283,43 +342,162 @@ def metrics_summary() -> dict:
         c.close()
 
 
+def _model_calls_table(c: sqlite3.Connection) -> None:
+    c.execute("CREATE TABLE IF NOT EXISTS model_calls("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, provider TEXT, "
+              "model TEXT, purpose TEXT, latency_ms INT, prompt_tokens INT, "
+              "completion_tokens INT, ok INT, error TEXT)")
+    # the arena: which SEAT made the call, and what it cost in real money. Cost is
+    # stored at log time because the price table is human-maintained and drifts.
+    for col, decl in (("role", "TEXT DEFAULT ''"), ("cost_usd", "REAL DEFAULT 0")):
+        try:
+            c.execute(f"ALTER TABLE model_calls ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass                                   # column already there
+
+
 def model_call_log(provider: str, model: str, purpose: str, latency_ms: int,
                    prompt_tokens: int, completion_tokens: int, ok: bool,
-                   error: str = "") -> None:
-    """Every brain call's real cost — provider tokens, latency, failures — logged
-    permanently. The eval reads this: governance quality per real dollar."""
+                   error: str = "", role: str = "", cost_usd: float = 0.0) -> None:
+    """Every brain call's real cost — provider tokens, latency, dollars, failures —
+    logged permanently, with the ROLE that made it and the MODEL that served it
+    (Article X.2). The eval reads this: governance quality per real dollar."""
     c = _conn()
     try:
-        c.execute("CREATE TABLE IF NOT EXISTS model_calls("
-                  "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, provider TEXT, "
-                  "model TEXT, purpose TEXT, latency_ms INT, prompt_tokens INT, "
-                  "completion_tokens INT, ok INT, error TEXT)")
+        _model_calls_table(c)
         c.execute("INSERT INTO model_calls(ts, provider, model, purpose, latency_ms, "
-                  "prompt_tokens, completion_tokens, ok, error) VALUES(?,?,?,?,?,?,?,?,?)",
+                  "prompt_tokens, completion_tokens, ok, error, role, cost_usd) "
+                  "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                   (time.time(), provider, model, purpose, latency_ms,
-                   prompt_tokens, completion_tokens, 1 if ok else 0, error[:200]))
+                   prompt_tokens, completion_tokens, 1 if ok else 0, error[:200],
+                   role, float(cost_usd or 0)))
         c.commit()
     finally:
         c.close()
 
 
 def model_calls_stats() -> dict:
-    """Aggregate real-model telemetry: calls, tokens, latency, error rate."""
+    """Aggregate real-model telemetry: calls, tokens, latency, dollars, error rate."""
     c = _conn()
     try:
         try:
             row = c.execute(
                 "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), "
                 "COALESCE(SUM(completion_tokens),0), COALESCE(AVG(latency_ms),0), "
-                "COALESCE(SUM(1-ok),0) FROM model_calls").fetchone()
+                "COALESCE(SUM(1-ok),0), COALESCE(SUM(cost_usd),0) FROM model_calls").fetchone()
         except sqlite3.OperationalError:
             return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                    "avg_latency_ms": 0, "errors": 0}
-        n, pt, ct, lat, err = row
+                    "avg_latency_ms": 0, "errors": 0, "cost_usd": 0.0}
+        n, pt, ct, lat, err, cost = row
         return {"calls": n, "prompt_tokens": pt, "completion_tokens": ct,
-                "avg_latency_ms": round(lat), "errors": err}
+                "avg_latency_ms": round(lat), "errors": err,
+                "cost_usd": round(cost or 0, 4)}
     finally:
         c.close()
+
+
+def _pct(sorted_vals: list, p: float) -> int:
+    if not sorted_vals:
+        return 0
+    i = min(len(sorted_vals) - 1, max(0, int(round(p * (len(sorted_vals) - 1)))))
+    return int(sorted_vals[i])
+
+
+def model_calls_by_model(since: float = 0.0) -> list[dict]:
+    """Per-model reliability and cost — the spine of the /providers page. p50/p95 are
+    computed from the real latencies, not averaged, because a governance run dies on
+    the tail, not the mean."""
+    c = _conn()
+    try:
+        try:
+            rows = c.execute(
+                "SELECT model, provider, role, latency_ms, prompt_tokens, "
+                "completion_tokens, ok, cost_usd FROM model_calls WHERE ts >= ?",
+                (since,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    finally:
+        c.close()
+    agg: dict = {}
+    for model, prov, role, lat, pt, ct, ok, cost in rows:
+        a = agg.setdefault(model or "?", {
+            "model": model or "?", "provider": prov or "", "roles": set(),
+            "calls": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0,
+            "cost_usd": 0.0, "_lat": []})
+        a["calls"] += 1
+        a["errors"] += 0 if ok else 1
+        a["prompt_tokens"] += pt or 0
+        a["completion_tokens"] += ct or 0
+        a["cost_usd"] += cost or 0
+        if role:
+            a["roles"].add(role)
+        if ok:
+            a["_lat"].append(lat or 0)
+    out = []
+    for a in agg.values():
+        lat = sorted(a.pop("_lat"))
+        a["roles"] = sorted(a["roles"])
+        a["p50_ms"], a["p95_ms"] = _pct(lat, 0.50), _pct(lat, 0.95)
+        a["error_rate"] = round(100 * a["errors"] / a["calls"]) if a["calls"] else 0
+        a["cost_usd"] = round(a["cost_usd"], 4)
+        out.append(a)
+    return sorted(out, key=lambda r: -r["calls"])
+
+
+# Outcome classification for the decision hit rate (ARENA.md §4). Free-text outcomes
+# are read by explicit markers only — a decision we cannot classify counts as neither
+# a hit nor a miss, it counts as unclassified. Guessing would inflate every model.
+_MISS_MARKERS = ("failed", "reject", "blocked", "denied", "abort", "could not",
+                 "no effect", "spoil", "waste", "timeout", "error")
+_HIT_MARKERS = ("+", "adopted", "approved", "promoted", "passed", "→ 100%",
+                "complete", "advanced", "green")
+
+
+def outcome_verdict(outcome: str) -> str:
+    """'hit' | 'miss' | 'open' — an outcome text's measured verdict."""
+    o = (outcome or "").strip().lower()
+    if not o:
+        return "open"
+    if any(m in o for m in _MISS_MARKERS):
+        return "miss"
+    if any(h in o for h in _HIT_MARKERS):
+        return "hit"
+    return "open"
+
+
+def decisions_by_model(since: float = 0.0) -> list[dict]:
+    """Per-model reasoning quality: decisions taken, share closed with a measured
+    outcome, and the decision HIT RATE — the share of closed decisions whose outcome
+    was positive. This is the column worth headlining (ARENA.md §4)."""
+    c = _conn()
+    try:
+        try:
+            rows = c.execute("SELECT model, outcome, derived_from FROM decisions "
+                             "WHERE ts >= ?", (since,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    finally:
+        c.close()
+    agg: dict = {}
+    for model, outcome, df in rows:
+        a = agg.setdefault(model or "unattributed", {
+            "model": model or "unattributed", "decisions": 0, "closed": 0,
+            "hits": 0, "misses": 0, "grounded": 0})
+        a["decisions"] += 1
+        v = outcome_verdict(outcome)
+        if v != "open":
+            a["closed"] += 1
+            a["hits" if v == "hit" else "misses"] += 1
+        try:
+            if json.loads(df or "[]"):
+                a["grounded"] += 1          # cited a real input, not just a claim
+        except json.JSONDecodeError:
+            pass
+    for a in agg.values():
+        a["hit_rate"] = round(100 * a["hits"] / a["closed"]) if a["closed"] else None
+        a["closed_pct"] = round(100 * a["closed"] / a["decisions"]) if a["decisions"] else 0
+        a["grounded_pct"] = round(100 * a["grounded"] / a["decisions"]) if a["decisions"] else 0
+    return sorted(agg.values(), key=lambda r: -r["decisions"])
 
 
 def eval_run_save(scorecard: dict) -> None:
@@ -459,19 +637,32 @@ def careers_count() -> tuple[int, int]:
         c.close()
 
 
+def _decision_model(actor: str) -> str:
+    """Which mind took this decision. Article X.2: Article VII is incomplete if we know
+    what was decided and why, but not by which model."""
+    try:
+        import models
+        return models.model_for_actor(actor)[:60]
+    except Exception:
+        return ""
+
+
 def reason_add(turn: int, actor: str, decision: str, why: str,
                derived_from: list | None = None, authorized_by: str = "",
-               effect_event: int | None = None) -> int:
+               effect_event: int | None = None, model: str = "") -> int:
     """Open a first-class decision: what, why, derived from which inputs (refs like
     'skill:12', 'event:345', 'yield:food'), authorized by whom ('human', 'board:2/3',
-    'policy'). Returns the decision id so the caller can close it with its effect."""
+    'policy'), and BY WHICH MODEL. Returns the decision id so the caller can close it
+    with its effect."""
     c = _conn()
     try:
         cur = c.execute(
             "INSERT INTO decisions(turn, actor, decision, why, derived_from, "
-            "authorized_by, effect_event, outcome, ts) VALUES(?,?,?,?,?,?,?, '', ?)",
+            "authorized_by, effect_event, outcome, ts, model) "
+            "VALUES(?,?,?,?,?,?,?, '', ?,?)",
             (turn, actor, decision[:240], why[:500],
-             json.dumps(derived_from or []), authorized_by, effect_event, time.time()))
+             json.dumps(derived_from or []), authorized_by, effect_event, time.time(),
+             model or _decision_model(actor)))
         c.commit()
         return cur.lastrowid
     finally:
@@ -499,17 +690,18 @@ def reasons_top(limit: int = 100) -> list[dict]:
     try:
         rows = c.execute(
             "SELECT id, turn, actor, decision, why, derived_from, authorized_by, "
-            "effect_event, outcome, ts FROM decisions ORDER BY id DESC LIMIT ?",
-            (limit,)).fetchall()
+            "effect_event, outcome, ts, COALESCE(model,'') FROM decisions "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         out = []
-        for i, t, a, d, w, df, ab, ee, oc, ts in rows:
+        for i, t, a, d, w, df, ab, ee, oc, ts, md in rows:
             try:
                 df = json.loads(df or "[]")
             except json.JSONDecodeError:
                 df = []
             out.append({"id": i, "turn": t, "actor": a, "decision": d, "why": w,
                         "derived_from": df, "authorized_by": ab or "",
-                        "effect_event": ee, "outcome": oc or "", "ts": ts})
+                        "effect_event": ee, "outcome": oc or "", "ts": ts,
+                        "model": md or ""})
         return out
     finally:
         c.close()
@@ -550,11 +742,11 @@ def lineage(decision_id: int) -> dict:
     c = _conn()
     try:
         row = c.execute("SELECT turn, actor, decision, why, derived_from, authorized_by, "
-                        "effect_event, outcome FROM decisions WHERE id=?",
-                        (decision_id,)).fetchone()
+                        "effect_event, outcome, COALESCE(model,'') FROM decisions "
+                        "WHERE id=?", (decision_id,)).fetchone()
         if not row:
             return {}
-        t, actor, dec, why, df, ab, ee, oc = row
+        t, actor, dec, why, df, ab, ee, oc, md = row
         try:
             refs = json.loads(df or "[]")
         except json.JSONDecodeError:
@@ -585,30 +777,56 @@ def lineage(decision_id: int) -> dict:
                 frontier = nxt
         return {"decision": {"id": decision_id, "turn": t, "actor": actor,
                              "decision": dec, "why": why, "authorized_by": ab or "policy",
-                             "outcome": oc or ""},
+                             "outcome": oc or "", "model": md or ""},
                 "derived_from": back, "effect_chain": chain, "consequences": forward}
     finally:
         c.close()
 
 
+def lesson_key(lesson: str) -> str:
+    """The gist of a lesson, for de-duplication.
+
+    Retrospectives restate the same advice with the measurement of the moment —
+    "Prioritise food early (avg 33.1/round)" and "…(avg 33.3/round)" are one lesson,
+    not two. Exact-match de-duplication let those pile up, and since lessons steer
+    future decisions, a memory full of restatements is a memory that says one thing
+    loudly. Numbers are the part that varies, so the key drops them."""
+    import re
+    k = (lesson or "").lower()
+    k = re.sub(r"[0-9][0-9,._]*%?", "#", k)        # every measurement → one placeholder
+    k = re.sub(r"[^a-z# ]+", " ", k)
+    return " ".join(k.split())
+
+
 def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> int | None:
     """Store a lesson; returns its id (citable as 'skill:<id>' in decision lineage),
-    or None if empty/duplicate."""
+    or None if empty or a restatement of one already live."""
     lesson = (lesson or "").strip()[:280]
     if not lesson:
         return None
     c = _conn()
     try:
         # de-dup: don't hoard a LIVE duplicate — but re-learning a STALE lesson is
-        # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row
-        row = c.execute("SELECT id, stale FROM skills WHERE lesson=?", (lesson,)).fetchone()
+        # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row.
+        # Matching is on the GIST, so the same advice with fresher numbers refreshes
+        # the lesson it restates instead of crowding in beside it.
+        key = lesson_key(lesson)
+        row = None
+        for sid, existing, stale in c.execute("SELECT id, lesson, stale FROM skills"):
+            if lesson_key(existing) == key:
+                row = (sid, stale)
+                break
         if row:
             sid, stale = row
             if stale:
-                c.execute("UPDATE skills SET stale=0, turn=?, ts=? WHERE id=?",
-                          (turn, time.time(), sid))
+                c.execute("UPDATE skills SET stale=0, turn=?, lesson=?, ts=? WHERE id=?",
+                          (turn, lesson, time.time(), sid))
                 c.commit()
                 return sid
+            # live restatement: keep the newer wording (its numbers are current),
+            # keep the single row, and do not pretend a new lesson was learned
+            c.execute("UPDATE skills SET lesson=?, turn=? WHERE id=?", (lesson, turn, sid))
+            c.commit()
             return None
         cur = c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
                         (turn, lesson, source, trigger, time.time()))

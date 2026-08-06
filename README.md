@@ -114,6 +114,7 @@ the specification, and every article names its enforcing module.
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
 | **IX** | Inaction is an action, and it is gated too. Ten dead turns or a frozen score is a stall that names its binding constraint and escalates. | `sim_console.py` liveness |
+| **X** | Who *thinks* is a human choice, and it is on the record. Only the human assigns a model to a role; every call and decision names its model; a dead provider **abstains**, never substitutes; dollars halt a run, they never downgrade it. | `models.py`, `brain.py`, `board.py`, `evalrun.py` |
 
 ### Amending it
 
@@ -151,6 +152,9 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 |---|---|
 | `DEEPSEEK_API_KEY` | simplest path — DeepSeek's OpenAI-compatible API |
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
+| `MODEL_ROLE_GOVERNOR` / `_PRUDENCE` / `_GROWTH` / `_LEDGER` / `_FLEET` / `_WORKER` / `_RETROSPECTIVE` | **the Arena**: a different model per seat (`openai`, `gemini`, `anthropic`, `deepseek`, or a `MODEL_REGISTRY` entry). Unset roles use the default brain |
+| `MODEL_REGISTRY` / `MODEL_PRICES` | register any OpenAI-compatible lab; maintain the $/1M price table |
+| `EVAL_BUDGET_USD` / `EVAL_PROVIDER_CAP_USD` | the dollar ceiling for a run, and optional per-provider sub-caps |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |
@@ -162,12 +166,14 @@ Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console re
 
 | Page | What you govern there |
 |---|---|
-| `/` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
+| `/` | **The landing page** — what Phoenix is, whether the world is alive, anything waiting on a human, the board's current models and cost, best runs, and the three commands that put your own model in the chair |
+| `/console` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
 | `/agents` | System health (stalls, burn, value per 1k compute), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent ever, permanently, with downloadable careers & health telemetry |
 | `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, a button that sends a live agent to fix the code — oracle-scored, auto-reverting |
 | `/chats` | Talk to any agent, the board, or the Chief Governor; watch votes narrated with live evidence (runway, momentum, affordability) |
 | `/skills` | Lessons across generations, the capability ladder, and every decision's reasoning with a **trace-lineage** link (why ⇠ inputs, credit ⇢ outcomes) |
-| `/leaderboard` | The **Phoenix Eval** — same world, different frontier models, scorecards side by side |
+| `/leaderboard` | The **Phoenix Eval** — same world, different frontier models, scorecards side by side, with tier and dollars |
+| `/providers` | The **Arena** — which model sits in which seat (assign here; human-only), live seat health, per-model latency/error/cost, decision hit rate, $ per vision point, and the registry |
 | `/logs` | The permanent log — filter by kind/text/time, export txt·csv·jsonl |
 | `/rules` | The constitution (editable — only the human adopts), era prices, tiers |
 
@@ -214,6 +220,25 @@ python3 gov/evalrun.py --turns 120 --fresh --label my-model
 
 Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVAL.md).
 
+### The Arena — a board of *different* models
+
+The seam is per-role, so the governor, each board seat, the fleet, the worker and the
+retrospective can each run on a different lab. That makes a second question askable,
+one nobody has data on: **does a board of different models govern better than a board
+of one?**
+
+```bash
+export MODEL_ROLE_GOVERNOR=anthropic MODEL_ROLE_PRUDENCE=openai \
+       MODEL_ROLE_GROWTH=gemini MODEL_ROLE_LEDGER=deepseek
+export EVAL_BUDGET_USD=5.00
+python3 gov/evalrun.py --turns 120 --fresh --label mixed-board-1
+```
+
+Every call and every decision records the model that made it, so per-model scoring is a
+query. A seat whose provider fails votes *unknown* and the abstention is logged — it is
+never filled by another model. A run served through a router is *scouting* tier, never
+ranked. Watch it at `/providers`; plan in [`ARENA.md`](ARENA.md).
+
 ---
 
 ## Architecture
@@ -230,6 +255,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `worker.py` | the coding agent — patch, test, get paid for green |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
+| `models.py` | the Arena's switchboard — provider registry, per-role routing, price table, dollar ceilings |
 | `evalrun.py` | headless reproducible runs → scorecards |
 | `sim_console.py` | the operator console and API surface |
 
@@ -251,7 +277,9 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] The sandbox — Article V's execution path, first code task shipped
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
+- [x] **Per-role model routing** — a different lab in every seat, with abstention on outage and dollar ceilings (`models.py`, `/providers`, Article X)
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
+- [ ] **The ablation matrix** — one seat swapped at a time, counterbalanced across seeds; then `/parliament`, the live mixed board with its disagreement matrix ([`ARENA.md`](ARENA.md))
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
       requests, stalls and tacit-consent countdowns to Slack/Discord/Telegram
       (outbound-only, stdlib, no third-party relay in the approval path); later,
@@ -261,6 +289,19 @@ not try to make agents smarter. It tries to make an organization of them account
 - [ ] Merit decoupled from budget — agent quality measurable independently of survival
 - [ ] Disputed-knowledge flag — contradictory facts quarantined at write time
 - [ ] Raids & defence — adversarial pressure for the settlement ([`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md))
+
+## What the Settlement taught us
+
+Fourteen principles for making agents work, each naming the measurement that forced it
+and the code that enforces it — from "score the outcome, never the activity" (talk:action
+went 3.78:1 → 0.32:1 when the score stopped being able to see talk) to "refuse to measure
+what you cannot measure". Open defects are listed as open, with numbers:
+[`AGENT-PRINCIPLES.md`](AGENT-PRINCIPLES.md).
+
+```bash
+python3 -m unittest discover -s gov/tests -t gov/tests   # 185 unit + end-to-end tests
+python3 gov/smoke.py --turns 150 --pollers 8 --fresh     # a real run, measured
+```
 
 ## Contributing
 
@@ -275,7 +316,8 @@ not try to make agents smarter. It tries to make an organization of them account
 ## The documents
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
-[`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
+[`EVAL.md`](EVAL.md) · [`ARENA.md`](ARENA.md) · [`AGENT-PRINCIPLES.md`](AGENT-PRINCIPLES.md) ·
+[`NEXT.md`](NEXT.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
 [`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 

@@ -2,10 +2,13 @@
 
 Every model call in the whole system goes through ``_chat`` here, so the brain can be
 swapped per deployment (the Phoenix Eval runs the same world under different frontier
-models) and every call's real cost — provider tokens, latency, failures — is logged
-to the anchor.
+models) and every call's real cost — provider tokens, latency, dollars, failures — is
+logged to the anchor.
 
 Provider selection (first match wins):
+  models.resolve(role)                            — the ARENA's per-role routing: the
+      governor, each board seat, the fleet, the worker and the retrospective may each
+      run on a different provider (see models.py). Unset roles fall through to:
   BRAIN_BASE_URL + BRAIN_API_KEY [+ BRAIN_MODEL]  — any OpenAI-compatible endpoint
       (DeepSeek, OpenAI, GLM/Zhipu, Gemini's compat endpoint, ...), or the native
       Anthropic API when the base URL contains 'anthropic'.
@@ -19,6 +22,8 @@ capped and gated, never executed blindly.
 import json as _json_mod
 import os
 import time as _time
+
+import models
 
 RESOURCES = ("food", "wood", "gold")
 
@@ -52,40 +57,97 @@ def provider() -> dict | None:
     return None
 
 
-def _deepseek_available() -> bool:
-    return provider() is not None
+def provider_for(role: str = "") -> dict | None:
+    """The provider serving a role — the arena's routing first, then the single default
+    brain. An unrouted deployment resolves every role to the same provider, exactly as
+    before the arena existed.
+
+    A role that is ASSIGNED BUT BROKEN (no key, no model named, unknown provider) does
+    NOT fall through to the default brain: raising here is what keeps Article X.3 true
+    at the seam. Silently answering with a different model is the exact failure the
+    constitution forbids, and it is invisible in the record afterwards."""
+    if not role:
+        return provider()
+    p, reason = models.resolve_detail(role)
+    if p:
+        return p
+    if reason != models.UNSET:
+        raise models.SeatMisconfigured(f"{role}: {models.explain(reason, role)}")
+    return provider()                       # unset — the default brain, as always
 
 
-def available() -> bool:
-    return provider() is not None
+def available(role: str = "") -> bool:
+    """Is a USABLE model configured for this role? A seat assigned a provider it cannot
+    use answers False — it is not available, and it is not the default brain either."""
+    try:
+        return provider_for(role) is not None
+    except models.SeatMisconfigured:
+        return False
 
 
 def brain_name() -> str:
     p = provider()
-    return p["model"] if p else "rule-based"
+    if p:
+        return p["model"]
+    gov = models.resolve("governor") or models.resolve("default")
+    return gov["model"] if gov else "rule-based"
 
 
-def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""):
+def brains_by_role() -> dict:
+    """role → model actually serving it. Recorded on every scorecard so a run's board
+    is never a mystery after the fact (Article X.2)."""
+    return models.assignments()
+
+
+def _log_fault(role: str, detail: str) -> None:
+    """A misconfigured seat is an event, not a silent None — an operator has to be able
+    to find out why a chair went quiet."""
     try:
         import anchor
+        anchor.record(-1, "models", f"seat '{role}' cannot be used: {detail} — "
+                                    f"it abstains; no model was substituted")
+    except Exception:
+        pass
+
+
+def _log_call(p: dict, purpose: str, role: str, t0: float, usage, ok: bool,
+              error: str = ""):
+    try:
         pt = getattr(usage, "prompt_tokens", 0) or (usage or {}).get("input_tokens", 0) \
             if not hasattr(usage, "prompt_tokens") else usage.prompt_tokens
         ct = getattr(usage, "completion_tokens", 0) or (usage or {}).get("output_tokens", 0) \
             if not hasattr(usage, "completion_tokens") else usage.completion_tokens
+        pt, ct = int(pt or 0), int(ct or 0)
+        # dollars are computed HERE, at log time — prices drift, so a cost recomputed
+        # later would silently rewrite what an experiment actually spent.
+        cost = models.cost_usd(p["model"], pt, ct)
+        models.note_call(role, p.get("name", ""), p["model"], cost, ok, error)
+        import anchor
         anchor.model_call_log(p["base_url"], p["model"], purpose,
                               round((_time.time() - t0) * 1000),
-                              int(pt or 0), int(ct or 0), ok, error)
+                              pt, ct, ok, error, role=role, cost_usd=cost)
     except Exception:
         pass                                       # telemetry must never break a call
 
 
-def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> str:
-    """THE model call. Routes to the configured provider, logs cost + latency +
-    errors to the anchor, returns the reply text. Raises on failure — callers keep
-    their own rule-based fallbacks."""
-    p = provider()
+def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
+          role: str = "") -> str:
+    """THE model call. Routes to the provider assigned to this ROLE (falling back to the
+    default brain), logs tokens + latency + dollars + errors to the anchor, returns the
+    reply text. Raises on failure — callers keep their own rule-based fallbacks, and a
+    routed role that fails abstains rather than borrowing another model."""
+    role = role or models.PURPOSE_ROLE.get(purpose, "")
+    try:
+        p = provider_for(role)
+    except models.SeatMisconfigured as e:
+        # Article X.3, at the seam: the chair stays empty and says why. The caller's
+        # rule-based fallback may write the words, but the SEAT is recorded as absent.
+        models.note_call(role, "", "", 0.0, False, str(e))
+        _log_fault(role, str(e))
+        raise
     if not p:
         raise RuntimeError("no model configured")
+    models.check_budget(p["model"])   # a ceiling we cannot measure is refused, not faked
     t0 = _time.time()
     try:
         if p["kind"] == "anthropic":
@@ -97,10 +159,12 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> 
                 model=p["model"], messages=messages,
                 max_tokens=max_tokens, temperature=temperature)
             out, usage = resp.choices[0].message.content.strip(), resp.usage
-        _log_call(p, purpose, t0, usage, True)
+        _log_call(p, purpose, role, t0, usage, True)
         return out
+    except models.BudgetExceeded:
+        raise
     except Exception as e:
-        _log_call(p, purpose, t0, None, False, str(e))
+        _log_call(p, purpose, role, t0, None, False, str(e))
         raise
 
 
@@ -142,11 +206,11 @@ def _anthropic_chat(p: dict, messages: list, max_tokens: int,
     return text, d.get("usage", {})
 
 
-def reply(persona: str, situation: str, message: str) -> str | None:
+def reply(persona: str, situation: str, message: str, role: str = "") -> str | None:
     """A conversational reply in a persona's voice. Returns None (no model) so callers
     fall back to the rule-based wording. The rules still decide any *action*; the model
     only decides the *words* — so nothing unsafe happens even with a live model."""
-    if not _deepseek_available():
+    if not available(role or "governor"):
         return None
     system = (
         f"You are {persona}, part of an Age of Empires-style organisation of AI agents under "
@@ -158,17 +222,21 @@ def reply(persona: str, situation: str, message: str) -> str | None:
     try:
         out = _chat([{"role": "system", "content": system},
                      {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
-                    500, 0.5, "chat-reply")
+                    500, 0.5, "chat-reply", role)
         return out or None
     except Exception:
+        models.note_fallback(role or "governor")   # counted, never silent
         return None                       # any API/SDK problem → fall back to rules
 
 
-def think(persona: str, situation: str, task: str) -> str | None:
+def think(persona: str, situation: str, task: str, role: str = "") -> str | None:
     """General reasoning in a persona's voice — powers board deliberation, governor
     directives, internal agent chatter, amendment drafts, development proposals. Returns
-    None when no model is configured, so every caller falls back to a rule-based line."""
-    if not _deepseek_available():
+    None when no model is configured, so every caller falls back to a rule-based line.
+
+    ``role`` names the seat doing the thinking (governor, Prudence, Growth, Ledger,
+    fleet) so the arena can route each seat to a different provider."""
+    if not available(role or "governor"):
         return None
     system = (
         f"You are {persona} in an Age of Empires-style organisation of AI agents under a "
@@ -179,8 +247,9 @@ def think(persona: str, situation: str, task: str) -> str | None:
     try:
         return _chat([{"role": "system", "content": system},
                       {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
-                     400, 0.6, "think") or None
+                     400, 0.6, "think", role) or None
     except Exception:
+        models.note_fallback(role or "governor")
         return None
 
 
@@ -189,7 +258,7 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
     {name, cost:{food,wood,gold}, kind, value, resource, rank, why} constrained to the
     machine-usable effect vocabulary — or None (no model / bad output), so the caller
     can fall back to a template proposal."""
-    if not _deepseek_available():
+    if not available("governor"):
         return None
     import json as _json
     facts = "; ".join(f"{k['topic']}: {k['fact']}" for k in knowledge[:5]) or "none yet"
@@ -206,7 +275,8 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
         "\"rank\": int 2-4 (higher = grander), \"why\": one short sentence}"
     )
     try:
-        out = _chat([{"role": "user", "content": prompt}], 800, 0.8, "dev-proposal")
+        out = _chat([{"role": "user", "content": prompt}], 800, 0.8, "dev-proposal",
+                    "governor")
         if out.startswith("```"):
             out = out.strip("`").lstrip("json").strip()
         d = _json.loads(out)
@@ -214,6 +284,7 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
             return None
         return d
     except Exception:
+        models.note_fallback("governor")
         return None
 
 
@@ -224,7 +295,7 @@ def retrospective(digest: dict, prior_lessons: list) -> list[str]:
 
     digest: situation, progress, side_effects, waste, cap_hits, reaps, promotions,
             best_resource, yields, spend_ratio, trigger."""
-    if _deepseek_available():
+    if available("retrospective"):
         prior = "; ".join(x["lesson"] for x in prior_lessons[:3]) or "none yet"
         prompt = (
             f"You are the Chief Governor reviewing a completed run of an Age-of-Empires-style "
@@ -234,12 +305,13 @@ def retrospective(digest: dict, prior_lessons: list) -> list[str]:
             "sentence, imperative voice. Reply with ONLY the lessons, one per line, no numbering."
         )
         try:
-            out = _chat([{"role": "user", "content": prompt}], 500, 0.4, "retrospective")
+            out = _chat([{"role": "user", "content": prompt}], 500, 0.4,
+                        "retrospective", "retrospective")
             lessons = [ln.strip(" -•") for ln in out.splitlines() if ln.strip()]
             if lessons:
                 return lessons[:3]
         except Exception:
-            pass
+            models.note_fallback("retrospective")
     # Rule-based fallback: distill from the digest's hard numbers.
     lessons = []
     if digest.get("best_resource"):
@@ -266,24 +338,25 @@ def research(topic: str) -> str | None:
     """External knowledge for the anchor (Article VI). Uses the model's knowledge; returns
     a concise fact, or None if no model is configured. The caller records the source and
     never executes the result."""
-    if not _deepseek_available():
+    if not available("governor"):
         return None
     try:
         return _chat([{"role": "user", "content":
                        f"In one sentence, give a useful factual note about: {topic}"}],
-                     400, 0.3, "research") or None
+                     400, 0.3, "research", "governor") or None
     except Exception:
+        models.note_fallback("governor")
         return None
 
 
 def choose_resource(index: int, world: dict) -> str:
     """Which resource should villager #index gather? Model when available; any API
     problem falls back to the rule — a brain hiccup must never stall the fleet."""
-    if _deepseek_available():
+    if available("fleet"):
         try:
             return _deepseek_choose_resource(index, world)
         except Exception:
-            pass
+            models.note_fallback("fleet")
     # Rule-based: cover all three resources round-robin, then bias toward whatever is
     # scarcest relative to the age-up cost.
     return RESOURCES[index % len(RESOURCES)]
@@ -292,11 +365,11 @@ def choose_resource(index: int, world: dict) -> str:
 def should_advance(world: dict, cost: dict) -> bool:
     """Should the herald propose advancing the Age now? Falls back to the rule on any
     API problem."""
-    if _deepseek_available():
+    if available("fleet"):
         try:
             return _deepseek_should_advance(world, cost)
         except Exception:
-            pass
+            models.note_fallback("fleet")
     return world["food"] >= cost["food"] and world["gold"] >= cost["gold"]
 
 
@@ -306,7 +379,8 @@ def _deepseek_choose_resource(index: int, world: dict) -> str:
     prompt = (f"Age of Empires economy. Current stockpile: {world}. "
               f"You command villager #{index}. Reply with exactly one word — the resource "
               f"to gather: food, wood, or gold. Balance the economy toward advancing the Age.")
-    out = _chat([{"role": "user", "content": prompt}], 200, 0.3, "choose-resource").lower()
+    out = _chat([{"role": "user", "content": prompt}], 200, 0.3,
+                "choose-resource", "fleet").lower()
     for r in RESOURCES:                     # tolerate prose around the answer
         if r in out.split() or out == r:
             return r
@@ -318,5 +392,6 @@ def _deepseek_should_advance(world: dict, cost: dict) -> bool:
         return False  # never propose an advance we can't afford
     prompt = (f"Age of Empires. Stockpile: {world}. Advancing costs {cost}. "
               f"Is now a good time to advance the Age? Reply yes or no.")
-    out = _chat([{"role": "user", "content": prompt}], 200, 0.3, "should-advance").lower()
+    out = _chat([{"role": "user", "content": prompt}], 200, 0.3,
+                "should-advance", "fleet").lower()
     return out.startswith("y") or ("yes" in out and "no" not in out.split())

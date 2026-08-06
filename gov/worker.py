@@ -47,7 +47,8 @@ def work_cycle(agent: str, module: str = "calculator.py") -> dict:
         f"Reply with ONLY the complete corrected content of {module}. No prose, no fences."
     )
     try:
-        fixed = brain._chat([{"role": "user", "content": prompt}], 2000, 0.2, "worker-patch")
+        fixed = brain._chat([{"role": "user", "content": prompt}], 2000, 0.2,
+                            "worker-patch", "worker")
     except Exception as e:
         anchor.record(-1, "error", f"{agent} could not produce a patch: {str(e)[:120]}")
         return {"agent": agent, "did": "error", "reason": str(e)[:200]}
@@ -109,7 +110,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     anchor.init()
     economy.init()
-    if not brain.available():
+    if not brain.available("worker"):
         print("no brain configured (BRAIN_* / DEEPSEEK_API_KEY) — the worker needs a model")
         sys.exit(1)
     import json

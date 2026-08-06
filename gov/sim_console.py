@@ -26,6 +26,7 @@ import brain
 import director as D
 import economy
 import governor as G
+import models as MODELS
 import sim
 import vision as V
 
@@ -267,7 +268,10 @@ def _board_ctx(affordable: bool, views=None) -> dict:
             "spent": G.spent(views), "cap": G.TOKEN_CAP,
             "burn_per_turn": _S.get("fleet_burn"),
             "progress_delta": _progress_delta(),
-            "understaffed": len(_S["villagers"]) < _target_villagers()}
+            "understaffed": len(_S["villagers"]) < _target_villagers(),
+            # Article X.3: a seat whose assigned model is failing abstains — the chair
+            # stays empty and the log says so, rather than being filled in secret.
+            "offline": MODELS.offline_seats()}
 
 
 def _breaker(key: str, escalate: str) -> bool:
@@ -420,6 +424,16 @@ def _op_cap(new_cap) -> bool:
 
 # ── chat: agents, board and the Chief Governor talk to the human ──────────────
 
+def _gate_fingerprint(uid: str, pending) -> str:
+    """Identifies the exact decision a page was showing. If the fingerprint a click
+    carries no longer matches the live gate, the click is answering a question that is
+    no longer being asked."""
+    if not pending:
+        return ""
+    import hashlib
+    return hashlib.sha1(f"{uid}|{pending.get('action', '')}".encode()).hexdigest()[:12]
+
+
 def _participants() -> list[dict]:
     parts = [{"key": "chief", "name": "Chief Governor", "role": "governor"}]
     parts += [{"key": g, "name": g, "role": "board"} for g in board.GOVERNORS]
@@ -529,7 +543,7 @@ def _governor_report():
         facts = f"STALLED — {_S['stall']} · " + facts
     body = brain.think("the Chief Governor", _situation(),
                        f"Report your work to the Board in 1-2 sentences, leading with the "
-                       f"vision delta: {facts}") or facts
+                       f"vision delta: {facts}", role="governor") or facts
     anchor.msg_send("all", "Chief Governor", f"WORK REPORT — {body}"[:480])
 
     # VIII.5: scored on Vision points gained per compute spent, less waste — never on
@@ -660,6 +674,36 @@ def _chat_send(key: str, body: str):
         anchor.msg_send(key, name, _chat_reply(key, body))
 
 
+SEAT_WINDOW = 20                # votes counted when judging whether a seat is working
+SEAT_ABSTAIN_PCT = 40           # above this, the board asks the human for a swap
+
+
+def _seat_watch(bv: dict):
+    """Article X.1: the Board may PROPOSE a model swap; only the human assigns.
+
+    A seat that abstains through half its votes is not governing, and the board is the
+    first to know. It says so — once, with the number — and then stops, because the
+    decision is not its to make."""
+    hist = _S.setdefault("seat_votes", {})
+    for g, v in bv["ballots"].items():
+        h = hist.setdefault(g, [])
+        h.append(v is None)
+        del h[:-SEAT_WINDOW]
+        if len(h) < SEAT_WINDOW or f"seatswap:{g}" in _S["notified"]:
+            continue
+        pct = round(100 * sum(h) / len(h))
+        if pct >= SEAT_ABSTAIN_PCT:
+            _S["notified"].add(f"seatswap:{g}")
+            model = MODELS.model_for_role(g) or "the default brain"
+            anchor.msg_send("chief", "Board",
+                            f"MODEL SWAP PROPOSED (X.1): {g} abstained on {pct}% of its "
+                            f"last {len(h)} votes on {model}. A seat that cannot vote is "
+                            f"not a governor. Only you can reassign it — /providers.")
+            anchor.record(_S["turn"], "models",
+                          f"board proposes swapping {g}'s model ({model}): "
+                          f"{pct}% abstentions over {len(h)} votes")
+
+
 def _narrate_vote(bv: dict, why: str = ""):
     """Board votes are DECISIONS — put the tally and each governor's position AND
     live reasoning into the internal chat. Rationales carry real values now (runway
@@ -670,6 +714,13 @@ def _narrate_vote(bv: dict, why: str = ""):
     verdict = "APPROVED" if bv["approved"] else "BLOCKED"
     line = f"{bv['proposal']} — {detail} → {verdict} {bv['tally']}" + (f"; {why}" if why else "")
     anchor.msg_send("internal", "Board vote", line)
+    # Article X.3: an abstention caused by a dead provider is part of the record —
+    # the vote that did not happen is as auditable as the votes that did.
+    for g in bv.get("abstained", []):
+        anchor.record(_S["turn"], "board",
+                      f"{g} abstained — its model ({MODELS.model_for_role(g)}) is "
+                      f"unavailable; the seat was NOT substituted")
+    _seat_watch(bv)
     # degeneracy check (VIII.1): a member whose vote never varies is decoration
     for g in bv.get("degenerate", []):
         if f"degen:{g}" not in _S["notified"]:
@@ -686,7 +737,8 @@ def _internal_voices():
     sit = _situation()
     if t % 4 == 0:                # tuned down from every 2nd turn — cost + load
         line = brain.think("the Chief Governor", sit,
-                           "Issue one short directive to the fleet for this cycle.") \
+                           "Issue one short directive to the fleet for this cycle.",
+                           role="governor") \
             or f"Directive: press toward '{_vision().name}'; keep spend under cap and gather what's scarce."
         anchor.msg_send("internal", "Chief Governor", line)
     if t % 8 == 0:                # board debates less often; each round is 3 model calls
@@ -698,7 +750,7 @@ def _internal_voices():
             heard = " | ".join(said) or "you open the debate"
             line = brain.think(f"{g}, a member of the Board", sit,
                                f"Board debate so far: {heard}. In one line, respond to your "
-                               f"colleagues — agree or push back ({stance}).") \
+                               f"colleagues — agree or push back ({stance}).", role=g) \
                 or f"{stance.capitalize()}."
             said.append(f"{g}: {line[:140]}")
             anchor.msg_send("internal", g, line)
@@ -721,7 +773,7 @@ def _peer_chatter():
     _S["last_tip"] = (sender, receiver, res)
     line = brain.think(f"{sender}, a {s_role} in the fleet", _situation(),
                        f"In one short line, coordinate with your colleague {receiver}: "
-                       f"the settlement should gather {res} because {why}.") \
+                       f"the settlement should gather {res} because {why}.", role="fleet") \
         or f"{receiver}, shift to {res} — {why}."
     anchor.msg_send("internal", f"{sender} → {receiver}", line)
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
@@ -876,10 +928,17 @@ def _one_turn():
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
             if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
-                if _breaker(f"floor|{G.TOKEN_CAP}",
-                            "the fleet is at its floor and replacements are blocked "
-                            "by the cap — reaping suspended (Article II.5); raise the "
-                            "cap to resume the lifecycle."):
+                # The floor rule is right — an empty world governs nothing — but the
+                # cost of holding it must not go quiet. The breaker key carries the
+                # overrun MULTIPLE, so every further doubling escalates again instead
+                # of muting behind the first warning.
+                mult = int(u.tokens / max(1, r["budget"]))
+                if _breaker(f"floor|{G.TOKEN_CAP}|{mult}",
+                            f"the fleet is at its floor and replacements are blocked "
+                            f"by the cap — reaping suspended (Article II.5). {uid} has "
+                            f"now spent {u.tokens:,} against a {r['budget']:,} budget "
+                            f"({mult}x). Raise the cap to resume the lifecycle, or "
+                            f"adopt a new Vision so the floor crew has work worth doing."):
                     continue
                 continue                          # II.5: may run understaffed, never empty
             sim.resume(_GRAPH, uid, "dismiss")
@@ -1373,6 +1432,11 @@ def _snapshot_build(now: float) -> dict:
                 "age_turns": age_turns,
                 "burn_per_turn": burn,
                 "utilisation_pct": round(100 * min(1, ratio)),
+                # Article II.5 can suspend reaping at the fleet floor, and a suspended
+                # lifecycle is unbounded: the crew keeps burning. A display that clamps
+                # at 100% makes a 10x overrun look exactly like a full budget.
+                "budget_used_pct": round(100 * ratio),
+                "over_budget": ratio > 1,
                 "efficiency": round(eff, 2),
                 "eta_turns": (max(0, budget - u.tokens) // burn) if burn else None,
             })
@@ -1394,6 +1458,17 @@ def _snapshot_build(now: float) -> dict:
                 human_gate += f" · tacit consent in {int(left // 60)}m (IV.7)"
         persistent = bool(os.environ.get("GOV_DATA_DIR", "")) and \
             sim.DB.startswith(os.environ.get("GOV_DATA_DIR", "\x00"))
+        # Configured-to-persist is not the same as persisted. A detached volume, or a
+        # GOV_DATA_DIR pointed at a new path, leaves the app reading an empty directory
+        # while still reporting "persistent" — the settlement's entire memory gone and
+        # every counter quietly restarting at one.
+        boot = anchor.boot_state()
+        memory_lost = persistent and not boot.get("db_existed")
+        # The sharper question is not "did this boot find a record?" but "will the
+        # record this world is writing survive the next redeploy?". A mounted volume
+        # sits on its own filesystem; a directory on the container disk does not, and
+        # a GOV_DATA_DIR pointed at one looks identical in every other respect.
+        not_a_volume = boot.get("gov_data_dir_set") and boot.get("on_own_device") is False
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
         # other. Deferred maintenance and a waiting human gate are LIABILITIES.
         w0 = sim.world()
@@ -1437,7 +1512,22 @@ def _snapshot_build(now: float) -> dict:
             "birth_throttle": (anchor.config_get("birth_throttle", "1")
                                if _S["turn"] < anchor.counter_get("throttle_until") else "1"),
             "errors_recent": errors_recent,
-            "storage": "volume (persistent)" if persistent else "ephemeral (resets on redeploy)",
+            "storage": ("GOV_DATA_DIR IS NOT A MOUNTED VOLUME — it is a directory on "
+                        "the container disk, so everything this world writes is lost "
+                        "on the next redeploy"
+                        if not_a_volume else
+                        "volume (persistent) — carried "
+                        f"{boot.get('events_at_boot', 0):,} event"
+                        f"{'' if boot.get('events_at_boot') == 1 else 's'} "
+                        "from a previous boot"
+                        if persistent and not memory_lost else
+                        "volume mounted, but EMPTY at boot — nothing carried over. "
+                        "Expected on a first deploy; otherwise this is not the volume "
+                        "holding the previous record"
+                        if memory_lost else "ephemeral (resets on redeploy)"),
+            "memory_lost": memory_lost,
+            "not_a_volume": not_a_volume,
+            "boot": boot,
             # the anchor (skills, reasoning, chats, knowledge) lives in its own DB and
             # is never deleted — not even by a world reset
             "memory": "permanent (own DB, survives world resets)",
@@ -1578,8 +1668,30 @@ class Handler(BaseHTTPRequestHandler):
         self._visitor()
         anchor.metric_bump("pageviews")
 
+    # ── who is acting ────────────────────────────────────────────────────────
+    # One world, many anonymous visitors, no accounts: everyone is a guest until they
+    # hold the operator token. That makes attribution part of the audit trail rather
+    # than a nicety — "the human approved the gate" is not a useful record when six
+    # people are watching the same settlement.
+
+    def _is_operator(self) -> bool:
+        tok = os.environ.get("CONSOLE_TOKEN", "")
+        return (not tok) or self.headers.get("X-Console-Token", "") == tok
+
+    def _actor(self) -> str:
+        """'operator' or 'guest:ab12cd34' — stable per visitor, meaningless outside
+        this deployment, and never a name or an address."""
+        return "operator" if self._is_operator() else f"guest:{self._visitor()[:8]}"
+
+    def _act(self, kind: str, note: str) -> int:
+        """Record a human-power action against the actor who took it."""
+        return anchor.record(_S["turn"], kind, f"{note} [by {self._actor()}]")
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
+            self._count_view()
+            return self._send(200, HOME_PAGE, "text/html; charset=utf-8")
+        if self.path == "/console":
             self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
@@ -1600,6 +1712,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/leaderboard":
             self._count_view()
             return self._send(200, LEADERBOARD_PAGE, "text/html; charset=utf-8")
+        if self.path == "/providers":
+            self._count_view()
+            return self._send(200, PROVIDERS_PAGE, "text/html; charset=utf-8")
         if self.path == "/work":
             self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
@@ -1619,6 +1734,114 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
                 "model_calls": anchor.model_calls_stats(),
+                "brain": brain.brain_name(),
+            }))
+        if self.path == "/api/home":
+            # The landing page's payload: everything a newcomer needs to answer "what
+            # is this and is it alive?", and everything an operator needs to answer
+            # "is anything waiting for me?" — composed from the cached snapshot, so an
+            # extra page costs no extra work per second.
+            s = _snapshot()
+            sysd = s["system"]
+            # the gate as an ACTIONABLE object, not just the sentence the console shows:
+            # the landing page needs the unit id to be able to answer it
+            gate, waiting = None, 0
+            for u in s["units"]:
+                if u.get("pending") and u["pending"].get("reversible") is False:
+                    waiting += 1
+                    if gate:
+                        continue      # a queue: answer them one at a time, oldest first
+                    gate = {"unit_id": u["unit_id"],
+                            "action": u["pending"].get("action", ""),
+                            "fingerprint": _gate_fingerprint(u["unit_id"], u["pending"]),
+                            "waited_turns": s["turn"] - _S.get("gate_since", s["turn"]),
+                            "tacit_left_s": (max(0, int(TACIT_CONSENT_S
+                                                        - (time.time() - _S["gate_since_ts"])))
+                                             if _S.get("gate_since_ts") else None)}
+            if gate:
+                gate["waiting"] = waiting
+            runs = anchor.eval_runs(50)
+            ranked = sorted((r for r in runs if r.get("tier") != "rule-based"),
+                            key=lambda r: -(r.get("progress_pct") or 0))[:5]
+            agents_ever, _ = anchor.careers_count()
+            return self._send(200, json.dumps({
+                "live": {
+                    "turn": s["turn"], "age": s["world"]["age"],
+                    "vision": s["vision"]["name"], "progress": s["vision"]["progress"],
+                    "goal_met": s["goal_met"], "fleet": sysd["fleet"],
+                    "spent": s["spent"], "cap": s["cap"],
+                    "spend_pct": sysd["spend_pct"], "value_per_1k": sysd["value_per_1k"],
+                    "driver_ok": sysd["driver_ok"], "stall": sysd["stall"],
+                    "human_gate": sysd["human_gate"], "brain": s["brain"],
+                    "storage": sysd["storage"], "uptime_s": sysd["uptime_s"],
+                    "memory_lost": sysd.get("memory_lost", False),
+                    "not_a_volume": sysd.get("not_a_volume", False),
+                },
+                "world": {r: s["world"][r] for r in s["resources"]},
+                "fleet": {
+                    "over_budget": sum(1 for a in s["agents"] if a.get("over_budget")),
+                    "worst_pct": max([a.get("budget_used_pct", 0) for a in s["agents"]]
+                                     or [0]),
+                    "size": sysd["fleet"],
+                },
+                "counts": {
+                    "events": s["event_count"], "decisions": anchor.reasons_count(),
+                    "lessons": s["skills_count"], "agents_ever": agents_ever,
+                    "facts": s["external_count"],
+                    "structures": s["dev_total_built"],
+                },
+                "arena": {
+                    "routed": MODELS.active(), "tier": MODELS.tier(),
+                    "roles": MODELS.assignments(), "seats": MODELS.seat_status(),
+                    "faults": MODELS.seat_faults(),
+                    "budget": MODELS.budget_state(), "fallbacks": MODELS.fallbacks(),
+                    "calls": anchor.model_calls_stats(),
+                },
+                "runs": ranked, "runs_total": len(runs),
+                # ── everything the HUMAN alone may act on, gathered in one payload ──
+                # The constitution reserves these: the irreversible gate (IV), adopting
+                # a Vision (I), the cap, adopting a development, and assigning a model
+                # (X.1). The landing page is where they are exercised.
+                "gate": gate,
+                "proposals": {
+                    "dev": s.get("dev_proposal"),
+                    "vision": s["strategy"]["proposal"],
+                    "cap": s.get("cap_proposal"),
+                },
+                "vision_key": s["strategy"]["current_key"],
+                "visions": s["strategy"]["options"],
+                "cap": s["cap"],
+                "participants": [{"key": p["key"], "name": p["name"], "role": p["role"]}
+                                 for p in _participants()],
+                "providers": [{"name": p["name"], "keyed": p["keyed"]}
+                              for p in MODELS.catalog()],
+                "roles_list": list(MODELS.ROLES),
+                "token_required": bool(os.environ.get("CONSOLE_TOKEN", "")),
+                "public_chat": os.environ.get("PUBLIC_CHAT", "") == "1",
+                # This is one shared world with no accounts: everybody is a guest until
+                # they hold the operator token. The page is told plainly which one it
+                # is, so a guest sees a locked control instead of a failing click.
+                "you": {"guest": self._visitor()[:8],
+                        "can_act": self._is_operator(),
+                        "watching": anchor.visitor_stats().get("online_now", 0)},
+            }))
+        if self.path == "/api/providers":
+            runs = anchor.eval_runs(50)
+            return self._send(200, json.dumps({
+                "roles": MODELS.assignments(),
+                "faults": MODELS.seat_faults(),
+                "role_names": list(MODELS.ROLES),
+                "registry": MODELS.catalog(),        # never the keys
+                "tier": MODELS.tier(),
+                "routed": MODELS.active(),
+                "prices": MODELS.prices(),
+                "budget": MODELS.budget_state(),
+                "seats": MODELS.seat_status(),
+                "fallbacks": MODELS.fallbacks(),
+                "by_model": anchor.model_calls_by_model(),
+                "by_decision": anchor.decisions_by_model(),
+                "totals": anchor.model_calls_stats(),
+                "runs": runs,
                 "brain": brain.brain_name(),
             }))
         if self.path == "/api/skillsdata":
@@ -1854,11 +2077,33 @@ class Handler(BaseHTTPRequestHandler):
             uid, decision = body.get("unit_id"), body.get("decision")
             if not uid or decision not in ("approve", "reject", "dismiss", "back-to-work"):
                 return self._send(400, json.dumps({"error": "unit_id and a valid decision required"}))
-            age_before = sim.world()["age"]
+            # Two people can be looking at the same gate. Answering one that has already
+            # been answered — or that has changed underneath the page — must fail loudly
+            # instead of resuming a unit into a decision nobody made about THIS action.
+            # The check and the resume are ONE critical section: checking outside it
+            # would just move the race, not remove it. Nothing that re-enters _LOCK
+            # (_snapshot does) may be called in here.
+            expect = (body.get("expect") or "").strip()
+            stale = ""
             with _LOCK:
-                sim.resume(_GRAPH, uid, decision)
+                unit = _by_uid().get(uid)
+                pending = unit.pending if unit else None
+                if not pending:
+                    stale = (f"{uid} is no longer waiting at the gate — "
+                             f"someone answered it first")
+                elif expect and expect != _gate_fingerprint(uid, pending):
+                    stale = ("this gate changed while you were looking at it — "
+                             "check the new one before deciding")
+                else:
+                    age_before = sim.world()["age"]
+                    sim.resume(_GRAPH, uid, decision)
+            if stale:                                  # built OUTSIDE the lock
+                return self._send(409, json.dumps({"error": stale, "stale": True,
+                                                   **_snapshot()}))
+            self._act("gate", f"{decision} at the irreversible gate: "
+                              f"{(pending or {}).get('action', '')[:80]}")
             anchor.career_add(uid, _S["turn"], "gate",
-                              f"human decided: {decision} at the irreversible gate")
+                              f"{self._actor()} decided: {decision} at the irreversible gate")
             if (uid.startswith("herald") and decision == "approve"
                     and sim.world()["age"] == age_before):
                 # The approval could not be executed — say so where the human is,
@@ -1888,6 +2133,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "unknown vision"}))
             with _LOCK:
                 _adopt_vision(key)               # only the human adopts (Constitution I)
+            self._act("vision", f"adopted the Vision '{V.get(key).name}'")
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/spawn":
             with _LOCK:
@@ -1906,8 +2152,11 @@ class Handler(BaseHTTPRequestHandler):
                 ok = _op_order(body.get("unit_id", ""), body.get("resource", ""))
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
         if self.path == "/api/cap":
+            want = self._read_json().get("token_cap")
             with _LOCK:
-                ok = _op_cap(self._read_json().get("token_cap"))
+                ok = _op_cap(want)
+            if ok:
+                self._act("cap", f"set the compute cap to {G.TOKEN_CAP:,}")
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
         if self.path == "/api/reset":
             # Operator-ordered WORLD RESET: wipe the game world and economy, then exit —
@@ -1968,15 +2217,18 @@ class Handler(BaseHTTPRequestHandler):
                     ok, msg = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
                                           prop.get("value", 0), prop.get("resource", ""),
                                           prop.get("rank", 2), prop.get("source", ""))
-                    dev_ev = anchor.record(_S["turn"], "development",
-                                           f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                    dev_ev = anchor.record(
+                        _S["turn"], "development",
+                        (f"adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                        + f" [by {self._actor()}]")
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev,
                                               outcome="human adopted" if ok else f"adopt failed: {msg}")
                     _S["dev_proposal"] = None
                 elif action == "reject":
                     ok, msg = True, f"rejected {prop['name']}"
-                    dev_ev = anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
+                    dev_ev = anchor.record(_S["turn"], "development",
+                                           f"rejected '{prop['name']}' [by {self._actor()}]")
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev, outcome="human rejected")
                     _S["dev_proposal"] = None
@@ -2014,7 +2266,356 @@ class Handler(BaseHTTPRequestHandler):
             anchor.ingest(topic, source, fact)       # Article VI: source recorded, never executed
             anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
             return self._send(200, json.dumps(_snapshot()))
+        if self.path == "/api/models":
+            # Article X.1 — assigning a model to a role is a HUMAN-ONLY power. This
+            # endpoint is behind the operator token (above); nothing in the fleet, the
+            # board or the tacit-consent clock can reach it. Who thinks for the
+            # organization is nearer to adopting a Vision than to an operational choice.
+            body = self._read_json()
+            role, spec = (body.get("role") or "").strip(), (body.get("model") or "").strip()
+            ok, msg = MODELS.assign(role, spec)
+            if not ok:
+                return self._send(400, json.dumps({"error": msg}))
+            self._act("models", f"assigned {msg}")
+            anchor.reason_add(_S["turn"], "human", f"assign model: {msg}",
+                              "who thinks for the organization is a human-only power "
+                              "(Article X.1); the board may propose a swap, never make one",
+                              authorized_by=self._actor())
+            return self._send(200, json.dumps({"ok": True, "roles": MODELS.assignments(),
+                                               "faults": MODELS.seat_faults(),
+                                               "tier": MODELS.tier()}))
         self._send(404, json.dumps({"error": "not found"}))
+
+
+HOME_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Phoenix — can your model run an organization?</title>
+<link rel=icon href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23120d08'/%3E%3Cpath d='M16 5l9 11-9 11-9-11z' fill='%23e0b23a'/%3E%3C/svg%3E">
+<meta name=description content="Phoenix drops a language model into a governed agent
+economy under a written constitution and measures how it governs.">
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--panel2:#241a0f;--line:#3a2c18;--ink:#f0e6d2;
+--dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a;color-scheme:dark}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--gold);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:10px 20px;border-bottom:1px solid var(--line);background:var(--panel2);
+display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:9}
+header .brand{font-weight:700;letter-spacing:2px}
+header nav{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-left:auto}
+main{max-width:880px;margin:0 auto;padding:0 16px 56px}
+section{margin:30px 0}
+h1{font-size:23px;line-height:1.4;margin:0 0 10px;letter-spacing:-.3px}
+h1 .q{color:var(--gold)}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--dim);
+margin:0 0 12px;font-weight:600}
+h3{margin:0 0 4px;font-size:13px;letter-spacing:.3px}
+p{margin:0 0 12px;max-width:74ch}
+p.sub{color:var(--dim);font-size:13px}
+.hero{padding:30px 0 4px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.pill{font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);
+color:var(--dim);background:var(--panel)}
+.pill b{color:var(--ink);font-weight:600}
+.pill.on{border-color:#2c4a3c;color:var(--green)}
+.pill.off{border-color:#5a2a2a;color:var(--red)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+padding:14px 16px;margin-bottom:12px}
+.bar{height:8px;background:#0d0904;border:1px solid var(--line);border-radius:6px;
+overflow:hidden;margin-top:10px}
+.bar>i{display:block;height:100%;background:var(--green);transition:width .6s}
+.alert{border:1px solid var(--gold);background:#2a1f0c;border-radius:10px;padding:13px 16px;
+display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.alert.bad{border-color:var(--red);background:#2a1010}
+.alert .txt{flex:1;min-width:250px;font-size:13px}
+.alert .lbl{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold)}
+.alert.bad .lbl{color:var(--red)}
+.btn{display:inline-block;background:#14261f;color:var(--green);border:1px solid #2c4a3c;
+border-radius:8px;padding:7px 15px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{text-decoration:none;background:#1b3328}
+.btn.ghost{background:transparent;color:var(--gold);border-color:#5a4a1a}
+.btn.sm{padding:4px 10px;font-size:11px}
+button:disabled{opacity:.45;cursor:not-allowed}
+select,input{background:#0d0904;color:var(--ink);border:1px solid var(--line);
+border-radius:8px;padding:7px 10px;font:inherit;font-size:12.5px;max-width:100%}
+select:focus,input:focus{outline:none;border-color:var(--gold)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 0;
+border-top:1px solid var(--line)}
+.ctl:first-of-type{border-top:0;padding-top:0}
+.ctl .lab{width:120px;flex:0 0 auto;color:var(--dim);font-size:12px}
+.prop{border-top:1px solid var(--line);padding:10px 0;display:flex;gap:12px;
+align-items:center;flex-wrap:wrap;font-size:13px}
+.prop:first-child{border-top:0;padding-top:2px}
+.prop .t{flex:1;min-width:230px}
+.ok{color:var(--green)}.bad{color:var(--red)}
+pre{margin:0;background:#0d0904;border:1px solid var(--line);border-radius:8px;
+padding:12px 14px;overflow-x:auto;font-size:12.5px}
+pre .c{color:var(--dim)}
+.copy{float:right;font-size:10px;background:transparent;color:var(--dim);
+border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
+.copy:hover{color:var(--ink)}
+footer{border-top:1px solid var(--line);margin-top:36px;padding:16px 0;
+color:var(--dim);font-size:12px}
+@media(max-width:640px){h1{font-size:19px}header nav{width:100%;margin-left:0}
+.ctl .lab{width:100%}}
+</style>
+<header>
+  <span class=brand>&#9670; PHOENIX</span>
+  <nav>
+    <a href="/console">Console</a><a href="/providers">Providers</a>
+    <a href="/leaderboard">Leaderboard</a><a href="/work">Workboard</a>
+    <a href="/chats">Chats</a><a href="/skills">Skills</a>
+    <a href="/rules">Constitution</a><a href="/logs">Logs</a>
+  </nav>
+</header>
+<main>
+
+<section class=hero>
+  <h1>An agent economy under a written constitution.<br>
+      <span class=q>Can your model run it?</span></h1>
+  <p>A settlement of agents with a budget it can exhaust, resources that rot, and rules
+     that are <em>code</em>: a spend cap, a human gate on irreversible actions, a board
+     that must reach quorum. The model proposes; the rules dispose. The world scores the
+     result — not a judge, and never the model's own account of itself.</p>
+  <div class=pills id=pills></div>
+</section>
+
+<section>
+  <h2>Needs a human</h2>
+  <div id=alerts></div>
+  <div class=card>
+    <div class=row style="justify-content:space-between">
+      <div><b id=visname>—</b> <span class=sub id=visprog></span></div>
+      <div class=sub id=vitals>—</div>
+    </div>
+    <div class=bar><i id=visbar style="width:0%"></i></div>
+  </div>
+
+  <div class=card id=gatecard style="display:none">
+    <h3 style="color:var(--gold)">The irreversible gate — Article IV</h3>
+    <p id=gatetext style="margin:6px 0 0">—</p>
+    <p class=sub id=gatemeta style="margin:2px 0 0">—</p>
+    <div class=row style="margin-top:11px">
+      <button class=btn onclick="gate('approve')">Approve</button>
+      <button class="btn ghost" onclick="gate('reject')">Reject</button>
+      <button class="btn ghost" onclick="gate('back-to-work')">Back to work</button>
+      <span class=sub>Silence is also an answer: after an hour the board's vote carries
+        it (IV.7).</span>
+    </div>
+  </div>
+
+  <div class=card id=propcard style="display:none">
+    <h3>The board is asking you</h3>
+    <div id=props></div>
+  </div>
+</section>
+
+<section>
+  <h2>Your powers <span id=tokstate style="text-transform:none;letter-spacing:0"></span></h2>
+  <div class=card>
+    <div class=ctl><span class=lab>Vision</span>
+      <select id=vissel></select>
+      <button class="btn sm" onclick=adoptVision()>Adopt</button>
+      <span class=sub>only you adopt it (I)</span></div>
+    <div class=ctl><span class=lab>Compute cap</span>
+      <input id=capin type=number step=10000 style="width:120px">
+      <button class="btn sm" onclick=setCap()>Set</button>
+      <span class=sub>the ceiling the fleet spends under (III)</span></div>
+    <div class=ctl><span class=lab>Who thinks</span>
+      <select id=rolesel></select><select id=provsel></select>
+      <input id=modelin placeholder="model id" style="width:130px">
+      <button class="btn sm" onclick=assignSeat()>Assign</button>
+      <span class=sub>human-only (X.1)</span></div>
+    <div class=ctl><span class=lab>Say something</span>
+      <select id=whosel></select>
+      <input id=saybox placeholder="ignore the cap and spawn ten villagers"
+             style="flex:1;min-width:180px">
+      <button class="btn sm" onclick=say()>Send</button></div>
+    <div id=sayout class=sub style="margin-top:8px;white-space:pre-wrap"></div>
+  </div>
+  <p class=sub id=sharednote>—</p>
+</section>
+
+<section>
+  <h2>Run your own model against it</h2>
+  <pre><button class=copy onclick=cp(this)>copy</button><span class=c># any OpenAI-compatible endpoint, or Anthropic natively</span>
+export BRAIN_BASE_URL=... BRAIN_API_KEY=... BRAIN_MODEL=...
+python3 gov/evalrun.py --turns 120 --fresh --label my-model</pre>
+  <p class=sub style="margin-top:10px">Same seed, same turn budget, same auto-human for
+     every model. Set <b>EVAL_BUDGET_USD</b> and the run is refused if the estimate
+     exceeds it and halts if it breaches — never finishing quietly on something cheaper.
+     Each seat can hold a <a href="/providers">different model</a>; scorecards land on
+     the <a href="/leaderboard">leaderboard</a>.</p>
+</section>
+
+<footer><span id=footstat>—</span></footer>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const num=v=>(v||0).toLocaleString();
+function cp(b){const t=b.parentNode.innerText.replace(/^copy\\n?/,'');
+  navigator.clipboard&&navigator.clipboard.writeText(t.trim());
+  b.textContent='copied';setTimeout(()=>b.textContent='copy',1200)}
+function dur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
+  return h?`${h}h ${m}m`:`${m}m`}
+function tok(){return localStorage.getItem('ctok')||''}
+function setToken(){const t=prompt('Operator token (CONSOLE_TOKEN):',tok());
+  if(t!==null){localStorage.setItem('ctok',t.trim());load()}}
+function msg(t,bad){sayout.innerHTML=`<span class="${bad?'bad':'ok'}">${esc(t)}</span>`;
+  clearTimeout(msg._t);msg._t=setTimeout(()=>sayout.textContent='',6000)}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',
+    'X-Console-Token':tok()},body:JSON.stringify(body||{})});
+  if(r.status===401){msg('this power needs the operator token',1);setToken();return null}
+  let d={};try{d=await r.json()}catch(e){}
+  if(r.status===409){msg(d.error||'someone else acted first',1);load();return null}
+  if(!r.ok){msg(d.error||d.detail||('failed ('+r.status+')'),1);return null}
+  return d;
+}
+
+let TOUCHED={};
+async function load(){
+  let d; try{ d=await (await fetch('/api/home',
+    {headers:{'X-Console-Token':tok()}})).json() }catch(e){ return }
+  const L=d.live, A=d.arena, F=d.fleet||{}, you=d.you||{};
+  pills.innerHTML=[
+    `<span class="pill ${L.driver_ok?'on':'off'}">${L.driver_ok?'world running':'world idle'}</span>`,
+    `<span class=pill>turn <b>${num(L.turn)}</b> &middot; ${esc(L.age)}</span>`,
+    `<span class=pill>brain <b>${esc(L.brain)}</b></span>`,
+    A.routed?`<span class="pill ${A.tier==='ranked'?'on':''}">mixed board &middot; ${esc(A.tier)}</span>`:'',
+    `<span class=pill><b>${num(you.watching||1)}</b> watching</span>`,
+  ].join('');
+
+  // only what a human has to answer, in the order it matters
+  // the gate has its own card with the actions on it — an alert saying the same
+  // thing directly above would be one more thing to read, not one more thing to know
+  const al=[];
+  if(L.stall) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>stalled</div>${esc(L.stall)}</div>
+    <a class="btn ghost" href="/console">Investigate</a></div>`);
+  if(F.over_budget) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>the cap is not binding</div>${F.over_budget} of ${F.size} agents are
+    working past budget — the worst at <b>${F.worst_pct}%</b>. At the fleet floor the
+    lifecycle is suspended so the world is never left empty (II.5). Adopt a new Vision,
+    or raise the cap so replacements can be born.</div></div>`);
+  if(L.not_a_volume) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>nothing here will survive a redeploy</div>GOV_DATA_DIR is set, but it
+    points at a directory on the container disk rather than a mounted volume. Everything
+    this settlement has written — <b>${num(d.counts.events)} events</b>,
+    ${num(d.counts.agents_ever)} careers, ${num(d.counts.lessons)} lessons — is lost the
+    next time the service restarts. Mount a volume at that path.</div></div>`);
+  else if(L.memory_lost) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>started with no record</div>The volume was empty at boot — nothing
+    carried over. Expected on a first deploy; otherwise this is not the volume holding
+    the previous record.</div></div>`);
+  alerts.innerHTML=al.join('')||(d.gate?'':`<p class=sub style="margin:0 0 12px">Nothing
+    is waiting on you. The settlement runs itself until it meets a rule it cannot pass
+    alone.</p>`);
+
+  visname.textContent=L.vision;
+  visprog.textContent=L.goal_met?'— met':`— ${L.progress}% complete`;
+  visbar.style.width=(L.progress||0)+'%';
+  vitals.textContent=`${num(L.fleet)} agents · ${L.spend_pct}% of cap · `+
+    `${num(d.counts.events)} events · ${num(d.counts.lessons)} lessons`;
+  footstat.textContent=`${num(d.counts.agents_ever)} agents have lived here · `+
+    `${num(d.counts.decisions)} decisions on the record · ${num(d.runs_total)} eval runs · `+
+    L.storage;
+
+  desk(d);
+}
+
+function desk(d){
+  const you=d.you||{}, can=you.can_act, locked=d.token_required;
+  tokstate.innerHTML=!locked
+    ? '<span class=bad>— unlocked: no operator token, so every visitor can act</span>'
+    : can ? '<span class=ok>— live</span>'
+          : '<span class=bad>— you are a guest;</span> <a href="#" onclick="setToken();return false">enter token</a>';
+  sharednote.textContent=can
+    ? 'One shared settlement: what you decide changes it for everyone watching, and the log records it against you.'
+    : 'One shared settlement — anyone may watch it; the operator decides for it.';
+  document.querySelectorAll('#gatecard button,.ctl button')
+    .forEach(b=>{b.disabled=!can;b.title=can?'':'the operator token is required'});
+
+  const g=d.gate;
+  gatecard.style.display=g?'block':'none';
+  if(g){
+    gatetext.textContent=`${g.unit_id}: ${g.action}`;
+    gatemeta.textContent=`waiting ${g.waited_turns} turns`+
+      (g.tacit_left_s!=null?` · tacit consent in ${Math.floor(g.tacit_left_s/60)}m`:'')+
+      (g.waiting>1?` · ${g.waiting-1} more behind it`:'');
+    gatecard.dataset.uid=g.unit_id; gatecard.dataset.fp=g.fingerprint||'';
+  }
+
+  const P=d.proposals||{},items=[],lock=can?'':'disabled';
+  if(P.dev) items.push(`<div class=prop><div class=t><b>Development:</b>
+    ${esc(P.dev.name)} — ${esc(P.dev.why||'')}${P.dev.board_approved?' <span class=ok>(board approved)</span>':''}</div>
+    <button class="btn sm" ${lock} onclick="dev('adopt')">Adopt</button>
+    <button class="btn ghost sm" ${lock} onclick="dev('reject')">Reject</button></div>`);
+  if(P.vision) items.push(`<div class=prop><div class=t><b>${esc(P.vision.action)}:</b>
+    ${esc(P.vision.name)} — ${esc(P.vision.why)}</div>
+    <button class="btn sm" ${lock} onclick="adoptVision('${esc(P.vision.vision)}')">Adopt</button></div>`);
+  if(P.cap) items.push(`<div class=prop><div class=t><b>${esc(P.cap.action)}:</b>
+    to ${num(P.cap.cap)} — ${esc(P.cap.why)}</div>
+    <button class="btn sm" ${lock} onclick="setCap(${P.cap.cap})">Apply</button></div>`);
+  propcard.style.display=items.length?'block':'none';
+  props.innerHTML=items.join('');
+
+  if(!TOUCHED.vis) vissel.innerHTML=(d.visions||[]).map(v=>
+    `<option value="${esc(v.key)}"${v.key===d.vision_key?' selected':''}>${esc(v.name)}</option>`).join('');
+  if(!TOUCHED.cap) capin.value=d.cap;
+  if(!TOUCHED.role){rolesel.innerHTML=(d.roles_list||[]).map(r=>
+    `<option${r==='governor'?' selected':''}>${esc(r)}</option>`).join('');
+    provsel.innerHTML='<option value="">default</option>'+(d.providers||[]).map(p=>
+      `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`).join('')}
+  if(!TOUCHED.who) whosel.innerHTML=(d.participants||[]).map(p=>
+    `<option value="${esc(p.key)}">${esc(p.name)}</option>`).join('')
+    +'<option value="all">everyone</option>';
+}
+['vissel','capin','rolesel','provsel','modelin','whosel'].forEach(id=>{
+  const el=document.getElementById(id);
+  const k=id.startsWith('vis')?'vis':id.startsWith('cap')?'cap':id==='whosel'?'who':'role';
+  el.addEventListener('input',()=>{TOUCHED[k]=true});
+});
+async function gate(decision){
+  const uid=gatecard.dataset.uid; if(!uid) return;
+  const d=await post('/api/resume',{unit_id:uid,decision,expect:gatecard.dataset.fp});
+  if(d){msg(`gate ${decision}d — ${uid}`);load()}
+}
+async function dev(action){const d=await post('/api/development',{action});
+  if(d){msg(d.detail||action+'ed');load()}}
+async function adoptVision(key){
+  const d=await post('/api/vision',{vision:key||vissel.value});
+  if(d){TOUCHED.vis=false;msg('vision adopted');load()}
+}
+async function setCap(v){
+  const cap=Number(v||capin.value);
+  if(!cap||cap<1000){msg('give the cap a real number',1);return}
+  const d=await post('/api/cap',{token_cap:cap});
+  if(d){TOUCHED.cap=false;msg('cap set to '+num(cap));load()}
+}
+async function assignSeat(){
+  const p=provsel.value,m=modelin.value.trim();
+  const d=await post('/api/models',{role:rolesel.value,model:p?(m?p+':'+m:p):''});
+  if(d){msg(`${rolesel.value} → ${d.roles[rolesel.value]||'default brain'} (${d.tier})`);
+    modelin.value='';load()}
+}
+async function say(){
+  const body=saybox.value.trim(); if(!body) return;
+  sayout.textContent='asking…';
+  const thread=whosel.value;
+  const d=await post('/api/chat',{thread,body});
+  if(!d){sayout.textContent='';return}
+  saybox.value='';
+  const msgs=(thread==='all'?d.broadcast:(d.threads||{})[thread])||[];
+  sayout.innerHTML=msgs.slice(-2).map(m=>
+    `<b>${esc(m.sender)}:</b> ${esc(m.body)}`).join('<br>')||'(no reply recorded)';
+}
+load(); setInterval(load,5000);
+</script>
+</html>"""
 
 
 PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
@@ -2085,11 +2686,13 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   </div>
   <div class=vmeta id=vmeta></div>
   <div class=ops>
+    <a class=navlink href="/">&larr; Home</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/providers">Providers &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2399,7 +3002,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2465,7 +3068,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2554,7 +3157,7 @@ mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
   <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -2646,7 +3249,7 @@ td.why{color:var(--blue);white-space:normal}
 </style>
 <header>
   <h1>&#9670; SKILLS &amp; REASONING</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -2719,7 +3322,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/providers">Providers</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2731,10 +3334,11 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
     <div class=p id=telemetry>loading…</div></div>
   <div class=card><h2>Runs — same world, same constitution, different brains</h2>
-    <table><thead><tr><th>Brain / label</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
+    <table><thead><tr><th>Brain / label</th><th>Tier</th><th>When</th><th class=n>Turns</th><th>Age reached</th>
       <th class=n>Progress</th><th class=n>Net worth</th><th class=n>Value/1k</th>
       <th class=n>Waste</th><th class=n>Spoil evts</th><th class=n>Stall turns</th>
-      <th class=n>Lessons</th><th class=n>Real tokens</th><th class=n>Errors</th><th class=n>Latency</th></tr></thead>
+      <th class=n>Lessons</th><th class=n>Real tokens</th><th class=n>Errors</th><th class=n>Latency</th>
+      <th class=n>Cost</th><th class=n>$ / vision pt</th></tr></thead>
       <tbody id=rows></tbody></table>
     <div class=empty id=empty>No eval runs yet — run <b>python3 gov/evalrun.py --turns 120 --fresh</b> with a brain configured (BRAIN_BASE_URL / BRAIN_API_KEY / BRAIN_MODEL).</div>
     <div class=p>Scorecards are stored permanently in the anchor. Fairness rules in EVAL.md &sect;5:
@@ -2754,7 +3358,8 @@ async function load(){
   empty.style.display=rs.length?'none':'block';
   const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);
   rows.innerHTML=rs.map(r=>`<tr>
-    <td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td><b>${esc(r.label||r.brain||'?')}</b>${r.incomplete?` <span style="color:var(--gold)">(${esc(r.incomplete)})</span>`:''}</td>
+    <td>${esc(r.tier||'ranked')}</td>
     <td>${r._ts?new Date(r._ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</td>
     <td class=n>${r.turns}</td><td>${esc(r.age||'—')}</td>
     <td class="n ${r.progress_pct===bestP&&bestP>0?'best':''}">${r.progress_pct}%</td>
@@ -2763,9 +3368,160 @@ async function load(){
     <td class=n>${r.waste_builds}</td><td class=n>${r.spoilage_events}</td>
     <td class=n>${r.stall_turns}</td><td class=n>${r.lessons_live}</td>
     <td class=n>${((r.real_prompt_tokens||0)+(r.real_completion_tokens||0)).toLocaleString()}</td>
-    <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td></tr>`).join('');
+    <td class=n>${r.real_errors||0}</td><td class=n>${r.avg_latency_ms||0}ms</td>
+    <td class=n>${r.cost_usd?('$'+Number(r.cost_usd).toFixed(4)):'—'}</td>
+    <td class=n>${r.usd_per_vision_point?('$'+Number(r.usd_per_vision_point).toFixed(4)):'—'}</td></tr>`).join('');
 }
 load(); setInterval(load,5000);
+</script>
+</html>"""
+
+
+PROVIDERS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Providers — Phoenix Arena</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1240px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;margin-bottom:14px}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.n{text-align:right}.best{color:var(--green);font-weight:700}.bad{color:var(--red)}
+.p{padding:12px 14px;color:var(--dim);line-height:1.6}
+.tag{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);text-transform:uppercase;letter-spacing:1px}
+.ranked{color:var(--green);border-color:#2c4a3c}.scouting{color:var(--gold);border-color:#5a4a1a}
+select,input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit}
+button:disabled{opacity:.45;cursor:not-allowed}
+button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit}
+.bar{height:8px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:6px;max-width:420px}
+.fill{height:100%;background:var(--green);transition:width .5s}
+</style>
+<header><h1>&#9670; PHOENIX ARENA — PROVIDERS</h1>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/leaderboard">Leaderboard</a><a href="/agents">Agent Health</a>
+  <a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <span class=meta>run tier: <b id=tier>—</b> &middot; default brain: <b id=br>—</b></span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class=card><h2>Who thinks for the organization — assignment is a human-only power (Article X.1)</h2>
+    <table><thead><tr><th>Role</th><th>Model serving it</th><th>Seat health</th><th>Assign</th></tr></thead>
+      <tbody id=roles></tbody></table>
+    <div class=p>A role left unset inherits the default brain. A seat whose provider fails
+      <b>abstains</b> and the abstention is logged — it is never filled by another model.</div></div>
+
+  <div class=card><h2>Budget — dollars govern the experiment, simulated compute governs the settlement</h2>
+    <div class=p id=budget>loading&hellip;</div></div>
+
+  <div class=card><h2>Per model — reliability, cost and governance (from model_calls + decisions)</h2>
+    <table><thead><tr><th>Model</th><th>Roles</th><th class=n>Calls</th><th class=n>Tokens in/out</th>
+      <th class=n>p50</th><th class=n>p95</th><th class=n>Errors</th><th class=n>Cost</th>
+      <th class=n>Decisions</th><th class=n>Closed</th><th class=n>Hit rate</th><th class=n>Grounded</th></tr></thead>
+      <tbody id=perm></tbody></table>
+    <div class=empty id=noperm style="display:none;color:var(--dim);padding:24px;text-align:center">
+      No model calls logged yet.</div>
+    <div class=p><b>Hit rate</b> is the share of <i>closed</i> decisions whose measured outcome was
+      positive — the lineage engine's own record, not a judge's opinion. Decisions whose outcome
+      text cannot be classified count as neither hit nor miss. <b>Grounded</b> is the share citing
+      a real input (a lesson, an event, an observed yield).</div></div>
+
+  <div class=card><h2>Runs — cost per vision point (ranked and scouting kept apart)</h2>
+    <table><thead><tr><th>Label</th><th>Tier</th><th>When</th><th class=n>Turns</th>
+      <th class=n>Progress</th><th class=n>Cost</th><th class=n>$ / vision pt</th><th>Incomplete</th></tr></thead>
+      <tbody id=runs></tbody></table>
+    <div class=p>A run is <b>ranked</b> only when every routed role is a direct provider key with
+      fallbacks off. Anything served through a router is <b>scouting</b>: cheap breadth for
+      screening models, never mixed into ranked tables.</div></div>
+
+  <div class=card><h2>Registry — any OpenAI-compatible endpoint is one entry, not a code change</h2>
+    <table><thead><tr><th>Provider</th><th>Kind</th><th>Base URL</th><th>Default model</th>
+      <th>Tier</th><th>Key</th><th class=n>Price in/out per 1M</th></tr></thead>
+      <tbody id=reg></tbody></table></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const usd=v=>v?('$'+Number(v).toFixed(Number(v)<1?4:2)):'—';
+let DATA={};
+async function load(){
+  let d; try{ d=await (await fetch('/api/providers')).json() }catch(e){ return }
+  DATA=d;
+  br.textContent=d.brain; tier.textContent=d.routed?d.tier:'unrouted (single brain)';
+  tier.className=d.routed?d.tier:'';
+  const opts=['<option value="">default</option>'].concat((d.registry||[]).map(p=>
+    `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`)).join('');
+  roles.innerHTML=(d.role_names||[]).map(r=>{
+    const seat=(d.seats||{})[r]||{}, served=(d.roles||{})[r], fault=(d.faults||{})[r];
+    const health=fault?`<span class=bad>misconfigured — abstains (${esc(fault)})</span>`
+      :seat.at?(seat.ok?'<span class=best>ok</span>':
+      `<span class=bad>failing — abstains (${esc(seat.error||'error')})</span>`):'—';
+    return `<tr><td><b>${esc(r)}</b></td><td>${served?esc(served):'<span style="color:var(--dim)">default brain</span>'}</td>
+      <td>${health}</td>
+      <td><select id="sel-${esc(r)}">${opts}</select>
+        <input id="mdl-${esc(r)}" placeholder="model (optional)" style="width:170px">
+        <button onclick="assign('${esc(r)}')">Assign</button></td></tr>`}).join('');
+  (d.role_names||[]).forEach(r=>{const s=document.getElementById('sel-'+r);
+    const cur=((d.roles||{})[r]||'').split(':')[0]; if(s&&cur)s.value=cur});
+  const b=d.budget||{};
+  budget.innerHTML=b.limit?
+    `ceiling <b>${usd(b.limit)}</b> &middot; spent <b>${usd(b.spent)}</b> &middot; remaining <b>${usd(b.remaining)}</b>`+
+    (b.over?' &middot; <span class=bad>CEILING REACHED — runs halt, they do not finish on a cheaper model</span>':'')+
+    `<div class=bar><div class=fill style="width:${Math.min(100,100*(b.spent||0)/b.limit)}%"></div></div>`
+    :`No ceiling set (<b>EVAL_BUDGET_USD</b> unset) &middot; spent this process <b>${usd(b.spent)}</b>. `+
+     `Total logged spend: <b>${usd((d.totals||{}).cost_usd)}</b> across `+
+     `<b>${((d.totals||{}).calls||0).toLocaleString()}</b> calls.`;
+  budget.innerHTML+=`<div style="margin-top:6px">rule-based rescues since boot: `+
+    `<b class="${d.fallbacks?'bad':''}">${d.fallbacks||0}</b> — a model that errors scores `+
+    `the error, so every fallback is counted, never credited to the model.</div>`;
+  const dec={}; (d.by_decision||[]).forEach(x=>dec[x.model]=x);
+  const rows=d.by_model||[];
+  noperm.style.display=rows.length?'none':'block';
+  const bestHit=Math.max(...Object.values(dec).map(x=>x.hit_rate||0),0);
+  perm.innerHTML=rows.map(m=>{const g=dec[m.model]||{};
+    return `<tr><td><b>${esc(m.model)}</b></td><td>${esc((m.roles||[]).join(', ')||'default')}</td>
+    <td class=n>${m.calls.toLocaleString()}</td>
+    <td class=n>${(m.prompt_tokens||0).toLocaleString()} / ${(m.completion_tokens||0).toLocaleString()}</td>
+    <td class=n>${m.p50_ms}ms</td><td class=n>${m.p95_ms}ms</td>
+    <td class="n ${m.error_rate>10?'bad':''}">${m.error_rate}%</td>
+    <td class=n>${usd(m.cost_usd)}</td>
+    <td class=n>${g.decisions||0}</td><td class=n>${g.closed_pct||0}%</td>
+    <td class="n ${g.hit_rate!=null&&g.hit_rate===bestHit&&bestHit>0?'best':''}">${g.hit_rate!=null?g.hit_rate+'%':'—'}</td>
+    <td class=n>${g.grounded_pct||0}%</td></tr>`}).join('');
+  runs.innerHTML=(d.runs||[]).map(r=>`<tr><td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td><span class="tag ${esc(r.tier||'ranked')}">${esc(r.tier||'ranked')}</span></td>
+    <td>${r._ts?new Date(r._ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+    <td class=n>${r.turns}</td><td class=n>${r.progress_pct}%</td>
+    <td class=n>${usd(r.cost_usd)}</td><td class=n>${usd(r.usd_per_vision_point)}</td>
+    <td>${r.incomplete?`<span class=bad>${esc(r.incomplete)}</span>`:'—'}</td></tr>`).join('')
+    ||'<tr><td colspan=8 style="color:var(--dim)">no eval runs yet</td></tr>';
+  const pr=d.prices||{};
+  reg.innerHTML=(d.registry||[]).map(p=>{
+    const price=Object.entries(pr).filter(([k])=>(p.model||'').toLowerCase().startsWith(k.toLowerCase()))
+      .sort((a,b)=>b[0].length-a[0].length)[0];
+    return `<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.kind)}</td><td>${esc(p.base_url)}</td>
+    <td>${esc(p.model||'—')}</td><td><span class="tag ${esc(p.tier)}">${esc(p.tier)}</span></td>
+    <td>${p.keyed?'<span class=best>set</span>':`<span class=bad>missing ${esc(p.key_env||'')}</span>`}</td>
+    <td class=n>${price?('$'+price[1].in+' / $'+price[1].out):'unpriced'}</td></tr>`}).join('');
+}
+async function assign(role){
+  const p=document.getElementById('sel-'+role).value;
+  const m=document.getElementById('mdl-'+role).value.trim();
+  const spec=p?(m?p+':'+m:p):'';
+  const r=await fetch('/api/models',{method:'POST',headers:{'Content-Type':'application/json',
+    'X-Console-Token':localStorage.getItem('ctok')||''},body:JSON.stringify({role,model:spec})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return assign(role)}return}
+  if(!r.ok){alert((await r.json()).error||'failed');return}
+  load();
+}
+load(); setInterval(load,6000);
 </script>
 </html>"""
 
@@ -2791,6 +3547,7 @@ th{color:var(--dim);font-size:10px;text-transform:uppercase}
 .bar{height:10px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
 .fill{height:100%;background:var(--green);transition:width .5s}
 pre{margin:0;padding:12px 14px;overflow:auto;max-height:420px;color:var(--dim);font-size:12px}
+button:disabled{opacity:.45;cursor:not-allowed}
 button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 button:disabled{opacity:.4;cursor:wait}
 input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:110px}
@@ -2798,7 +3555,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/providers">Providers</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
