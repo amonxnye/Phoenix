@@ -14,6 +14,20 @@ a one-line edit to that file.
 
 ---
 
+## What the image contains
+
+`Dockerfile` is the build. It installs `git` — not optional, since every attempt runs
+in a worktree and the branch is the only undo — and `requirements-gate.txt`, which is
+just `openai`.
+
+The gate imports no langgraph, langsmith or langchain; that tree belongs to the
+settlement console and is ~70MB of install the service never loads. `requirements.txt`
+remains the full set for running everything from a checkout.
+
+Verified by building and running the image, not by reading it: `git available: True`,
+a real workspace provisions inside the container, and both `verify_gate.py` (87/87)
+and `smoke.py` (21/21) pass in it.
+
 ## The gate as a public service
 
 `gate.py` reads `$PORT` and the `Procfile` binds `0.0.0.0`. `index.html` is served from

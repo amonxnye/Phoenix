@@ -21,8 +21,11 @@ RUN git config --system user.email "agent@phoenix.local" \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Only what the service loads. The full requirements.txt pulls langgraph and its
+# tree for the settlement console, which this image never runs — that is ~350MB and
+# the slowest, heaviest part of the build, spent on imports that never happen.
+COPY requirements-gate.txt .
+RUN pip install --no-cache-dir -r requirements-gate.txt
 
 COPY . .
 

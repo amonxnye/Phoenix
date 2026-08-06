@@ -1,0 +1,12 @@
+# What the gate service actually needs at runtime.
+#
+# gate.py imports no langgraph, langsmith or langchain — verified, not assumed:
+#   python3 -c "import sys; sys.path.insert(0,'gov'); import gate" imports none of them.
+# The service and everything under it is standard library. brain.py reaches an
+# OpenAI-compatible endpoint through this package and the Anthropic one through
+# urllib, so this is the whole list.
+#
+# requirements.txt stays the full set: the settlement console (sim_console.py) is
+# built on langgraph and needs it. A deployment that runs only the gate should not
+# build, ship or hold a graph framework it never loads.
+openai>=1.30,<2
