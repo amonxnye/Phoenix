@@ -11,8 +11,11 @@ suite. The mapping is exact and the safety law survives translation:
   it turns green (fed into the same economy: promotion, budgets, reaps, careers).
 - ``apply_patch`` writes only inside the sandbox and REFUSES the tests directory —
   an agent cannot pass its exam by editing the exam (reward-hacking guard).
-- The test subprocess runs with a stripped environment: no API keys, no tokens
-  (Article V: remove the capability, don't police it).
+- The test subprocess runs with a stripped environment (no API keys, no tokens) AND,
+  where the platform allows it, inside a private network namespace so egress is
+  impossible rather than merely unconfigured (Article V: remove the capability, don't
+  police it). ``sandbox_mode()`` reports which level is actually in force — a claim
+  the system cannot enforce is reported as unenforced, never asserted.
 """
 
 import os
@@ -83,6 +86,44 @@ def reset_sandbox() -> list[str]:
     return restored
 
 
+# ── the sandbox: Article V, enforced where the platform permits ──────────────
+
+_SANDBOX: tuple[list, str] | None = None          # (argv prefix, human-readable mode)
+
+
+def _sandbox() -> tuple[list, str]:
+    """Probe ONCE for real isolation and cache it.
+
+    Preference order: a private network namespace (`unshare -rn`) — no route out
+    exists, so an agent's code cannot phone home even if it tries — else the
+    credential-stripped subprocess we have always had. The probe actually RUNS the
+    wrapper (availability of the binary proves nothing inside a restricted
+    container), so the reported mode is measured, not assumed."""
+    global _SANDBOX
+    if _SANDBOX is not None:
+        return _SANDBOX
+    if os.environ.get("SANDBOX_NETNS", "").strip() == "0":
+        _SANDBOX = ([], "credential-stripped only (netns disabled by env)")
+        return _SANDBOX
+    try:
+        probe = subprocess.run(["unshare", "-rn", sys.executable, "-c", "print('ok')"],
+                               capture_output=True, text=True, timeout=15)
+        if probe.returncode == 0 and "ok" in probe.stdout:
+            _SANDBOX = (["unshare", "-rn"], "network-isolated (private netns)")
+            return _SANDBOX
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _SANDBOX = ([], "credential-stripped only (no netns on this platform)")
+    return _SANDBOX
+
+
+def sandbox_mode() -> str:
+    """What isolation is ACTUALLY in force — surfaced on the console and in the
+    constitution's terms. Article VII.4: a property that is merely asserted is not
+    governed, so the honest label ships either way."""
+    return _sandbox()[1]
+
+
 # ── the oracle ────────────────────────────────────────────────────────────────
 
 def oracle() -> dict:
@@ -91,8 +132,9 @@ def oracle() -> dict:
     This is the score — objective, cheap, and instant to read (Article I.3)."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
            "HOME": SANDBOX, "LANG": "C.UTF-8"}     # no keys, no tokens, no proxies
+    prefix, _mode = _sandbox()                     # + no network, where permitted
     proc = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", TESTS_DIR, "-v"],
+        prefix + [sys.executable, "-m", "unittest", "discover", "-s", TESTS_DIR, "-v"],
         cwd=SANDBOX, env=env, capture_output=True, text=True, timeout=60)
     out = proc.stderr + proc.stdout
     passed, failures = 0, []
@@ -117,7 +159,8 @@ def world() -> dict:
         c.close()
     progress = round(100 * o["passed"] / o["total"]) if o["total"] else 0
     return {"tests_passing": o["passed"], "tests_total": o["total"],
-            "tasks_open": open_n, "tasks_done": done_n, "progress_pct": progress}
+            "tasks_open": open_n, "tasks_done": done_n, "progress_pct": progress,
+            "sandbox": sandbox_mode()}
 
 
 # ── tasks: derived from the oracle, never invented ────────────────────────────

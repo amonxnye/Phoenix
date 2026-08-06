@@ -11,6 +11,7 @@ Run:  python3 gov/verify_work.py
 """
 
 import os
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +104,22 @@ try:
     check("a path that escapes the sandbox is refused", not ok1, msg1[:60])
     ok2, msg2 = W.apply_patch("tests/test_calculator.py", "pwned")
     check("the tests are not writable (no exam-editing)", not ok2, msg2[:60])
+
+    # Article V: the network claim is TESTED, not asserted. Where the platform grants
+    # namespaces we prove egress is impossible; where it doesn't we prove the system
+    # says so honestly instead of claiming isolation it cannot enforce.
+    mode = W.sandbox_mode()
+    prefix, _ = W._sandbox()
+    probe = subprocess.run(
+        prefix + [sys.executable, "-c",
+                  "import socket;socket.create_connection(('1.1.1.1',53),timeout=4)"],
+        capture_output=True, text=True, timeout=30)
+    if prefix:
+        check("sandboxed code cannot reach the network (netns enforced)",
+              probe.returncode != 0, mode)
+    else:
+        check("no isolation is claimed that the platform can't enforce",
+              "credential-stripped only" in mode, mode)
 
     # ── 4. the work loop, scored by the oracle ───────────────────────────────
     print("\n4. Work — measured contribution, recorded forever")

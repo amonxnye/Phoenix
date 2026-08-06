@@ -2809,6 +2809,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
+    <div style="color:var(--dim);font-size:11px;margin-top:4px">&#128274; sandbox: <b id=sbox>—</b> (Article V)</div>
     <div class=bar><div class=fill id=fill style="width:0%"></div></div></div></div>
   <div class=card><h2>Tasks — derived from failing tests, closed only by the oracle</h2>
     <table><thead><tr><th>Task</th><th>Status</th><th>Solved by</th></tr></thead><tbody id=tasks></tbody></table></div>
@@ -2830,6 +2831,8 @@ async function load(){
   const w=d.world;
   suite.textContent=`${w.tests_passing}/${w.tests_total}`;
   taskmeta.textContent=`${w.tasks_open} open · ${w.tasks_done} done · progress ${w.progress_pct}%`;
+  sbox.textContent=w.sandbox||'unknown';
+  sbox.style.color=(w.sandbox||'').startsWith('network-isolated')?'var(--green)':'var(--gold)';
   fill.style.width=w.progress_pct+'%';
   tasks.innerHTML=(d.tasks||[]).map(t=>`<tr><td>${esc(t.title)}</td>
     <td><span class="tag t-${esc(t.status)}">${esc(t.status)}</span></td>

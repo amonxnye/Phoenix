@@ -103,7 +103,15 @@ Everything below is those two laws, applied.
 1. Untrusted/generated code runs with **no credentials and no network** — it *cannot*
    do harm, so its intent does not have to be judged.
 2. Credentials live only in the hand-written orchestrator, never in the sandbox.
-> Design law today; enforced by the sandbox when the execution path is built (roadmap).
+3. Generated code cannot edit the oracle that judges it, and cannot write outside the
+   sandbox (`workspace.apply_patch`).
+4. **The enforcement level is measured and reported, never assumed.** Where the
+   platform grants namespaces, the oracle subprocess runs in a private network
+   namespace and egress is impossible; where it does not, the system says
+   `credential-stripped only` on the console instead of claiming isolation it cannot
+   enforce (`workspace.sandbox_mode`, probed at runtime, asserted in `verify_work`).
+> Enforced by `workspace.py` (path guard, unwritable tests, stripped env, netns probe)
+> and surfaced on `/work`.
 
 ## Article VI — Knowledge grows, and its sources are recorded
 
