@@ -219,6 +219,7 @@ dossier a human reviews at the gate walks all the way back to the source.
 ## 9. Running it
 
 ```bash
+python3 gov/lab_run.py --fresh    # a whole research session, headless, no model needed
 python3 gov/verify_research.py    # 40 checks — the whole harness, no model needed
 python3 gov/verify_literature.py  # 36 checks — the real-literature oracle, offline
 python3 gov/research_world.py     # the world state: criteria, candidates, progress

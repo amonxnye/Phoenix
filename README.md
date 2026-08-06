@@ -143,6 +143,9 @@ python3 gov/console_smoke.py     # headless console API smoke
 
 # the live console
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+
+# a whole research session, headless — Vision, evidence, synthesis, the gate
+python3 gov/lab_run.py --fresh
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to
@@ -233,6 +236,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `research_world.py` | the research world — citation oracle, reproduction gate, assay, the dossier gate |
 | `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
 | `literature.py` | the real biomedical literature as evidence — Europe PMC retrieval, verbatim quote checking, sentence-level support |
+| `lab_run.py` | a headless research session — what `director.py` is for the settlement |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |

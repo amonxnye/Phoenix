@@ -336,6 +336,22 @@ def submit_claim(agent: str, claim: dict, citations: list,
     return v
 
 
+def reset() -> dict:
+    """Clear what the organization concluded — claims, reproductions, dossiers, goal.
+    The evidence store and the corpus are untouched: the world is resettable, the
+    literature is not (`workspace.reset_sandbox` for the settlement's training ground)."""
+    c = _conn()
+    try:
+        counts = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                  for t in ("claims", "reproductions", "dossiers")}
+        for t in ("claims", "reproductions", "dossiers", "goal"):
+            c.execute(f"DELETE FROM {t}")
+        c.commit()
+    finally:
+        c.close()
+    return counts
+
+
 def claims(novel_only: bool = False) -> list[dict]:
     c = _conn()
     try:

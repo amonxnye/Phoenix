@@ -127,6 +127,21 @@ def reproduction_cycle(agent: str) -> dict:
 
 # ── the seams: scored by the oracle, testable with no model at all ────────────
 
+def _pay(agent: str, amount: int) -> str | None:
+    """Credit measured contribution and check for promotion. Every credit path goes
+    through here: an agent that earns its way past the tier gate on a reproduction or a
+    packaged dossier is promoted for it, exactly as one that earns it on claims
+    (Article II.2 — status is a consequence of results, whatever produced them)."""
+    economy.ensure(agent)
+    if amount:
+        economy.credit(agent, amount)
+    promo = economy.evaluate(agent)
+    if promo:
+        anchor.record(-1, "promote", f"{agent} promoted -> {promo}")
+        anchor.career_add(agent, -1, "promote", f"earned promotion to {promo} by verified science")
+    return promo
+
+
 def reproduce_and_score(agent: str, compound: str, target: str, value) -> dict:
     v = R.reproduce(agent, compound, target, value)
     pair = f"{compound}/{target}"
@@ -134,8 +149,7 @@ def reproduce_and_score(agent: str, compound: str, target: str, value) -> dict:
         anchor.record(-1, "waste", f"{agent} failed to reproduce {pair} — {v['why']}")
         anchor.career_add(agent, -1, "retask", f"reproduction failed on {pair}: {v['why']}")
         return {"agent": agent, "did": "reproduction-failed", "reason": v["why"]}
-    economy.ensure(agent)
-    economy.credit(agent, CREDIT_PER_REPRODUCTION)
+    promo = _pay(agent, CREDIT_PER_REPRODUCTION)
     did = anchor.reason_add(-1, agent, f"reproduce {pair}",
                             f"re-derived the published affinity {v['published']} from the "
                             f"public descriptor table before claiming anything novel",
@@ -146,7 +160,7 @@ def reproduce_and_score(agent: str, compound: str, target: str, value) -> dict:
                                            f"novel claims now trusted")
     anchor.career_add(agent, -1, "work", f"reproduced {pair} — method validated")
     return {"agent": agent, "did": "reproduced", "pair": pair, "value": v["truth"],
-            "contribution": CREDIT_PER_REPRODUCTION, "world": R.world()}
+            "contribution": CREDIT_PER_REPRODUCTION, "promoted": promo, "world": R.world()}
 
 
 def submit_and_score(agent: str, claim: dict, citations: list, why: str = "",
@@ -164,9 +178,7 @@ def submit_and_score(agent: str, claim: dict, citations: list, why: str = "",
 
     novel = bool(v.get("novel"))
     got = CREDIT_PER_NOVEL_CLAIM if novel else KNOWN_CLAIM_CREDIT
-    economy.ensure(agent)
-    if got:
-        economy.credit(agent, got)
+    promo = _pay(agent, got)
     did = anchor.reason_add(-1, agent, f"claim: {text}",
                             (why or v["why"])[:480],
                             derived_from=v.get("support", []) +
@@ -178,10 +190,6 @@ def submit_and_score(agent: str, claim: dict, citations: list, why: str = "",
     anchor.decision_close(did, ev, outcome=f"oracle: {v['verdict']}; +{got} contribution")
     anchor.career_add(agent, -1, "work",
                       f"{v['verdict']} claim: {text} (+{got} contribution)")
-    promo = economy.evaluate(agent)
-    if promo:
-        anchor.record(-1, "promote", f"{agent} promoted -> {promo}")
-        anchor.career_add(agent, -1, "promote", f"earned promotion to {promo} by verified science")
     out = {"agent": agent, "did": "verified", "verdict": v["verdict"], "claim": text,
            "novel": novel, "contribution": got, "promoted": promo, "world": R.world()}
     parked = maybe_park(agent)
@@ -202,7 +210,7 @@ def maybe_park(agent: str) -> dict | None:
     d = R.park_dossier(agent, cand["compound"])
     if not d["ok"]:
         return None
-    economy.credit(agent, CREDIT_PER_DOSSIER)
+    _pay(agent, CREDIT_PER_DOSSIER)
     did = anchor.reason_add(-1, agent, f"park dossier: {cand['compound']}",
                             "every computational criterion is met; the next step is "
                             "physical or public, so it stops at a human",
