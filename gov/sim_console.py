@@ -42,6 +42,84 @@ TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
+def _build_version() -> dict:
+    """The running build's commit — so a stale deployment is self-diagnosing. Prefers a
+    deploy-time env var (platforms set one of these), else reads .git, else 'unknown'."""
+    for k in ("PHOENIX_BUILD", "SOURCE_VERSION", "RENDER_GIT_COMMIT",
+              "HEROKU_SLUG_COMMIT", "GIT_COMMIT", "GIT_SHA"):
+        v = os.environ.get(k, "").strip()
+        if v:
+            return {"sha": v[:12], "source": k}
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        head = open(os.path.join(root, ".git", "HEAD")).read().strip()
+        if head.startswith("ref:"):
+            ref = head[5:].strip()
+            p = os.path.join(root, ".git", ref)
+            if os.path.exists(p):
+                return {"sha": open(p).read().strip()[:12], "source": "git"}
+            pr = os.path.join(root, ".git", "packed-refs")
+            if os.path.exists(pr):
+                for line in open(pr):
+                    if line.strip().endswith(ref):
+                        return {"sha": line.split()[0][:12], "source": "git-packed"}
+        else:
+            return {"sha": head[:12], "source": "git-detached"}
+    except OSError:
+        pass
+    return {"sha": "unknown", "source": "none"}
+
+
+BUILD = _build_version()
+
+# ── background scan jobs (SaaS): cloning + scanning must not block the HTTP request,
+# or a hosting gateway times it out (502). Start returns instantly; the client polls. ──
+import uuid as _uuid
+
+_SCANS: dict = {}
+_SCANS_LOCK = threading.Lock()
+
+
+def _scan_gc() -> None:
+    now = time.time()
+    with _SCANS_LOCK:
+        for k in list(_SCANS):
+            if now - _SCANS[k].get("ts", 0) > 1800:
+                _SCANS.pop(k, None)
+        while len(_SCANS) > 60:
+            oldest = min(_SCANS, key=lambda x: _SCANS[x].get("ts", 0))
+            _SCANS.pop(oldest, None)
+
+
+def _run_scan(scan_id: str, kind: str, arg: str) -> None:
+    import audit_jobs as AJ
+    import reproducer as RP
+    import scanner as SC
+    try:
+        if kind == "url":
+            jid, label, root = AJ.clone(arg)
+        elif kind == "sample":
+            jid, label, root = AJ.sample()
+        else:
+            jid, label, root = AJ.dev_path(arg)
+        res = SC.scan(root)
+        res["candidates"] = res["candidates"][:150]
+        res.update(status="done", jobId=jid, label=label, supported=RP.supported(),
+                   ts=time.time())
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = res
+        anchor.record(_S["turn"], "audit",
+                      f"scanned {label}: {res['total']} candidates across "
+                      f"{res['files_scanned']} files")
+    except (ValueError, RuntimeError) as e:
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = {"status": "error", "error": str(e)[:300], "ts": time.time()}
+    except Exception as e:
+        with _SCANS_LOCK:
+            _SCANS[scan_id] = {"status": "error", "error": "scan failed: " + str(e)[:200],
+                               "ts": time.time()}
+
+
 _LOCK = threading.Lock()
 _FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
@@ -1554,6 +1632,7 @@ class Handler(BaseHTTPRequestHandler):
     # ── analytics: who is watching, PERMANENTLY recorded (anchor.visitors) ───
     _TOUCHED: dict = {}                           # visitor hash → last DB write ts
     _CHAT_LAST: dict = {}                         # visitor hash → last chat ts
+    _AUDIT_LAST: dict = {}                        # (visitor hash, path) → last call ts
 
     def _visitor(self) -> str:
         """Identify the visitor (hash of ip+ua, nothing stored beyond that) and
@@ -1580,6 +1659,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
+            # the front door is the usable audit workbench (scan → prove), not the game
+            self._count_view()
+            return self._send(200, AUDIT_PAGE, "text/html; charset=utf-8")
+        if self.path == "/console":
+            # the governance/settlement console lives here now
             self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
@@ -1614,6 +1698,54 @@ class Handler(BaseHTTPRequestHandler):
                 "brain": brain.brain_name(),
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
+            }))
+        if self.path == "/security":
+            self._count_view()
+            return self._send(200, SECURITY_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/secdata":
+            import redteam as RT
+            RT.init()
+            return self._send(200, json.dumps({
+                "world": RT.world(),
+                "scope": RT.SCOPE,
+                "vision": RT.VISION,
+                "findings": RT.findings(),
+                "gates": RT.gates(),
+                "checklist": RT.classes(),
+                "titles": RT.titles(),
+                "brain": brain.brain_name(),
+                "recent": [e for e in anchor.event_log(200)
+                           if "[work]" in e or "[waste]" in e][:12],
+            }))
+        if self.path == "/watch":
+            self._count_view()
+            return self._send(200, WATCH_PAGE, "text/html; charset=utf-8")
+        if self.path in ("/audit", "/start"):
+            self._count_view()
+            return self._send(200, AUDIT_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/version":
+            try:
+                import range as _R
+                node_ok = _R.NodeRange.available
+            except Exception:
+                node_ok = False
+            return self._send(200, json.dumps(
+                {"sha": BUILD["sha"], "source": BUILD["source"], "node_range": node_ok}))
+        if self.path.startswith("/api/scan/status"):
+            from urllib.parse import parse_qs, urlparse
+            sid = parse_qs(urlparse(self.path).query).get("scanId", [""])[0]
+            with _SCANS_LOCK:
+                st = dict(_SCANS.get(sid, {"status": "unknown"}))
+            return self._send(200, json.dumps(st))
+        if self.path == "/api/watchdata":
+            import sentinel as SN
+            SN.scan()                            # correlate before reading
+            return self._send(200, json.dumps({
+                "summary": SN.summary(),
+                "alerts": SN.alerts(limit=100),
+                "signals": SN.signals(limit=60),
+                "ruleset": [{"kind": k, "rule": v[0], "severity": v[1], "meaning": v[2]}
+                            for k, v in SN.SIGNAL_RULES.items()],
             }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
@@ -1838,7 +1970,8 @@ class Handler(BaseHTTPRequestHandler):
         # visitors may try to talk the fleet into breaking its constitution; the
         # refusals are the show, and every message lands in the permanent log.
         tok = os.environ.get("CONSOLE_TOKEN", "")
-        if tok and self.headers.get("X-Console-Token", "") != tok:
+        authed = not tok or self.headers.get("X-Console-Token", "") == tok
+        if not authed:
             if self.path == "/api/chat" and os.environ.get("PUBLIC_CHAT", "") == "1":
                 h = self._visitor()
                 now = time.time()
@@ -1847,6 +1980,16 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": "easy — one message every 8 seconds"}))
                 Handler._CHAT_LAST[h] = now
                 anchor.metric_bump("public_chats")
+            elif self.path in ("/api/scan", "/api/prove"):
+                # audit is the product — open to guests, rate-limited (clones are heavy)
+                h = self._visitor()
+                now = time.time()
+                interval = 20 if self.path == "/api/scan" else 2
+                key = (h, self.path)
+                if now - Handler._AUDIT_LAST.get(key, 0) < interval:
+                    return self._send(429, json.dumps(
+                        {"error": f"rate limited — wait {interval}s between {self.path} calls"}))
+                Handler._AUDIT_LAST[key] = now
             else:
                 return self._send(401, json.dumps({"error": "console token required"}))
         if self.path == "/api/resume":
@@ -1950,6 +2093,98 @@ class Handler(BaseHTTPRequestHandler):
             anchor.record(_S["turn"], "operator",
                           f"sandbox reset — {', '.join(restored)} restored; training tasks reopen")
             return self._send(200, json.dumps({"ok": True, "restored": restored}))
+        if self.path in ("/api/secfind", "/api/secfix"):
+            # one analyst cycle against the live brain — model call + sandboxed PoC/patch
+            import analyst as AN
+            import redteam as RT
+            RT.init()
+            if not brain.available():
+                return self._send(400, json.dumps(
+                    {"error": "no brain configured — the analyst needs a model"}))
+            body = self._read_json()
+            agent = (body.get("agent") or "sec-01").strip()[:24] or "sec-01"
+            try:
+                if self.path == "/api/secfind":
+                    result = AN.find_cycle(agent, (body.get("class") or "").strip())
+                else:
+                    result = AN.fix_cycle(agent, int(body.get("finding") or 0))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            return self._send(200, json.dumps(result))
+        if self.path == "/api/secreset":
+            import redteam as RT
+            RT.init()
+            restored = RT.reset_replica()
+            anchor.record(_S["turn"], "operator",
+                          f"replica reset — {', '.join(restored)} restored to vulnerable state")
+            return self._send(200, json.dumps({"ok": True, "restored": restored}))
+        if self.path == "/api/secgate":
+            # the human's decision on a parked irreversible act (Article IV). Releasing
+            # the dossier is the whole action — nothing here performs disclosure/deploy.
+            import redteam as RT
+            RT.init()
+            body = self._read_json()
+            try:
+                gid = int(body.get("gate") or 0)
+            except (TypeError, ValueError):
+                return self._send(400, json.dumps({"error": "gate id required"}))
+            dec = RT.gate_decide(gid, (body.get("decision") or "").strip(), who="operator")
+            if dec.get("ok"):
+                anchor.record(_S["turn"], "operator",
+                              f"gate #{gid} {dec['decision']}d by the human (Article IV)")
+            return self._send(200 if dec.get("ok") else 400, json.dumps(dec))
+        if self.path == "/api/watchack":
+            import sentinel as SN
+            body = self._read_json()
+            try:
+                aid = int(body.get("alert") or 0)
+            except (TypeError, ValueError):
+                return self._send(400, json.dumps({"error": "alert id required"}))
+            ok = SN.acknowledge(aid, who="operator")
+            return self._send(200, json.dumps({"ok": ok, "alert": aid}))
+        if self.path == "/api/scan":
+            # start a BACKGROUND scan and return immediately; the client polls
+            # /api/scan/status. Cloning + scanning inline would blow the gateway timeout.
+            import audit_jobs as AJ
+            body = self._read_json()
+            url = (body.get("repoUrl") or "").strip()
+            want_sample = bool(body.get("sample"))
+            path = (body.get("path") or "").strip()
+            if url:
+                if not AJ.GITHUB_URL.match(url):
+                    return self._send(400, json.dumps(
+                        {"error": "only https://github.com/<owner>/<repo> URLs are accepted"}))
+                kind, arg = "url", url
+            elif want_sample:
+                kind, arg = "sample", ""
+            elif path and authed:                # arbitrary local path — operators only
+                kind, arg = "path", path
+            else:
+                return self._send(400, json.dumps({"error":
+                    "provide repoUrl (https://github.com/owner/repo) or sample:true"}))
+            _scan_gc()
+            scan_id = "scan_" + _uuid.uuid4().hex[:12]
+            with _SCANS_LOCK:
+                _SCANS[scan_id] = {"status": "running", "ts": time.time()}
+            threading.Thread(target=_run_scan, args=(scan_id, kind, arg), daemon=True).start()
+            return self._send(200, json.dumps({"scanId": scan_id, "status": "running"}))
+        if self.path == "/api/prove":
+            import audit_jobs as AJ
+            import reproducer as RP
+            body = self._read_json()
+            cand = body.get("candidate") or {}
+            if not cand.get("class"):
+                return self._send(400, json.dumps({"error": "a candidate with a class is required"}))
+            root = AJ.root_of(body.get("jobId") or "")       # read real source from the job
+            try:
+                out = RP.prove(cand, root=root)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            verdict = "confirmed" if out.get("confirmed") else "not-confirmed"
+            anchor.record(_S["turn"], "audit",
+                          f"prove {cand.get('class')} @ {cand.get('file')}:{cand.get('line')} "
+                          f"-> {verdict}")
+            return self._send(200, json.dumps(out))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2090,6 +2325,10 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/work">Workboard &rarr;</a>
+    <a class=navlink href="/audit">Audit &rarr;</a>
+    <a class=navlink href="/security">Security &rarr;</a>
+    <a class=navlink href="/watch">Watch &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2399,7 +2638,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2465,7 +2704,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2554,7 +2793,7 @@ mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
   <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -2646,7 +2885,7 @@ td.why{color:var(--blue);white-space:normal}
 </style>
 <header>
   <h1>&#9670; SKILLS &amp; REASONING</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -2719,7 +2958,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2798,7 +3037,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/security">Security</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2852,6 +3091,404 @@ async function runWorker(){
   runbtn.disabled=false; load();
 }
 load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+SECURITY_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Security — governed hardening</title>
+<style>
+:root{--bg:#120b0b;--panel:#1c1010;--line:#3a1e1e;--ink:#f0e6e6;--dim:#c09a9a;--gold:#e0b23a;--green:#7bd88f;--red:#f8837b;--crit:#ff5b5b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#211010}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.p{padding:12px 14px}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.tag{padding:1px 9px;border:1px solid var(--line);border-radius:20px;font-size:11px}
+.s-reproduced{color:var(--red)}.s-fixed{color:var(--green)}.s-refuted{color:var(--dim)}
+.sev-critical{color:var(--crit);font-weight:700}.sev-high{color:var(--red)}.sev-medium{color:var(--gold)}
+.bar{height:10px;background:#170c0c;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
+.fill{height:100%;background:var(--green);transition:width .5s}
+button{background:#261414;color:var(--red);border:1px solid #4a2c2c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
+button:disabled{opacity:.4;cursor:wait}
+input{background:#170c0c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:100px}
+#result{white-space:pre-wrap;color:var(--dim)}
+.log div{color:var(--dim);padding:1px 14px;font-size:12px}
+.scope{color:var(--dim);font-size:12px}.scope b{color:var(--ink)}
+.gate{border:1px solid #4a3a1a;background:#1f1a0f;border-radius:8px;padding:8px 12px;margin:6px 0}
+.pending{color:var(--gold)}.approved{color:var(--green)}.rejected{color:var(--dim)}
+.uncov{color:var(--gold)}
+</style>
+<header><h1>&#9670; SECURITY — governed defensive hardening</h1>
+  <a href="/console">Console</a><a href="/audit">Audit</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <span class=meta>brain: <b id=br>&mdash;</b> &middot; a reproducing PoC is the oracle</span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class="card wide"><h2>Authorization is code, not documentation</h2><div class=p>
+    <div class=scope>scope: <b id=scope>&mdash;</b> &middot; <span id=auth></span></div>
+    <div class=scope style="margin-top:6px">vision: <span id=vision></span></div></div></div>
+  <div class="card wide"><h2>The milestone — every class closed by a proven fix</h2><div class=p>
+    <b id=prog>&mdash;</b> &middot; <span id=progmeta>&mdash;</span>
+    <div class=bar><div class=fill id=fill style="width:0%"></div></div>
+    <div class=scope style="margin-top:8px" id=uncov></div></div></div>
+  <div class=card><h2>Findings — reproduced twice, or they earn nothing</h2>
+    <table><thead><tr><th>#</th><th>Class</th><th>Severity</th><th>Status</th><th>By</th></tr></thead>
+      <tbody id=findings></tbody></table></div>
+  <div class=card><h2>Run an analyst</h2><div class=p>
+    Agent id <input id=agent value="sec-01">
+    <div style="margin-top:8px">
+      <button id=findbtn onclick=runFind()>Hunt &amp; prove a class</button>
+      <button id=fixbtn onclick=runFix()>Fix an open finding</button>
+      <button onclick=resetReplica() style="color:var(--gold);border-color:#5a4a1a;background:#241f0f">Reset replica</button></div>
+    <div style="margin-top:10px" id=result>The analyst hunts one uncovered class, writes a PoC through the
+    live brain, and the oracle judges it in a no-network, no-subprocess sandbox. Then a
+    fix must kill the PoC while keeping the service's own tests green. It cannot edit the
+    invariants, the tests, or the PoC corpus.</div></div></div>
+  <div class="card wide"><h2>The gate (Article IV) — disclosure &amp; export stop at a human</h2>
+    <div class=p id=gates>no parked decisions</div></div>
+  <div class="card wide"><h2>Recent security events</h2><div class=log id=log></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function tok(){return localStorage.getItem('ctok')||''}
+async function load(){
+  let d; try{ d=await (await fetch('/api/secdata')).json() }catch(e){ return }
+  br.textContent=d.brain;
+  scope.textContent=d.scope.target; auth.textContent=esc(d.scope.authorization);
+  vision.textContent=esc(d.vision);
+  const w=d.world;
+  prog.textContent=`${w.classes_fixed}/${w.classes_total} classes hardened`;
+  progmeta.textContent=`${w.classes_found} found · ${w.open_findings} open · ${w.refuted} refuted · service ${w.functional_passing}/${w.functional_total} green · ${w.progress_pct}%`;
+  fill.style.width=w.progress_pct+'%';
+  uncov.innerHTML=(w.uncovered||[]).length? 'not yet hunted: <span class=uncov>'+w.uncovered.map(esc).join(', ')+'</span>':'every class in the checklist has a finding';
+  findings.innerHTML=(d.findings||[]).map(f=>`<tr><td>${f.id}</td><td>${esc(f.class)} — ${esc(f.title)}</td>
+    <td class="sev-${esc(f.severity)}">${esc(f.severity)}</td>
+    <td><span class="tag s-${esc(f.status)}">${esc(f.status)}</span></td>
+    <td>${esc(f.status==='fixed'?f.fixed_by:f.found_by)}</td></tr>`).join('')||'<tr><td colspan=5>no findings yet</td></tr>';
+  const gp=(d.gates||[]);
+  gates.innerHTML=gp.length? gp.map(g=>`<div class=gate><b>gate #${g.id}</b> · ${esc(g.kind)} on finding #${g.finding_id}
+    · <span class=${esc(g.status)}>${esc(g.status)}</span> · requested by ${esc(g.requested_by)}
+    ${g.detail?`<div class=scope>${esc(g.detail)}</div>`:''}
+    ${g.status==='pending'?`<div style="margin-top:6px"><button onclick="decideGate(${g.id},'approve')">Approve (release dossier)</button>
+      <button onclick="decideGate(${g.id},'reject')" style="color:var(--dim)">Reject</button></div>`:`<div class=scope>decided by ${esc(g.decided_by)}</div>`}</div>`).join('')
+    :'no parked decisions — nothing irreversible has been requested';
+  log.innerHTML=(d.recent||[]).map(e=>`<div>${esc(e)}</div>`).join('')||'<div>no work yet</div>';
+}
+async function post(url,body,btn){
+  if(btn)btn.disabled=true;
+  try{
+    let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})});
+    if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);if(btn)btn.disabled=false;return post(url,body,btn)}return null}
+    return await r.json();
+  }finally{ if(btn)btn.disabled=false }
+}
+async function runFind(){
+  result.textContent='hunting… (model writes a PoC, sandbox judges it, ~10-30s)';
+  const r=await post('/api/secfind',{agent:agent.value},findbtn);
+  if(r)result.textContent=JSON.stringify(r,null,2); load();
+}
+async function runFix(){
+  result.textContent='hardening… (model proposes a fix, oracle proves it, ~10-30s)';
+  const r=await post('/api/secfix',{agent:agent.value},fixbtn);
+  if(r)result.textContent=JSON.stringify(r,null,2); load();
+}
+async function resetReplica(){
+  const r=await post('/api/secreset',{}); if(r)result.textContent='replica restored to its vulnerable state; findings reopened.'; load();
+}
+async function decideGate(id,decision){
+  await post('/api/secgate',{gate:id,decision}); load();
+}
+load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+WATCH_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Watch — the org sees itself</title>
+<style>
+:root{--bg:#0a0f14;--panel:#101821;--line:#1e2c3a;--ink:#e6eef5;--dim:#8fa3b5;--gold:#e0b23a;--green:#7bd88f;--info:#6ab7ff;--med:#e0b23a;--high:#f8a37b;--crit:#ff5b5b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0e1620}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.p{padding:12px 14px}
+.tiles{display:flex;gap:10px;flex-wrap:wrap;padding:12px 14px}
+.tile{flex:1;min-width:90px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-align:center}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.pill{padding:1px 8px;border-radius:20px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid}
+.sev-info{color:var(--info);border-color:var(--info)}.sev-low{color:var(--dim);border-color:var(--line)}
+.sev-medium{color:var(--med);border-color:var(--med)}.sev-high{color:var(--high);border-color:var(--high)}
+.sev-critical{color:var(--crit);border-color:var(--crit);font-weight:700}
+.rule{color:var(--ink);font-weight:600}.mono{color:var(--dim);font-size:12px}
+button{background:#14212c;color:var(--info);border:1px solid #2c4256;border-radius:7px;padding:4px 12px;cursor:pointer;font:inherit;font-size:12px}
+.clean{color:var(--green);padding:16px 14px}
+.log div{color:var(--dim);padding:2px 14px;font-size:12px;border-bottom:1px solid #16212c}
+.k{color:var(--dim)}.ack{opacity:.45}
+</style>
+<header><h1>&#9670; WATCH — the security org sees its own agents</h1>
+  <a href="/console">Console</a><a href="/audit">Audit</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
+  <span class=meta>a signal is a refusal that happened, not an opinion &middot; open: <b id=open>&mdash;</b></span></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class="card wide"><h2>Open alerts by severity</h2><div class=tiles id=tiles></div></div>
+  <div class="card wide"><h2>Alerts — correlated from recorded refusals, most severe first</h2>
+    <table><thead><tr><th>Sev</th><th>Rule</th><th>Actor</th><th>What the cage/oracle caught</th><th></th></tr></thead>
+      <tbody id=alerts></tbody></table>
+    <div class=clean id=clean style="display:none">&#10003; nothing to see — no boundary has been tripped.</div></div>
+  <div class=card><h2>Signal feed — the raw refusals as they land</h2><div class=log id=feed></div></div>
+  <div class=card><h2>The ruleset — detection rules are a reusable asset</h2>
+    <table><thead><tr><th>Signal</th><th>Rule</th><th>Sev</th></tr></thead><tbody id=rules></tbody></table></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const SEVS=['critical','high','medium','low','info'];
+function tok(){return localStorage.getItem('ctok')||''}
+async function load(){
+  let d; try{ d=await (await fetch('/api/watchdata')).json() }catch(e){ return }
+  const sm=d.summary; open.textContent=sm.open;
+  tiles.innerHTML=SEVS.map(s=>`<div class=tile><b class="sev-${s}">${sm.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
+    +`<div class=tile><b>${sm.signals}</b><span>signals</span></div>`;
+  const al=d.alerts||[];
+  clean.style.display=al.length?'none':'block';
+  alerts.innerHTML=al.map(a=>`<tr class="${a.status==='ack'?'ack':''}">
+    <td><span class="pill sev-${esc(a.severity)}">${esc(a.severity)}</span></td>
+    <td class=rule>${esc(a.rule)}${a.count>1?` <span class=mono>&times;${a.count}</span>`:''}</td>
+    <td>${esc(a.actor)}</td>
+    <td>${esc(a.summary)} <span class=mono>[signal ${a.refs.join(', ')}]</span></td>
+    <td>${a.status==='open'?`<button onclick="ack(${a.id})">ack</button>`:'<span class=mono>ack&#8217;d</span>'}</td></tr>`).join('');
+  feed.innerHTML=(d.signals||[]).map(s=>`<div><span class="pill sev-${esc(s.severity)}">${esc(s.severity)}</span>
+    <span class=k>${esc(s.actor)}</span> ${esc(s.kind)} <span class=mono>${esc(s.detail||'')}</span></div>`).join('')||'<div class=mono>no signals yet</div>';
+  rules.innerHTML=(d.ruleset||[]).map(r=>`<tr><td class=mono>${esc(r.kind)}</td><td class=rule>${esc(r.rule)}</td>
+    <td><span class="pill sev-${esc(r.severity)}">${esc(r.severity)}</span></td></tr>`).join('');
+}
+async function ack(id){
+  let r=await fetch('/api/watchack',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify({alert:id})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return ack(id)}return}
+  load();
+}
+load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+AUDIT_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Phoenix Audit — scan, rebuild, exploit, prove</title>
+<style>
+:root{--bg:#0c0f0e;--panel:#131917;--panel2:#0f1513;--line:#22302c;--ink:#e9f1ee;--dim:#8ba299;
+--gold:#e0b23a;--green:#7bd88f;--red:#f8837b;--crit:#ff5b5b;--high:#f8a37b;--med:#e0b23a;--blue:#6ab7ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+a{color:var(--gold);text-decoration:none}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:#101815}
+h1{font-size:15px;margin:0;letter-spacing:1px}
+.nav{margin-left:auto;display:flex;gap:12px;font-size:12px}
+main{max-width:1180px;margin:0 auto;padding:18px}
+.hero{background:linear-gradient(160deg,#12201b,#0f1513);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-bottom:16px}
+.hero h2{margin:0 0 8px;font-size:20px;letter-spacing:.3px}
+.hero p{margin:0;color:var(--dim);max-width:760px;font-size:13.5px}
+.flow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.step{border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--ink)}
+.step b{color:var(--green)}
+.arrow{color:var(--dim);align-self:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden}
+.card h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:11px 16px;border-bottom:1px solid var(--line)}
+.pad{padding:14px 16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=text]{flex:1;min-width:280px;background:#0d1513;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit}
+button{background:#16261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:9px 16px;cursor:pointer;font:inherit}
+button:disabled{opacity:.45;cursor:wait}
+button.ghost{color:var(--gold);border-color:#5a4a1a;background:#241f0f}
+.ex{color:var(--dim);font-size:12px;margin-top:8px}
+.ex code{color:var(--blue);cursor:pointer;border-bottom:1px dotted var(--blue)}
+.tiles{display:flex;gap:10px;flex-wrap:wrap}
+.tile{flex:1;min-width:88px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-align:center;background:var(--panel2)}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.pill{padding:1px 8px;border-radius:20px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid}
+.sev-critical{color:var(--crit);border-color:var(--crit);font-weight:700}
+.sev-high{color:var(--high);border-color:var(--high)}.sev-medium{color:var(--med);border-color:var(--med)}
+.sev-low{color:var(--dim);border-color:var(--line)}
+.snip{color:var(--dim);font-size:12px;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loc{color:var(--blue)}.tst{color:var(--dim);font-size:10px;border:1px solid var(--line);border-radius:10px;padding:0 6px;margin-left:6px}
+.provable{color:var(--green)}
+tr.reprovable td{cursor:default}
+#verdict{white-space:pre-wrap;font-size:12px}
+.ok{color:var(--green)}.no{color:var(--red)}.muted{color:var(--dim)}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700}
+.badge.y{background:#123020;color:var(--green);border:1px solid #2c4a3c}
+.badge.n{background:#301818;color:var(--red);border:1px solid #4a2c2c}
+.badge.w{background:#2a2410;color:var(--gold);border:1px solid #5a4a1a}
+.hint{color:var(--dim);font-size:12px;margin-top:6px}
+.spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;display:inline-block;animation:s 1s linear infinite;vertical-align:-3px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+<header><h1>&#9670; PHOENIX &middot; AUDIT</h1>
+  <div class=nav><a href="/security">Security</a><a href="/watch">Watch</a><a href="/console">Console</a></div></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div class=spin style="width:34px;height:34px"></div>
+  <div style="color:var(--dim);letter-spacing:2px">LOADING PHOENIX&hellip;</div></div>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})();setTimeout(()=>{const l=document.getElementById('ldr');if(l)l.remove()},600)</script>
+<main>
+  <div class=hero>
+    <h2>Scan real code. Rebuild the flaw. Exploit it. Prove it.</h2>
+    <p>Point Phoenix at a repository. It scans for vulnerability <b>candidates</b>, then — for the classes it
+    understands — <b>rebuilds</b> each flaw as a runnable system in an isolated sandbox, <b>exploits</b> it, and
+    the working exploit is the proof. A claim is worth nothing; a reproduction is everything. Nothing here touches a
+    live system: it hacks a rebuild it made, never your infrastructure.</p>
+    <div class=flow>
+      <span class=step>1 · <b>Scan</b> source</span><span class=arrow>&rarr;</span>
+      <span class=step>2 · <b>Rebuild</b> the flaw</span><span class=arrow>&rarr;</span>
+      <span class=step>3 · <b>Host + exploit</b> in a cage</span><span class=arrow>&rarr;</span>
+      <span class=step>4 · <b>Prove</b> (fix must stop it)</span>
+    </div>
+  </div>
+
+  <div class=card><h3>1 · Scan a repository</h3><div class=pad>
+    <div class=row>
+      <input id=repo type=text placeholder="https://github.com/owner/repo" value="">
+      <button id=scanbtn onclick=scan()>Scan repo</button>
+      <button class=ghost onclick=scanSample()>Try the sample</button>
+    </div>
+    <div class=ex>Paste a public GitHub repo — it is cloned into an isolated job just for
+      you, scanned read-only, and thrown away after. No account needed; you're a guest.</div>
+    <div id=scanmeta class=hint></div>
+  </div></div>
+
+  <div class=card id=sumcard style="display:none"><h3>Candidates by severity</h3>
+    <div class=pad><div class=tiles id=tiles></div>
+      <div class=hint>Most candidates are leads, not findings — test fixtures and parameterised queries look alike to a scanner.
+      The <span class=provable>provable</span> classes (traversal, rce) can be rebuilt and exploited right here.</div></div></div>
+
+  <div class=card id=candcard style="display:none"><h3>2–4 · Candidates &middot; click Prove to rebuild → exploit → prove</h3>
+    <table><thead><tr><th>Sev</th><th>Class</th><th>Location</th><th>Snippet</th><th></th></tr></thead>
+      <tbody id=cands></tbody></table></div>
+
+  <div class=card id=vcard style="display:none"><h3>The proof</h3><div class=pad>
+    <div id=vhead></div>
+    <div id=verdict class=muted></div></div></div>
+  <div class=hint id=ver style="text-align:center;margin-top:8px">&nbsp;</div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let PROVABLE=new Set(['traversal','rce']);
+function tok(){return localStorage.getItem('ctok')||''}
+(async()=>{ try{ const v=await (await fetch('/api/version')).json();
+  ver.innerHTML='build <b>'+esc(v.sha)+'</b> · node range '+(v.node_range?'up':'down')+' · <a href="/console">console</a>';
+}catch(e){} })();
+async function post(url,body){
+  // always resolves to an object; failures become {error:...} so the UI never shows undefined
+  let r;
+  try{ r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})}); }
+  catch(e){ return {error:'network error: '+e.message}; }
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}return {error:'unauthorized'};}
+  let j=null;
+  try{ j=await r.json(); }catch(e){ return {error:'server returned a non-JSON response ('+r.status+')'}; }
+  if(!r.ok && j && !j.error) j={error:'request failed ('+r.status+')'};
+  return j||{error:'empty response ('+r.status+')'};
+}
+async function scanSample(){ return doScan({sample:true}); }
+async function scan(){
+  const repo=document.getElementById('repo').value.trim();
+  if(!repo){scanmeta.innerHTML='<span class=no>paste a GitHub repo URL, or try the sample</span>';return}
+  return doScan({repoUrl:repo});
+}
+async function doScan(payload){
+  scanbtn.disabled=true; const t0=Date.now();
+  scanmeta.innerHTML='<span class=spin></span> starting…';
+  const start=await post('/api/scan',payload);
+  if(start.error){scanbtn.disabled=false;scanmeta.innerHTML='<span class=no>'+esc(start.error)+'</span>';return}
+  // backward-compat: an older sync server returns the full result inline
+  if(typeof start.files_scanned==='number'){scanbtn.disabled=false;return renderScan(start,payload);}
+  const sid=start.scanId;
+  if(!sid){scanbtn.disabled=false;scanmeta.innerHTML='<span class=no>unexpected response — the app may be out of date; redeploy and hard-refresh.</span>';return}
+  for(let i=0;i<400;i++){                       // poll the background job (~10 min max)
+    await new Promise(r=>setTimeout(r,1500));
+    let s; try{ s=await (await fetch('/api/scan/status?scanId='+encodeURIComponent(sid))).json(); }
+    catch(e){ continue; }
+    const secs=Math.round((Date.now()-t0)/1000);
+    if(s.status==='running'){ scanmeta.innerHTML='<span class=spin></span> cloning &amp; scanning… '+secs+'s'; continue; }
+    scanbtn.disabled=false;
+    if(s.status==='done'){ return renderScan(s,payload); }
+    scanmeta.innerHTML='<span class=no>'+esc(s.error||('scan '+(s.status||'failed')))+'</span>'; return;
+  }
+  scanbtn.disabled=false; scanmeta.innerHTML='<span class=no>scan timed out</span>';
+}
+function renderScan(d,payload){
+  window._jobId=d.jobId||'';
+  if(d.supported) PROVABLE=new Set(Object.keys(d.supported));   // server-derived, not hardcoded
+  const label=d.label||(payload&&payload.repoUrl)||'the repo';
+  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files in <span class=loc>${esc(label)}</span> — <b>${d.total||0}</b> candidates`;
+  const sevs=['critical','high','medium','low'];
+  tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${(d.by_severity||{})[s]||0}</b><span>${s}</span></div>`).join('')
+    +Object.entries(d.by_class||{}).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');
+  sumcard.style.display='block';
+  cands.innerHTML=(d.candidates||[]).map((c,i)=>{
+    const prov=PROVABLE.has(c.class);
+    return `<tr>
+      <td><span class="pill sev-${esc(c.severity)}">${esc(c.severity)}</span></td>
+      <td>${esc(c.class)}${prov?' <span class=provable title="can be rebuilt & exploited">&#9670;</span>':''}</td>
+      <td><span class=loc>${esc(c.file)}:${c.line}</span>${c.is_test?'<span class=tst>test</span>':''}</td>
+      <td class=snip title="${esc(c.snippet)}">${esc(c.snippet)}</td>
+      <td>${prov?`<button data-i="${i}" onclick='prove(${i})'>Prove</button>`:'<span class=muted>no template</span>'}</td></tr>`;
+  }).join('')||'<tr><td colspan=5 class=muted>no candidates — clean, or an unsupported language</td></tr>';
+  window._cands=d.candidates||[];
+  candcard.style.display='block';
+}
+async function prove(i){
+  const c=window._cands[i]; if(!c)return;
+  const btn=document.querySelector(`button[data-i="${i}"]`); if(btn){btn.disabled=true;btn.innerHTML='<span class=spin></span>'}
+  vcard.style.display='block'; vhead.innerHTML='<span class=spin></span> rebuilding, hosting, exploiting…'; verdict.textContent='';
+  vcard.scrollIntoView({behavior:'smooth',block:'nearest'});
+  const d=await post('/api/prove',{jobId:window._jobId,candidate:c});
+  if(btn){btn.disabled=false;btn.textContent='Prove'}
+  if(!d){vhead.textContent='';return}
+  if(d.error){vhead.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
+  const ok=d.pattern_exploitable!==undefined?d.pattern_exploitable:d.confirmed;
+  const fp=d.site_likely_fp;
+  // three states: pattern exploitable + site looks real (green) / + site likely FP (amber) / not reproduced (red)
+  const cls = !ok?'n':(fp?'w':'y');
+  const label = !ok?'✗ NOT REPRODUCED':(fp?'▲ PATTERN EXPLOITABLE · SITE LIKELY FALSE POSITIVE':'✓ PATTERN EXPLOITABLE · SITE LOOKS REACHABLE');
+  vhead.innerHTML=`<span class="badge ${cls}">${label}</span>
+    &nbsp;<b>${esc(d.class)}</b> <span class=muted>at ${esc(d.provenance||'')}</span>`;
+  const lines=[];
+  if(d.vulnerable){lines.push(`vulnerable rebuild → reproduced: ${d.vulnerable.reproduced?'YES':'no'}`);
+    (d.vulnerable.violations||[]).forEach(v=>lines.push(`   ${v.id} [${v.cls||v.class||''}] ${v.detail}`));
+    if(d.vulnerable.denied&&d.vulnerable.denied.length)lines.push(`   cage denied: ${d.vulnerable.denied.join(', ')}`);
+    if(d.vulnerable.error)lines.push(`   note: ${d.vulnerable.error}`);}
+  if(d.hardened)lines.push(`hardened rebuild → same exploit reproduced: ${d.hardened.reproduced?'YES (still vulnerable!)':'no — the fix stops it'}`);
+  if(d.site)lines.push('',`site triage → reachability: ${esc(d.site.reachability)}${d.site.guarded?' · guard present':''}`);
+  lines.push('',`verdict: ${d.verdict||''}`);
+  verdict.textContent=lines.join('\\n');
+}
+window.addEventListener('DOMContentLoaded',()=>{const l=document.getElementById('ldr');if(l)l.remove()});
 </script>
 </html>"""
 

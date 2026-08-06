@@ -20,7 +20,7 @@ That is the whole selection rule.
 | `main` | Software (toy) | the test suite | (none — sandbox) | **shipped** (`workspace.py`, `worker.py`, `/work`) |
 | `harness/builder` | Software at real scale | the repo's CI | **the pull request / merge** | design |
 | `harness/research` | Science & discovery | computational assays, benchmark reproduction, citation checks | anything physical or public (reagents, protocols, publishing, IP) | design |
-| `harness/security` | Defensive hardening | a PoC that reproduces in a sandboxed replica | any system outside the sandbox; disclosure; prod deploys | design |
+| `harness/security` | Defensive hardening | a PoC that reproduces in a sandboxed replica | any system outside the sandbox; disclosure; prod deploys | **shipped** (`sandbox/replica/`, `redteam.py`, `analyst.py`, `pocrunner.py`, `/security`) |
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |
 | `harness/data` | Data engineering & analysis | data contracts passing on staging | any production write, deletion, backfill or export | design |

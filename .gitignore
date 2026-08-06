@@ -10,8 +10,22 @@ gov/aoe-anchor.sqlite-wal
 gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
+gov/redteam.sqlite
+gov/redteam.sqlite-wal
+gov/redteam.sqlite-shm
+gov/sentinel.sqlite
+gov/sentinel.sqlite-wal
+gov/sentinel.sqlite-shm
 gov/scorecard.json
 scorecard.json
+
+# Security harness: PoCs the analyst generates at runtime are evidence, not source.
+# The corpus ships empty (pocs/.gitkeep); a real engagement's PoCs stay local.
+sandbox/replica/pocs/poc_*.py
+
+# Audit pipeline: reproductions the reproducer rebuilds at runtime are generated
+# artifacts (target/invariant/poc per candidate), not source.
+sandbox/reproductions/
 
 # Python
 __pycache__/
@@ -20,3 +34,6 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+
+# Local screenshots (not source)
+.shots/

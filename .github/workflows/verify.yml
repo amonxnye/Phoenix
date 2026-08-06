@@ -20,3 +20,15 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the replica's own functional suite
+        run: python3 -m unittest discover -s sandbox/replica/tests
+      - name: Run the Security (governed hardening) acceptance checks
+        run: python3 gov/verify_security.py
+      - name: Run the Sentinel (detection/telemetry) acceptance checks
+        run: python3 gov/verify_sentinel.py
+      - name: Run the real-code audit (scan → rebuild → exploit → prove) checks
+        run: python3 gov/verify_audit.py
+      - name: Run the Campaign (autonomous army) acceptance checks
+        run: python3 gov/verify_campaign.py
+      - name: Smoke + performance benchmark (real Node reproductions on a fixture)
+        run: python3 gov/bench.py /nonexistent --strict
