@@ -1,7 +1,9 @@
 # Phoenix Builder — a governed organization that ships software
 
-**Status:** foundation shipped (`workspace.py`, `worker.py`, the `/work` console),
-this branch extends it from a toy sandbox to **real repositories and systems**.
+**Status:** foundation shipped (`workspace.py`, `worker.py`, the `/work` console);
+**step 1 of §5 shipped** — the repo and its test command are now configuration, so the
+loop runs on any tested codebase. This branch extends it from a toy sandbox to **real
+repositories and systems**.
 Where RESEARCH.md discovers and REALWORK.md set the thesis, Builder is the thesis
 running at production scale.
 
@@ -24,8 +26,8 @@ That is the whole machine, proven on a toy module. Builder scales each axis.
 
 | Axis | Toy (shipped) | Real (this branch) |
 |---|---|---|
-| Codebase | one `calculator.py` | a real git repo, many modules |
-| Oracle | one unittest file | the repo's full CI (pytest, lint, type-check, build) |
+| Codebase | one `calculator.py` | a real git repo, many modules — **done** |
+| Oracle | one unittest file | the repo's full CI (pytest, lint, type-check, build) — **test command done** |
 | Task source | failing tests | issues, TODOs, failing CI, a human's feature request |
 | Isolation | in-process file writes | a git **worktree per agent** (already supported by the Agent layer) |
 | The gate | none (toy) | **the pull request**: a human reviews the diff + green CI and merges |
@@ -60,8 +62,21 @@ them. Builder adds:
 
 ## 5. Build order
 
-1. Point `workspace.oracle()` at a real repo's `pytest` (config: repo path + test
-   command) — the toy sandbox generalizes to any tested codebase.
+1. ~~Point `workspace.oracle()` at a real repo's `pytest` (config: repo path + test
+   command) — the toy sandbox generalizes to any tested codebase.~~ **Shipped:**
+
+   ```
+   WORKSPACE_REPO=/path/to/repo WORKSPACE_TEST_CMD="python -m pytest -q" \
+       python3 gov/worker.py --agent dev-01
+   ```
+
+   The oracle reads pytest node ids or unittest's verbose output; the file to edit is
+   derived from the failing test rather than named in code; a run that cannot report
+   results returns **no verdict** rather than "no failures", so silencing the suite
+   pays nothing; and tests, runner config, packaging and CI are all unwritable —
+   on a real repo the exam includes everything that decides how the exam is run.
+   Verified by `gov/verify_work.py` (39/39), which builds, breaks and fixes a second
+   repository with a different layout and test command on every run.
 2. Worktree-per-agent isolation so a team works in parallel without collisions
    (the Agent tool's `isolation: worktree` is the model).
 3. The **PR gate**: agent → branch + diff + CI result → human review/merge, via the

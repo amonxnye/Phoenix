@@ -51,7 +51,15 @@ objective, instant, and free to read. That property — a **cheap oracle** — i
 makes governance testable at all. Swap the oracle for a test suite and the same
 machinery runs against real software: that adapter is **already built**
 (`gov/workspace.py` — the test suite is the oracle, failing tests are the open
-tasks). The first sandboxed code task has already landed and been paid for:
+tasks), and it is no longer tied to the toy sandbox — point it at any repository
+and its own test command:
+
+```
+WORKSPACE_REPO=/path/to/repo WORKSPACE_TEST_CMD="python -m pytest -q" \
+    python3 gov/worker.py --agent dev-01
+```
+
+The first sandboxed code task has already landed and been paid for:
 
 ```
 dev-01 patched calculator.py — 6 tests newly green, suite 9/9,
@@ -109,7 +117,7 @@ the specification, and every article names its enforcing module.
 | **II** | Agents are born by quorum, promoted on merit, retired *before* the overshooting spend. No immortals, no zombies, never reaped to empty. | `economy.py`, `sim_console.py` |
 | **III** | Limits are read before acting. The cap has one writer; a blocked action escalates **once**, naming the value, then mutes until it changes. | `governor.py`, `sim_console._breaker` |
 | **IV** | Irreversible actions stop at the gate. The wait is priced, re-routed if unanswered, and bounded by timeout. Reversible work never pauses. | `sim.py` interrupt, `sim_console.py` |
-| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them. | `workspace.py` |
+| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them, their configuration, or the CI that runs them. | `workspace.py` |
 | **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. | `anchor.py` |
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
@@ -226,7 +234,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `governor.py` | the read view over the checkpointer, the spend cap |
 | `economy.py` | budgets, tiers, promotion, the ledger |
 | `sim.py` | the settlement — resources, builds, decay, trade, era pricing, the gate |
-| `workspace.py` | the real-work world — the test-suite oracle, tasks, the closed sandbox |
+| `workspace.py` | the real-work world — any repo's test command as oracle, tasks, the closed workspace |
 | `worker.py` | the coding agent — patch, test, get paid for green |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
@@ -250,6 +258,9 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Real board dissent — disjoint evidence, `unknown` votes, degeneracy detection
 - [x] The sandbox — Article V's execution path, first code task shipped
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
+- [x] **Any repository as the workspace** — `WORKSPACE_REPO` + `WORKSPACE_TEST_CMD`,
+      pytest or unittest, the target file derived from the failing test, and
+      "no verdict" kept distinct from "no failures" (BUILDER.md §5.1)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
