@@ -10,6 +10,9 @@ gov/aoe-anchor.sqlite-wal
 gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
+gov/logistics.sqlite
+gov/logistics.sqlite-wal
+gov/logistics.sqlite-shm
 gov/scorecard.json
 scorecard.json
 

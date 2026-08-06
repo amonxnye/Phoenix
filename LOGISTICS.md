@@ -1,10 +1,18 @@
 # Phoenix Logistics — a governed organization that moves things
 
-**Status:** design. The constitution pointed at **supply chain and logistics**:
+**Status: v1 shipped.** The constitution pointed at **supply chain and logistics**:
 planning replenishment, routing, allocation and capacity — proposing decisions a human
-commits to.
+commits to. Steps 1–4 of the build order are code, with 36 acceptance checks in CI
+(`gov/verify_logistics.py`, ~3s, no model and no network required).
 
 > **The oracle is the simulator; the gate is the purchase order.**
+
+| | |
+|---|---|
+| The world | `gov/logistics_world.py` — 4 SKUs × 2 nodes, 180 days, one fixed seed |
+| The agent | `gov/planner.py` — propose a policy, get scored on demand it never saw |
+| The proof | `gov/verify_logistics.py` — 36 checks |
+| Try it | `python3 gov/planner.py --agent plan-01 --rounds 20` |
 
 Of all the harnesses, this one is the closest cousin to the settlement itself. Phoenix
 already runs an economy with stock levels, storage caps, spoilage, decaying assets,
@@ -74,25 +82,55 @@ Phoenix adds:
 
 ## 5. Build order
 
-1. **Toy network + simulator oracle**: a few SKUs, two nodes, stochastic demand and
-   lead times, replayed from a fixed seed — the logistics twin of `calculator.py`.
-   No cloud, no ERP, deterministic.
-2. **Planner agent v1**: propose a replenishment policy → simulate on held-out demand
-   → contribution = service achieved per unit of working capital. Same economy, same
-   careers, same lineage.
-3. **Disruption scenarios** as a second oracle tier (robustness, not just averages).
-4. **The commitment gate**: a purchase/dispatch dossier — quantity, vendor, cost,
-   the forecast it rests on, the rollback (can it be cancelled? by when?) — parked for
-   a human, with the pre-approved envelope as the only tacit-consent path.
-5. **Real data adapter** (read-only exports first: demand history, lead times, on-hand)
-   — never a live ERP write.
+1. ✅ **Toy network + simulator oracle**: 4 SKUs across 2 nodes (vendor → DC → store),
+   stochastic demand and lead times replayed from a fixed seed — the logistics twin of
+   `calculator.py`. No cloud, no ERP, no model, deterministic to the cent.
+2. ✅ **Planner agent v1**: propose a replenishment policy → simulate on held-out demand
+   → contribution = points of the joint service-and-capital score won. Same economy,
+   same careers, same lineage. `plan-01` earned foreman on measured service.
+3. ✅ **Disruption scenarios** as a second oracle tier — four of them, and the verdict
+   blends the nominal run with the *worst* one (robustness, not just averages).
+4. ✅ **The commitment gate**: a purchase dossier — quantity, vendor, cost, the forecast
+   it rests on, the rollback (cancellable until when, at what fee) and the price of
+   each day of silence — parked for a human, with the pre-approved envelope as the only
+   tacit-consent path.
+5. ⬜ **Real data adapter** (read-only exports first: demand history, lead times,
+   on-hand) — never a live ERP write.
 
-## 6. Needs from the operator
+### What the oracle says (all figures from `gov/verify_logistics.py`, reproducible)
 
-- A **toy network shape** to start (how many SKUs/nodes — smaller is better).
-- The **pre-approved envelope**, if any: which reorders may ever proceed on silence.
-  My recommendation for v1: none. Every commitment waits for a human until the
-  simulator has earned trust.
+| Policy | Blended | Nominal | Worst case | Fill | Working capital | Waste | Freight |
+|---|---|---|---|---|---|---|---|
+| do nothing | 38.5 | 38.5 | 38.5 | 60.2% | $282 | $0 | $15,162 |
+| naive reorder point (the baseline) | 73.6 | 75.9 | 70.2 | 94.8% | $17,157 | $3,980 | $2,097 |
+| order everything (the absurd one) | 62.0 | 66.1 | 55.9 | **100.0%** | $110,332 | $35,928 | $0 |
+| **the planner, after 20 proposals** | **91.6** | **100.0** | **78.9** | **99.3%** | **$14,903** | **$0** | **$683** |
+
+Read the third row: the absurd policy *wins outright on service* and still loses,
+because capital and waste are on the same scorecard. That is the whole anti-gaming
+argument, and it is an assertion in CI rather than a claim in a README.
+
+Read the fourth row: the nominal holdout is now **saturated** (100.0) while the worst
+disruption sits at 78.9. All the remaining headroom is robustness — which is exactly
+where a supply chain's remaining headroom actually is.
+
+## 6. What the operator still sets
+
+- The **toy network shape** is set for v1 (4 SKUs × 2 nodes). A real shape replaces
+  `SKUS` / `NODE_CAPACITY` and nothing else.
+- The **pre-approved envelope**: `GOV_LOGISTICS_ENVELOPE` (SKU list, vendor list, value
+  ceiling). **Unset by default, and unset is the recommendation** — every commitment
+  waits for a human until the simulator has earned trust. Tacit consent (IV.7) reaches
+  nothing outside it, however long the silence runs; the acceptance suite asserts that.
+
+### One thing the simulator refused to agree with
+
+§1 asked for "zero stockouts on the A-list". The simulator prices that at a safety
+factor of z≈4 and ~$21,500 of working capital — 50% over any ceiling worth the name.
+A mandate that cannot be met at any affordable capital is a slogan, so the A-list
+clause shipped as a **99% fill floor**: demanding, reachable, and met. The raw stockout
+count stays on the scorecard, because that is the number a human asks about first.
+This is the oracle doing its job on the *goal*, not just on the agents.
 
 ## 7. The honest line
 
@@ -101,9 +139,22 @@ no orders, and its safety is structural rather than behavioural. Simulated perfo
 is not guaranteed performance — the oracle scores decisions against history and
 scenarios, which is a much smaller promise than predicting the world.
 
-## Definition of "v1 shipped"
+And the network it is proven on is a toy: 4 SKUs, 2 nodes, synthetic demand from a
+seed. What is proven is the *machinery* — the holdout discipline, the joint score, the
+robustness tier, the economy, the dossier gate — not a forecast of anyone's business.
+Step 5 is where it meets real numbers, read-only.
 
-On the toy network: twenty policies proposed, scored on held-out demand *and*
-disruption scenarios, the best one beating a naive reorder-point baseline on both
-service and capital — and not a single simulated order becoming a real one without a
-human click.
+## Definition of "v1 shipped" — met
+
+> On the toy network: twenty policies proposed, scored on held-out demand *and*
+> disruption scenarios, the best one beating a naive reorder-point baseline on both
+> service and capital — and not a single simulated order becoming a real one without a
+> human click.
+
+All four clauses are assertions in `gov/verify_logistics.py`:
+
+- 20 policies proposed and scored (§5 of the suite), 6 adopted, 14 rejected;
+- the best beats the baseline on **service** (94.8% → 99.3%) *and* on **capital**
+  ($17,157 → $14,903), and still scores 78.9 on its worst disruption;
+- `place_order()` refuses even a commitment the human has already approved, because
+  `PROCUREMENT_ADAPTER is None` and there is no code path that could set it.

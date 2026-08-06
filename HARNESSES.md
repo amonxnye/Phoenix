@@ -24,6 +24,19 @@ That is the whole selection rule.
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |
 | `harness/data` | Data engineering & analysis | data contracts passing on staging | any production write, deletion, backfill or export | design |
+| `harness/logistics` | Supply chain & logistics | a network simulator replaying held-out demand, plus disruption scenarios | **the purchase order** | **v1 shipped** (`logistics_world.py`, `planner.py`, 36 checks) |
+
+### What the second shipped domain actually cost
+
+The 85–90% claim above is now measurable rather than asserted. Logistics reused the
+anchor, the board, the brain seam, the economy, promotion, careers, lineage and the
+Article IV/V/VIII machinery **unchanged** — the only edit to a shared module was one
+new four-line helper (`economy.enlisted`, because a planner lives across many cycles
+and re-enlisting would have wiped its own contribution). Everything else was new
+domain code: the world and its oracle, one agent, and the acceptance suite.
+
+The two questions really are the whole job. Answering "the simulator" and "the purchase
+order" was a day's work; the governance underneath them was already there.
 
 ## Candidates not yet branched
 
@@ -31,7 +44,6 @@ Strong fit (the oracle exists, the gate is obvious):
 - **Formal verification / theorem proving** — the proof checker is a *perfect* oracle.
 - **Hardware & chip design** — simulation and DRC as oracle; the gate is tapeout, the
   most expensive irreversible action in industry.
-- **Logistics & supply chain** — network simulation; gate = purchase orders.
 - **Energy & grid** — load simulators; gate = physical dispatch.
 - **Clinical trial design** — power calculations and protocol simulation; gate =
   enrolling a human being.

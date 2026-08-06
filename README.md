@@ -133,14 +133,18 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
-python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
+# the acceptance suites (CI runs all five on every push)
+python3 gov/verify.py            # 16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_logistics.py  # 36 — supply network oracle, holdout, robustness, PO gate
+python3 gov/console_smoke.py     # headless console API smoke
 
 # the live console
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+
+# the logistics harness: 20 replenishment policies, scored on demand they never saw
+python3 gov/planner.py --agent plan-01 --rounds 20
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to

@@ -20,3 +20,5 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the Logistics (supply network) acceptance checks
+        run: python3 gov/verify_logistics.py

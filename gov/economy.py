@@ -74,6 +74,18 @@ def enlist(agent: str, tier: int = 0) -> None:
         c.close()
 
 
+def enlisted(agent: str) -> bool:
+    """Is this agent already on the ledger? `enlist` deliberately RESETS a row it finds
+    (an id that comes back is a fresh life, not a resurrected career), so any agent that
+    lives across many cycles must ask this before enlisting, or it re-enlists away its
+    own contribution every turn."""
+    c = _conn()
+    try:
+        return c.execute("SELECT 1 FROM ledger WHERE agent=?", (agent,)).fetchone() is not None
+    finally:
+        c.close()
+
+
 def credit(agent: str, amount: int) -> None:
     """Record measured contribution (value produced) for this agent."""
     c = _conn()
