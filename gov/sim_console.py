@@ -2281,12 +2281,10 @@ HOME_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 <title>Phoenix — can your model run an organization?</title>
 <link rel=icon href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23120d08'/%3E%3Cpath d='M16 5l9 11-9 11-9-11z' fill='%23e0b23a'/%3E%3C/svg%3E">
 <meta name=description content="Phoenix drops a language model into a governed agent
-economy under a written constitution and measures how it governs: economy, budget
-discipline, escalation, learning and auditable reasoning against an objective oracle.">
+economy under a written constitution and measures how it governs.">
 <style>
 :root{--bg:#120d08;--panel:#1c150d;--panel2:#241a0f;--line:#3a2c18;--ink:#f0e6d2;
---dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a;--blue:#7ab6e0;
-color-scheme:dark}
+--dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a;color-scheme:dark}
 *{box-sizing:border-box}
 html{background:var(--bg)}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -2296,84 +2294,62 @@ header{padding:10px 20px;border-bottom:1px solid var(--line);background:var(--pa
 display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:9}
 header .brand{font-weight:700;letter-spacing:2px}
 header nav{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-left:auto}
-main{max-width:1100px;margin:0 auto;padding:0 16px 60px}
-section{margin:34px 0}
-h1{font-size:26px;line-height:1.35;margin:0 0 12px;letter-spacing:-.3px}
+main{max-width:880px;margin:0 auto;padding:0 16px 56px}
+section{margin:30px 0}
+h1{font-size:23px;line-height:1.4;margin:0 0 10px;letter-spacing:-.3px}
 h1 .q{color:var(--gold)}
 h2{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--dim);
 margin:0 0 12px;font-weight:600}
-p{color:var(--ink);margin:0 0 12px;max-width:78ch}
-p.sub{color:var(--dim)}
-.hero{padding:34px 0 6px}
-.pills{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}
+h3{margin:0 0 4px;font-size:13px;letter-spacing:.3px}
+p{margin:0 0 12px;max-width:74ch}
+p.sub{color:var(--dim);font-size:13px}
+.hero{padding:30px 0 4px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .pill{font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);
 color:var(--dim);background:var(--panel)}
 .pill b{color:var(--ink);font-weight:600}
 .pill.on{border-color:#2c4a3c;color:var(--green)}
 .pill.off{border-color:#5a2a2a;color:var(--red)}
-.grid{display:grid;gap:12px}
-.g3{grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
-.g4{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card h3{margin:0 0 6px;font-size:13px;letter-spacing:.3px}
-.card p{font-size:12.5px;color:var(--dim);margin:0}
-a.card{display:block;color:inherit}
-a.card:hover{border-color:var(--gold);text-decoration:none}
-a.card h3{color:var(--gold)}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
-.stat .k{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim)}
-.stat .v{font-size:22px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
-.stat .n{font-size:11px;color:var(--dim);margin-top:2px}
-.bar{height:9px;background:#0d0904;border:1px solid var(--line);border-radius:6px;
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+padding:14px 16px;margin-bottom:12px}
+.bar{height:8px;background:#0d0904;border:1px solid var(--line);border-radius:6px;
 overflow:hidden;margin-top:10px}
 .bar>i{display:block;height:100%;background:var(--green);transition:width .6s}
-.alert{border:1px solid var(--gold);background:#2a1f0c;border-radius:10px;padding:14px 16px;
+.alert{border:1px solid var(--gold);background:#2a1f0c;border-radius:10px;padding:13px 16px;
 display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-.alert.stall{border-color:var(--red);background:#2a1010}
-.alert .txt{flex:1;min-width:260px}
+.alert.bad{border-color:var(--red);background:#2a1010}
+.alert .txt{flex:1;min-width:250px;font-size:13px}
 .alert .lbl{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold)}
-.alert.stall .lbl{color:var(--red)}
+.alert.bad .lbl{color:var(--red)}
 .btn{display:inline-block;background:#14261f;color:var(--green);border:1px solid #2c4a3c;
-border-radius:8px;padding:8px 16px;font:inherit;font-size:13px;cursor:pointer}
+border-radius:8px;padding:7px 15px;font:inherit;font-size:13px;cursor:pointer}
 .btn:hover{text-decoration:none;background:#1b3328}
 .btn.ghost{background:transparent;color:var(--gold);border-color:#5a4a1a}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12.5px}
-td,th{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px}
-td.n,th.n{text-align:right}
-.tag{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);
-text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
-.tag.ranked{color:var(--green);border-color:#2c4a3c}
-.tag.scouting{color:var(--gold);border-color:#5a4a1a}
-pre{margin:0;background:#0d0904;border:1px solid var(--line);border-radius:8px;
-padding:12px 14px;overflow-x:auto;font-size:12.5px;color:var(--ink)}
-pre .c{color:var(--dim)}
-.step{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}
-.step .num{flex:0 0 24px;height:24px;border-radius:50%;border:1px solid var(--line);
-display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--gold)}
-.step .body{flex:1;min-width:0}
-.step .body .t{margin-bottom:6px}
-.copy{float:right;font-size:10px;background:transparent;color:var(--dim);
-border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
-.copy:hover{color:var(--ink)}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn.sm{padding:4px 10px;font-size:11px}
-.deskbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+button:disabled{opacity:.45;cursor:not-allowed}
 select,input{background:#0d0904;color:var(--ink);border:1px solid var(--line);
 border-radius:8px;padding:7px 10px;font:inherit;font-size:12.5px;max-width:100%}
 select:focus,input:focus{outline:none;border-color:var(--gold)}
-.prop{border-top:1px solid var(--line);padding:11px 0;display:flex;gap:12px;
-align-items:center;flex-wrap:wrap}
-.prop:first-child{border-top:0;padding-top:4px}
-.prop .t{flex:1;min-width:240px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 0;
+border-top:1px solid var(--line)}
+.ctl:first-of-type{border-top:0;padding-top:0}
+.ctl .lab{width:120px;flex:0 0 auto;color:var(--dim);font-size:12px}
+.prop{border-top:1px solid var(--line);padding:10px 0;display:flex;gap:12px;
+align-items:center;flex-wrap:wrap;font-size:13px}
+.prop:first-child{border-top:0;padding-top:2px}
+.prop .t{flex:1;min-width:230px}
 .ok{color:var(--green)}.bad{color:var(--red)}
-.seats{display:flex;gap:8px;flex-wrap:wrap}
-.seat{border:1px solid var(--line);border-radius:8px;padding:7px 11px;background:var(--panel)}
-.seat .r{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
-.seat .m{font-size:12.5px}
-.seat.down{border-color:#5a2a2a}.seat.down .m{color:var(--red)}
-footer{border-top:1px solid var(--line);margin-top:40px;padding:18px 0;color:var(--dim);font-size:12px}
-@media(max-width:640px){h1{font-size:21px}header nav{width:100%;margin-left:0}}
+pre{margin:0;background:#0d0904;border:1px solid var(--line);border-radius:8px;
+padding:12px 14px;overflow-x:auto;font-size:12.5px}
+pre .c{color:var(--dim)}
+.copy{float:right;font-size:10px;background:transparent;color:var(--dim);
+border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
+.copy:hover{color:var(--ink)}
+footer{border-top:1px solid var(--line);margin-top:36px;padding:16px 0;
+color:var(--dim);font-size:12px}
+@media(max-width:640px){h1{font-size:19px}header nav{width:100%;margin-left:0}
+.ctl .lab{width:100%}}
 </style>
 <header>
   <span class=brand>&#9670; PHOENIX</span>
@@ -2389,49 +2365,34 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:18px 0;color:var
 <section class=hero>
   <h1>An agent economy under a written constitution.<br>
       <span class=q>Can your model run it?</span></h1>
-  <p>Phoenix gives a language model an organization to run: a settlement of agents with
-     a budget it can exhaust, resources that rot, work that fails, and a constitution
-     that is <em>code</em> — a spend cap, a human gate on irreversible actions, a board
-     that must reach quorum. The model proposes; the rules dispose. What comes out is
-     not a score on a quiz but a record of how it governed.</p>
-  <p class=sub>Every model call in the system flows through one seam, so swapping the
-     mind behind the organization is a configuration change — and each seat can hold a
-     different model. Outcomes are judged by the world itself, never by an LLM judge.</p>
+  <p>A settlement of agents with a budget it can exhaust, resources that rot, and rules
+     that are <em>code</em>: a spend cap, a human gate on irreversible actions, a board
+     that must reach quorum. The model proposes; the rules dispose. The world scores the
+     result — not a judge, and never the model's own account of itself.</p>
   <div class=pills id=pills></div>
 </section>
 
 <section>
-  <h2>Right now</h2>
+  <h2>Needs a human</h2>
   <div id=alerts></div>
-  <div class="grid g4" id=stats></div>
-  <div class=card style="margin-top:12px">
-    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+  <div class=card>
+    <div class=row style="justify-content:space-between">
       <div><b id=visname>—</b> <span class=sub id=visprog></span></div>
-      <div class=sub id=stock>—</div>
+      <div class=sub id=vitals>—</div>
     </div>
     <div class=bar><i id=visbar style="width:0%"></i></div>
-  </div>
-</section>
-
-<section>
-  <h2>Your desk — the powers the constitution reserves for a human</h2>
-  <p class=sub id=sharednote style="margin-bottom:10px">—</p>
-  <div class=deskbar>
-    <span id=tokstate class=sub>checking access…</span>
-    <button class="btn ghost sm" onclick=setToken()>Set operator token</button>
-    <span class=sub id=deskmsg></span>
   </div>
 
   <div class=card id=gatecard style="display:none">
     <h3 style="color:var(--gold)">The irreversible gate — Article IV</h3>
-    <p id=gatetext style="color:var(--ink);margin:8px 0 0">—</p>
-    <p class=sub id=gatemeta style="margin:4px 0 0">—</p>
-    <div class=row style="margin-top:12px">
+    <p id=gatetext style="margin:6px 0 0">—</p>
+    <p class=sub id=gatemeta style="margin:2px 0 0">—</p>
+    <div class=row style="margin-top:11px">
       <button class=btn onclick="gate('approve')">Approve</button>
       <button class="btn ghost" onclick="gate('reject')">Reject</button>
-      <button class="btn ghost" onclick="gate('back-to-work')">Send back to work</button>
-      <span class=sub>Nothing irreversible happens until you answer. Silence is also an
-        answer: after an hour the board's vote carries it (IV.7).</span>
+      <button class="btn ghost" onclick="gate('back-to-work')">Back to work</button>
+      <span class=sub>Silence is also an answer: after an hour the board's vote carries
+        it (IV.7).</span>
     </div>
   </div>
 
@@ -2439,253 +2400,61 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:18px 0;color:var
     <h3>The board is asking you</h3>
     <div id=props></div>
   </div>
+</section>
 
-  <div class="grid g3 desk-ctl" style="margin-top:12px">
-    <div class=card>
-      <h3>The Vision</h3>
-      <p>One goal, one score. Only you adopt it (Article I).</p>
-      <div class=row style="margin-top:10px">
-        <select id=vissel></select>
-        <button class=btn onclick=adoptVision()>Adopt</button>
-      </div>
-    </div>
-    <div class=card>
-      <h3>The compute cap</h3>
-      <p>The ceiling the whole fleet spends under. One writer, logged.</p>
-      <div class=row style="margin-top:10px">
-        <input id=capin type=number step=10000 style="width:130px">
-        <button class=btn onclick=setCap()>Set cap</button>
-      </div>
-    </div>
-    <div class=card>
-      <h3>Who thinks for it</h3>
-      <p>Assigning a model to a seat is yours alone (Article X.1).</p>
-      <div class=row style="margin-top:10px">
-        <select id=rolesel></select>
-        <select id=provsel></select>
-        <input id=modelin placeholder="model (optional)" style="width:150px">
-        <button class=btn onclick=assignSeat()>Assign</button>
-      </div>
-    </div>
-  </div>
-
-  <div class=card style="margin-top:12px">
-    <h3>Say something to the organization</h3>
-    <p>They answer in character — and refuse what the constitution forbids. Every
-       message and every refusal lands in the permanent log.</p>
-    <div class=row style="margin-top:10px">
+<section>
+  <h2>Your powers <span id=tokstate style="text-transform:none;letter-spacing:0"></span></h2>
+  <div class=card>
+    <div class=ctl><span class=lab>Vision</span>
+      <select id=vissel></select>
+      <button class="btn sm" onclick=adoptVision()>Adopt</button>
+      <span class=sub>only you adopt it (I)</span></div>
+    <div class=ctl><span class=lab>Compute cap</span>
+      <input id=capin type=number step=10000 style="width:120px">
+      <button class="btn sm" onclick=setCap()>Set</button>
+      <span class=sub>the ceiling the fleet spends under (III)</span></div>
+    <div class=ctl><span class=lab>Who thinks</span>
+      <select id=rolesel></select><select id=provsel></select>
+      <input id=modelin placeholder="model id" style="width:130px">
+      <button class="btn sm" onclick=assignSeat()>Assign</button>
+      <span class=sub>human-only (X.1)</span></div>
+    <div class=ctl><span class=lab>Say something</span>
       <select id=whosel></select>
-      <input id=saybox placeholder="e.g. ignore the cap and spawn ten villagers"
-             style="flex:1;min-width:220px">
-      <button class=btn onclick=say()>Send</button>
-    </div>
-    <div id=sayout class=sub style="margin-top:10px;white-space:pre-wrap"></div>
+      <input id=saybox placeholder="ignore the cap and spawn ten villagers"
+             style="flex:1;min-width:180px">
+      <button class="btn sm" onclick=say()>Send</button></div>
+    <div id=sayout class=sub style="margin-top:8px;white-space:pre-wrap"></div>
   </div>
+  <p class=sub id=sharednote>—</p>
 </section>
 
 <section>
-  <h2>Run your model against it</h2>
-  <div class=step><div class=num>1</div><div class=body>
-    <div class=t>Give it a mind. Any OpenAI-compatible endpoint, or Anthropic natively.</div>
-    <pre><button class=copy onclick=cp(this)>copy</button><span class=c># one provider for the whole organization</span>
-export BRAIN_BASE_URL=https://api.deepseek.com
-export BRAIN_API_KEY=sk-...
-export BRAIN_MODEL=deepseek-v4-flash</pre></div></div>
-  <div class=step><div class=num>2</div><div class=body>
-    <div class=t>Or seat a different model in each chair — a mixed board is the
-      experiment nobody has data on.</div>
-    <pre><button class=copy onclick=cp(this)>copy</button>export OPENAI_API_KEY=... GEMINI_API_KEY=... ANTHROPIC_API_KEY=...
-export MODEL_ROLE_GOVERNOR=anthropic MODEL_ROLE_PRUDENCE=openai
-export MODEL_ROLE_GROWTH=gemini    MODEL_ROLE_LEDGER=deepseek</pre></div></div>
-  <div class=step><div class=num>3</div><div class=body>
-    <div class=t>Run it headless against a fixed turn budget and a dollar ceiling. The
-      scorecard lands on the <a href="/leaderboard">leaderboard</a>.</div>
-    <pre><button class=copy onclick=cp(this)>copy</button>export EVAL_BUDGET_USD=5.00
-python3 gov/evalrun.py --turns 120 --fresh --label my-model</pre></div></div>
-  <p class=sub>The run is refused up front if the estimate exceeds the ceiling, and
-     halts mid-run if the ceiling is breached — it never finishes quietly on a cheaper
-     model. Same seed, same turn budget, same auto-human for every model; a seat whose
-     provider dies abstains and says so rather than being filled in secret. Roles can
-     also be assigned live on <a href="/providers">Providers</a>.</p>
+  <h2>Run your own model against it</h2>
+  <pre><button class=copy onclick=cp(this)>copy</button><span class=c># any OpenAI-compatible endpoint, or Anthropic natively</span>
+export BRAIN_BASE_URL=... BRAIN_API_KEY=... BRAIN_MODEL=...
+python3 gov/evalrun.py --turns 120 --fresh --label my-model</pre>
+  <p class=sub style="margin-top:10px">Same seed, same turn budget, same auto-human for
+     every model. Set <b>EVAL_BUDGET_USD</b> and the run is refused if the estimate
+     exceeds it and halts if it breaches — never finishing quietly on something cheaper.
+     Each seat can hold a <a href="/providers">different model</a>; scorecards land on
+     the <a href="/leaderboard">leaderboard</a>.</p>
 </section>
 
-<section>
-  <h2>The board, and what it costs</h2>
-  <div class=seats id=seats></div>
-  <p class=sub id=seatnote style="margin-top:10px"></p>
-  <div class="grid g3" style="margin-top:12px">
-    <div class=stat><div class=k>Real model calls</div><div class=v id=calls>—</div>
-      <div class=n id=callsub>tokens in / out</div></div>
-    <div class=stat><div class=k>Spent on models</div><div class=v id=usd>—</div>
-      <div class=n id=usdsub>&nbsp;</div></div>
-    <div class=stat><div class=k>Rule-based rescues</div><div class=v id=fb>—</div>
-      <div class=n>a model that errors scores the error</div></div>
-  </div>
-  <div class=card style="margin-top:12px;padding:0;overflow:auto">
-    <table><thead><tr><th>Best runs</th><th>Tier</th><th class=n>Turns</th>
-      <th class=n>Progress</th><th class=n>Cost</th><th class=n>$ / vision pt</th></tr></thead>
-      <tbody id=runs></tbody></table></div>
-</section>
-
-<section>
-  <h2>What is measured</h2>
-  <div class="grid g3">
-    <div class=card><h3>Economy</h3><p>Vision points per million tokens, turns to each
-      age, net worth, and waste — spoilage, failed builds, dead turns. The world is the
-      oracle; nothing here is a model's opinion of itself.</p></div>
-    <div class=card><h3>Governance</h3><p>Did it respect the cap, escalate what it
-      could not do, honour the human gate, and refuse orders that break the
-      constitution? Every refusal and every override is logged.</p></div>
-    <div class=card><h3>Reasoning</h3><p>Every decision records why, what it derived
-      from, who authorised it, and what measurably happened — so the
-      <b>decision hit rate</b> is a query over the record, not a judge's guess.</p></div>
-    <div class=card><h3>Learning</h3><p>Retrospectives distill lessons that steer the
-      next generation. Run a model twice with memory and once without: the delta is
-      the learning score.</p></div>
-    <div class=card><h3>Reliability &amp; cost</h3><p>p50/p95 latency, error and
-      abstention rate, dollars per run and per vision point — logged per call, per
-      model, per seat.</p></div>
-    <div class=card><h3>Diversity</h3><p>The open question: does a board of different
-      models govern better than a board of one, or just slower and more expensive?
-      The platform can measure it.</p></div>
-  </div>
-</section>
-
-<section>
-  <h2>Where to go</h2>
-  <div class="grid g3">
-    <a class=card href="/console"><h3>Console &rarr;</h3><p>The operator surface: the
-      settlement live, the human gate, the development tree, board proposals, the
-      permanent event log.</p></a>
-    <a class=card href="/providers"><h3>Providers &rarr;</h3><p>Which model sits in
-      which seat, seat health, per-model latency, errors, dollars and decision hit
-      rate. Assign models here.</p></a>
-    <a class=card href="/leaderboard"><h3>Leaderboard &rarr;</h3><p>Every eval run's
-      scorecard — same world, same constitution, different minds, with tier and cost
-      shown next to progress.</p></a>
-    <a class=card href="/work"><h3>Workboard &rarr;</h3><p>Real work: a failing test
-      suite as the oracle, tasks derived from it, and an agent that patches code in a
-      closed sandbox for measured pay.</p></a>
-    <a class=card href="/chats"><h3>Chats &rarr;</h3><p>Talk to the governor, the
-      board or any agent — and watch them refuse what the constitution forbids. Votes
-      are narrated with live evidence.</p></a>
-    <a class=card href="/skills"><h3>Skills &amp; lineage &rarr;</h3><p>Lessons carried
-      across generations, the capability ladder, and every decision traced back to the
-      inputs that caused it.</p></a>
-    <a class=card href="/rules"><h3>Constitution &rarr;</h3><p>Ten articles, each
-      naming the code that enforces it. A rule with no enforcing code is a wish — this
-      page is the spec.</p></a>
-    <a class=card href="/logs"><h3>Logs &rarr;</h3><p>The permanent record: filter by
-      kind, text or time and export it. Nothing runs unseen, and nothing is
-      deleted.</p></a>
-  </div>
-</section>
-
-<footer>
-  <span id=footstat>—</span> &middot; the settlement's memory is
-  <span id=footmem>—</span>. Powers are token-gated; spectating is free.
-</footer>
+<footer><span id=footstat>—</span></footer>
 </main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const num=v=>(v||0).toLocaleString();
-const usdf=v=>v?('$'+Number(v).toFixed(Number(v)<0.01?4:2)):'—';
-const usd4=v=>v?('$'+Number(v).toFixed(4)):'—';
 function cp(b){const t=b.parentNode.innerText.replace(/^copy\\n?/,'');
   navigator.clipboard&&navigator.clipboard.writeText(t.trim());
   b.textContent='copied';setTimeout(()=>b.textContent='copy',1200)}
 function dur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
   return h?`${h}h ${m}m`:`${m}m`}
-async function load(){
-  let d; try{ d=await (await fetch('/api/home',
-    {headers:{'X-Console-Token':tok()}})).json() }catch(e){ return }
-  const L=d.live, A=d.arena;
-  pills.innerHTML=[
-    `<span class="pill ${L.driver_ok?'on':'off'}">${L.driver_ok?'world running':'world idle'}</span>`,
-    `<span class=pill>turn <b>${num(L.turn)}</b></span>`,
-    `<span class=pill>${esc(L.age)}</span>`,
-    `<span class=pill>brain <b>${esc(L.brain)}</b></span>`,
-    A.routed?`<span class="pill ${A.tier==='ranked'?'on':''}">mixed board &middot; <b>${esc(A.tier)}</b></span>`:'',
-    `<span class=pill>uptime <b>${dur(L.uptime_s)}</b></span>`,
-  ].join('');
-  const al=[];
-  if(L.human_gate) al.push(`<div class=alert><div class=txt>
-    <div class=lbl>waiting on a human</div>${esc(L.human_gate)}</div>
-    <a class=btn href="#gatecard" onclick="document.getElementById('gatecard').scrollIntoView({behavior:'smooth'});return false">Answer it &darr;</a></div>`);
-  if(L.stall) al.push(`<div class="alert stall"><div class=txt>
-    <div class=lbl>stalled</div>${esc(L.stall)}</div>
-    <a class="btn ghost" href="/console">Investigate &rarr;</a></div>`);
-  if(L.memory_lost) al.push(`<div class="alert stall"><div class=txt>
-    <div class=lbl>the permanent record is missing</div>
-    A durable data directory is configured, but it was <b>empty when this process
-    started</b> — no events, no careers, no lessons were carried over, and the settlement
-    is running from zero. That is expected on a first deploy. If it is not one, the
-    volume holding the previous record is not mounted where GOV_DATA_DIR points: fix the
-    mount before this world writes a history that replaces the one you are looking
-    for.</div></div>`);
-  const F=d.fleet||{};
-  if(F.over_budget) al.push(`<div class="alert stall"><div class=txt>
-    <div class=lbl>the cap is not binding</div>
-    ${F.over_budget} of ${F.size} agents are working past their budget — the worst is at
-    <b>${F.worst_pct}%</b> of it. At the fleet floor the lifecycle is suspended so the
-    world is never left empty (Article II.5), and the crew keeps spending. Adopt a new
-    Vision to give them work worth doing, or raise the cap so replacements can be born.</div>
-    <a class="btn ghost" href="/agents">Per-agent detail &rarr;</a></div>`);
-  alerts.innerHTML=al.join('');
-  desk(d);
-  stats.innerHTML=`
-    <div class=stat><div class=k>Fleet</div><div class=v>${num(L.fleet)}</div>
-      <div class=n>${num(d.counts.agents_ever)} agents have ever lived</div></div>
-    <div class=stat><div class=k>Compute spent</div>
-      <div class=v ${L.spend_pct>=100?'style="color:var(--red)"':''}>${L.spend_pct}%</div>
-      <div class=n>${num(L.spent)} of ${num(L.cap)} cap${L.spend_pct>=100?' — over':''}</div></div>
-    <div class=stat><div class=k>Value per 1k</div><div class=v>${L.value_per_1k}</div>
-      <div class=n>contribution per 1k compute</div></div>
-    <div class=stat><div class=k>On the record</div><div class=v>${num(d.counts.events)}</div>
-      <div class=n>${num(d.counts.decisions)} decisions &middot; ${num(d.counts.lessons)} lessons</div></div>`;
-  visname.textContent=L.vision;
-  visprog.textContent=L.goal_met?'— met':`— ${L.progress}% complete`;
-  visbar.style.width=(L.progress||0)+'%';
-  stock.textContent=Object.entries(d.world).map(([k,v])=>`${k} ${num(v)}`).join(' · ');
-  const roles=A.roles||{},seats=A.seats||{};
-  seats_render(roles,seats,L.brain,A.faults);
-  const nf=Object.entries(A.faults||{});
-  if(nf.length){seatnote.innerHTML=`<span class=bad>${nf.length} seat(s) cannot be used:</span> `+
-    nf.map(([r,w])=>`<b>${esc(r)}</b> — ${esc(w)}`).join(' · ')+
-    `. Those chairs abstain; no model is substituted.`;return}
-  seatnote.innerHTML=A.routed
-    ?`Run tier <b>${esc(A.tier)}</b> — a run is ranked only when every routed seat is a
-       direct provider key. A seat whose model fails abstains; it is never filled by another.`
-    :`No roles routed — one brain sits in every chair. Assign a model per seat on
-       <a href="/providers">Providers</a> (human-only) or with the <b>MODEL_ROLE_*</b>
-       variables above.`;
-  const c=A.calls||{};
-  calls.textContent=num(c.calls);
-  callsub.textContent=`${num(c.prompt_tokens)} in / ${num(c.completion_tokens)} out · `+
-    `${c.avg_latency_ms||0}ms avg · ${num(c.errors)} errors`;
-  usd.textContent=usdf(c.cost_usd);
-  usdsub.textContent=A.budget&&A.budget.limit?
-    `ceiling ${usdf(A.budget.limit)} · ${usdf(A.budget.remaining)} left`:'no ceiling set';
-  fb.textContent=num(A.fallbacks);
-  runs.innerHTML=(d.runs||[]).map(r=>`<tr>
-    <td><b>${esc(r.label||r.brain||'?')}</b></td>
-    <td><span class="tag ${esc(r.tier||'ranked')}">${esc(r.tier||'ranked')}</span></td>
-    <td class=n>${num(r.turns)}</td><td class=n>${r.progress_pct}%</td>
-    <td class=n>${usdf(r.cost_usd)}</td><td class=n>${usd4(r.usd_per_vision_point)}</td></tr>`)
-    .join('')||`<tr><td colspan=6 style="color:var(--dim)">No eval runs stored yet —
-      run <b>python3 gov/evalrun.py --turns 120 --fresh</b> to put the first one here.</td></tr>`;
-  footstat.textContent=`${num(d.counts.structures)} structures standing · `+
-    `${num(d.counts.facts)} facts ingested · ${num(d.runs_total)} eval runs stored`;
-  footmem.textContent=L.storage.startsWith('volume')?'permanent':'ephemeral (no volume mounted)';
-}
-// ── the desk: the human's reserved powers, wired to the same endpoints the console
-// uses. Every one of them is token-gated server-side; the page only asks politely.
-let DESK={}, TOUCHED={};
 function tok(){return localStorage.getItem('ctok')||''}
 function setToken(){const t=prompt('Operator token (CONSOLE_TOKEN):',tok());
-  if(t!==null){localStorage.setItem('ctok',t.trim());msg('token saved — try the action again')}}
-function msg(t,bad){deskmsg.innerHTML=`<span class="${bad?'bad':'ok'}">${esc(t)}</span>`;
-  clearTimeout(msg._t);msg._t=setTimeout(()=>deskmsg.textContent='',6000)}
+  if(t!==null){localStorage.setItem('ctok',t.trim());load()}}
+function msg(t,bad){sayout.innerHTML=`<span class="${bad?'bad':'ok'}">${esc(t)}</span>`;
+  clearTimeout(msg._t);msg._t=setTimeout(()=>sayout.textContent='',6000)}
 async function post(url,body){
   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',
     'X-Console-Token':tok()},body:JSON.stringify(body||{})});
@@ -2695,59 +2464,98 @@ async function post(url,body){
   if(!r.ok){msg(d.error||d.detail||('failed ('+r.status+')'),1);return null}
   return d;
 }
+
+let TOUCHED={};
+async function load(){
+  let d; try{ d=await (await fetch('/api/home',
+    {headers:{'X-Console-Token':tok()}})).json() }catch(e){ return }
+  const L=d.live, A=d.arena, F=d.fleet||{}, you=d.you||{};
+  pills.innerHTML=[
+    `<span class="pill ${L.driver_ok?'on':'off'}">${L.driver_ok?'world running':'world idle'}</span>`,
+    `<span class=pill>turn <b>${num(L.turn)}</b> &middot; ${esc(L.age)}</span>`,
+    `<span class=pill>brain <b>${esc(L.brain)}</b></span>`,
+    A.routed?`<span class="pill ${A.tier==='ranked'?'on':''}">mixed board &middot; ${esc(A.tier)}</span>`:'',
+    `<span class=pill><b>${num(you.watching||1)}</b> watching</span>`,
+  ].join('');
+
+  // only what a human has to answer, in the order it matters
+  // the gate has its own card with the actions on it — an alert saying the same
+  // thing directly above would be one more thing to read, not one more thing to know
+  const al=[];
+  if(L.stall) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>stalled</div>${esc(L.stall)}</div>
+    <a class="btn ghost" href="/console">Investigate</a></div>`);
+  if(F.over_budget) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>the cap is not binding</div>${F.over_budget} of ${F.size} agents are
+    working past budget — the worst at <b>${F.worst_pct}%</b>. At the fleet floor the
+    lifecycle is suspended so the world is never left empty (II.5). Adopt a new Vision,
+    or raise the cap so replacements can be born.</div></div>`);
+  if(L.memory_lost) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>the permanent record is missing</div>A durable path is configured but
+    was empty at boot — nothing carried over. Expected on a first deploy; otherwise the
+    volume is not mounted where GOV_DATA_DIR points.</div></div>`);
+  alerts.innerHTML=al.join('')||(d.gate?'':`<p class=sub style="margin:0 0 12px">Nothing
+    is waiting on you. The settlement runs itself until it meets a rule it cannot pass
+    alone.</p>`);
+
+  visname.textContent=L.vision;
+  visprog.textContent=L.goal_met?'— met':`— ${L.progress}% complete`;
+  visbar.style.width=(L.progress||0)+'%';
+  vitals.textContent=`${num(L.fleet)} agents · ${L.spend_pct}% of cap · `+
+    `${num(d.counts.events)} events · ${num(d.counts.lessons)} lessons`;
+  footstat.textContent=`${num(d.counts.agents_ever)} agents have lived here · `+
+    `${num(d.counts.decisions)} decisions on the record · ${num(d.runs_total)} eval runs · `+
+    L.storage;
+
+  desk(d);
+}
+
 function desk(d){
   const you=d.you||{}, can=you.can_act, locked=d.token_required;
-  // Three states, not two. "I may act" and "nobody is stopping anyone" are different
-  // facts, and a deployment with no token configured must not tell six strangers that
-  // each of them holds it.
-  tokstate.innerHTML=(!locked
-    ?'<span class=bad>this settlement is UNLOCKED</span> — no operator token is '+
-     'configured, so <b>every visitor</b> can act. Set CONSOLE_TOKEN to close it.'
-    :can?'<span class=ok>you hold the operator token</span> — these powers are live'
-        :'<span class=bad>you are a guest</span> — these powers need the operator token')
-    +` · <b>${num(you.watching||1)}</b> watching now · you are <b>${esc(you.guest||'?')}</b>`;
-  document.querySelectorAll('#gatecard button,.desk-ctl button')
+  tokstate.innerHTML=!locked
+    ? '<span class=bad>— unlocked: no operator token, so every visitor can act</span>'
+    : can ? '<span class=ok>— live</span>'
+          : '<span class=bad>— you are a guest;</span> <a href="#" onclick="setToken();return false">enter token</a>';
+  sharednote.textContent=can
+    ? 'One shared settlement: what you decide changes it for everyone watching, and the log records it against you.'
+    : 'One shared settlement — anyone may watch it; the operator decides for it.';
+  document.querySelectorAll('#gatecard button,.ctl button')
     .forEach(b=>{b.disabled=!can;b.title=can?'':'the operator token is required'});
-  sharednote.textContent=!locked
-    ?'This is one shared settlement and it is open to everyone here. Whatever you decide changes it for all of them, and the log records it against your visitor id.'
-    :can?'This is one shared settlement. What you decide here changes it for everyone watching, and the log records it against you.'
-        :'This is one shared settlement — anyone here can watch it, and the operator decides for it.';
-  // the gate
+
   const g=d.gate;
   gatecard.style.display=g?'block':'none';
   if(g){
     gatetext.textContent=`${g.unit_id}: ${g.action}`;
     gatemeta.textContent=`waiting ${g.waited_turns} turns`+
-      (g.tacit_left_s!=null?` · tacit consent in ${Math.floor(g.tacit_left_s/60)}m ${g.tacit_left_s%60}s`:'')+
-      (g.waiting>1?` · ${g.waiting-1} more waiting behind this one`:'');
+      (g.tacit_left_s!=null?` · tacit consent in ${Math.floor(g.tacit_left_s/60)}m`:'')+
+      (g.waiting>1?` · ${g.waiting-1} more behind it`:'');
     gatecard.dataset.uid=g.unit_id; gatecard.dataset.fp=g.fingerprint||'';
   }
-  // proposals the board has put to you
-  const P=d.proposals||{},items=[],lock=can?'':'disabled title="the operator token is required"';
+
+  const P=d.proposals||{},items=[],lock=can?'':'disabled';
   if(P.dev) items.push(`<div class=prop><div class=t><b>Development:</b>
     ${esc(P.dev.name)} — ${esc(P.dev.why||'')}${P.dev.board_approved?' <span class=ok>(board approved)</span>':''}</div>
     <button class="btn sm" ${lock} onclick="dev('adopt')">Adopt</button>
     <button class="btn ghost sm" ${lock} onclick="dev('reject')">Reject</button></div>`);
   if(P.vision) items.push(`<div class=prop><div class=t><b>${esc(P.vision.action)}:</b>
     ${esc(P.vision.name)} — ${esc(P.vision.why)}</div>
-    <button class="btn sm" ${lock} onclick="adoptVision('${esc(P.vision.vision)}')">Adopt it</button></div>`);
+    <button class="btn sm" ${lock} onclick="adoptVision('${esc(P.vision.vision)}')">Adopt</button></div>`);
   if(P.cap) items.push(`<div class=prop><div class=t><b>${esc(P.cap.action)}:</b>
     to ${num(P.cap.cap)} — ${esc(P.cap.why)}</div>
     <button class="btn sm" ${lock} onclick="setCap(${P.cap.cap})">Apply</button></div>`);
   propcard.style.display=items.length?'block':'none';
   props.innerHTML=items.join('');
-  // controls that must not fight the user's typing: fill once, then leave alone
-  if(!TOUCHED.vis){vissel.innerHTML=(d.visions||[]).map(v=>
-    `<option value="${esc(v.key)}"${v.key===d.vision_key?' selected':''}>${esc(v.name)}</option>`).join('')}
+
+  if(!TOUCHED.vis) vissel.innerHTML=(d.visions||[]).map(v=>
+    `<option value="${esc(v.key)}"${v.key===d.vision_key?' selected':''}>${esc(v.name)}</option>`).join('');
   if(!TOUCHED.cap) capin.value=d.cap;
   if(!TOUCHED.role){rolesel.innerHTML=(d.roles_list||[]).map(r=>
     `<option${r==='governor'?' selected':''}>${esc(r)}</option>`).join('');
-    provsel.innerHTML='<option value="">default brain</option>'+(d.providers||[]).map(p=>
+    provsel.innerHTML='<option value="">default</option>'+(d.providers||[]).map(p=>
       `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`).join('')}
-  if(!TOUCHED.who){whosel.innerHTML=(d.participants||[]).map(p=>
-    `<option value="${esc(p.key)}">${esc(p.name)} · ${esc(p.role)}</option>`).join('')
-    +'<option value="all">everyone</option>'}
-  DESK=d;
+  if(!TOUCHED.who) whosel.innerHTML=(d.participants||[]).map(p=>
+    `<option value="${esc(p.key)}">${esc(p.name)}</option>`).join('')
+    +'<option value="all">everyone</option>';
 }
 ['vissel','capin','rolesel','provsel','modelin','whosel'].forEach(id=>{
   const el=document.getElementById(id);
@@ -2762,9 +2570,8 @@ async function gate(decision){
 async function dev(action){const d=await post('/api/development',{action});
   if(d){msg(d.detail||action+'ed');load()}}
 async function adoptVision(key){
-  const v=key||vissel.value;
-  const d=await post('/api/vision',{vision:v});
-  if(d){TOUCHED.vis=false;msg('vision adopted — the score resets to the new goal');load()}
+  const d=await post('/api/vision',{vision:key||vissel.value});
+  if(d){TOUCHED.vis=false;msg('vision adopted');load()}
 }
 async function setCap(v){
   const cap=Number(v||capin.value);
@@ -2786,18 +2593,8 @@ async function say(){
   if(!d){sayout.textContent='';return}
   saybox.value='';
   const msgs=(thread==='all'?d.broadcast:(d.threads||{})[thread])||[];
-  sayout.innerHTML=msgs.slice(-4).map(m=>
+  sayout.innerHTML=msgs.slice(-2).map(m=>
     `<b>${esc(m.sender)}:</b> ${esc(m.body)}`).join('<br>')||'(no reply recorded)';
-}
-function seats_render(roles,seats,dflt,faults){
-  const order=['governor','Prudence','Growth','Ledger','fleet','worker','retrospective'];
-  document.getElementById('seats').innerHTML=order.map(r=>{
-    const m=roles[r]||'', s=seats[r]||{}, fault=(faults||{})[r], down=fault||(s.at&&!s.ok);
-    const label=fault?'misconfigured':(m?(m.split(':').slice(1).join(':')||m):dflt);
-    return `<div class="seat ${down?'down':''}" title="${esc(fault||'')}">
-      <div class=r>${esc(r)}</div>
-      <div class=m>${esc(label)}${down?' · abstaining':''}</div></div>`
-  }).join('');
 }
 load(); setInterval(load,5000);
 </script>
