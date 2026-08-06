@@ -119,7 +119,11 @@ Everything below is those two laws, applied.
    (`anchor.py`). The organization is never amnesiac.
 2. External knowledge (e.g. the internet) may be **ingested** into the anchor, but every
    external fact is recorded with its source, and no external content is ever executed
-   or acted on without passing Articles III–IV.
+   or acted on without passing Articles III–IV. **The source is checked, not merely
+   recorded**: a fact is `verified` only when its source resolves *and* contains the
+   quoted span it claims. Unverified knowledge stays on the permanent record but is
+   excluded from the facts that steer decisions — recording a citation is bookkeeping;
+   checking it is the rule (`anchor.verify_claim`, `anchor.external(verified_only=True)`).
 3. Self-written rules are provisional. A constraint learned from noisy signal can be
    wrong; the anchor records outcomes so a bad prior can be seen and retracted.
 4. **Knowledge expires.** Only a bounded set of recent lessons steers decisions; older

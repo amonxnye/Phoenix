@@ -172,7 +172,9 @@ def _propose_development():
     """The Governor proposes a new development — model + ingested knowledge when alive,
     a template otherwise. The Board pre-votes; only the human adopts."""
     existing = [d["name"] for d in sim.dev_catalog()]
-    prop = brain.propose_development(_situation(), anchor.external(8), existing)
+    # VI.2: only VERIFIED knowledge may steer an invention
+    prop = brain.propose_development(_situation(),
+                                     anchor.external(8, verified_only=True), existing)
     if not prop:
         prop = next((dict(t) for t in _DEV_TEMPLATES if t["name"] not in existing), None)
         if prop:
@@ -188,7 +190,7 @@ def _propose_development():
     _S["dev_proposal"] = prop
     _narrate_vote(bv, prop.get("why", ""))
     # lineage: the proposal derives from ingested knowledge and the current lessons
-    refs = [f"external:{k['id']}" for k in anchor.external(3) if "id" in k]
+    refs = [f"external:{k['id']}" for k in anchor.external(3, verified_only=True)]
     refs += [f"skill:{s['id']}" for s in anchor.skills_top(2) if s.get("id")]
     prop["did"] = anchor.reason_add(
         _S["turn"], "governor", f"propose development '{prop['name']}'",
@@ -2011,9 +2013,11 @@ class Handler(BaseHTTPRequestHandler):
             source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
             if not fact:
                 return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
-            anchor.ingest(topic, source, fact)       # Article VI: source recorded, never executed
-            anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
-            return self._send(200, json.dumps(_snapshot()))
+            # Article VI.2: the source is recorded AND CHECKED; unverified
+            # knowledge stays on the record but never steers a decision
+            v = anchor.ingest(topic, source, fact, body.get("quote", ""))
+            return self._send(200, json.dumps({"verified": v["verified"],
+                                               "reason": v["reason"], **_snapshot()}))
         self._send(404, json.dumps({"error": "not found"}))
 
 
@@ -2176,7 +2180,7 @@ async function tick(){
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
     ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}
     <div><span>external facts (${esc(d.brain)})</span><b>${d.external_count||0}</b></div>
-    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}
+    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${x.verified?'&#10003;':'&#9888;'} ${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}&#10;&#10;${esc(x.reason||'')}" style="color:${x.verified?'var(--done)':'var(--idle)'}">${x.verified?'verified':'unverified'}</b></div>`).join('')}
     <div><span><b style=color:var(--gold)>skills (wisdom)</b></span><b>${d.skills_count||0}</b></div>
     ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">&#x1F4D6; ${esc(x.lesson)}</span></div>`).join('')}`;
   const bs=d.balance||{};

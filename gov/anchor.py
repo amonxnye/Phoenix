@@ -784,24 +784,105 @@ def msg_count(thread: str) -> int:
         c.close()
 
 
-def ingest(topic: str, source: str, fact: str) -> None:
+# ── Article VI.2, enforced: a source that isn't checkable doesn't steer ───────
+#
+# Recording a source string is bookkeeping; CHECKING it is the rule. A fact is
+# `verified` only when its source resolves to something real AND the quoted span is
+# actually found there. Everything else is kept (the record is permanent) but marked
+# unverified, and unverified knowledge is excluded from the facts that steer
+# decisions — the same discipline stale lessons already live under (VI.4).
+#
+# Deterministic and offline by design: quote-or-it-didn't-happen. No model judges
+# whether a citation supports a claim; the text either contains the span or it
+# doesn't. Model-assisted entailment is a later, adversarially-verified tier.
+
+def _resolve_source(source: str) -> str | None:
+    """Return the source's text if it resolves to something readable, else None.
+    Handles local files today (file paths under the repo/data dirs); a URL fetcher
+    can be added behind the same interface without changing any caller."""
+    src = (source or "").strip()
+    if not src or "://" in src:
+        return None                                # remote sources: not resolvable offline
+    for base in (_DATA_DIR, os.path.dirname(os.path.abspath(__file__)),
+                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        p = os.path.realpath(os.path.join(base, src))
+        if p.startswith(os.path.realpath(base)) and os.path.isfile(p):
+            try:
+                with open(p, errors="replace") as f:
+                    return f.read()
+            except OSError:
+                return None
+    return None
+
+
+def _normalise(s: str) -> str:
+    return " ".join((s or "").split()).lower()
+
+
+def verify_claim(source: str, quote: str) -> tuple[bool, str]:
+    """The citation check: (verified, reason).
+
+    1. RESOLUTION — does the source exist and can it be read?
+    2. SUPPORT    — does it actually contain the quoted span?
+    A claim with no quote is never verified: an assertion about a source is not
+    evidence from it."""
+    if not (quote or "").strip():
+        return False, "no quoted span — a claim without evidence is not verified"
+    text = _resolve_source(source)
+    if text is None:
+        return False, f"source did not resolve: {source[:60] or '(none)'}"
+    if _normalise(quote) in _normalise(text):
+        return True, "source resolves and contains the quoted span"
+    return False, "source resolves but does NOT contain the quoted span"
+
+
+def ingest(topic: str, source: str, fact: str, quote: str = "") -> dict:
     """Bring external knowledge into the anchor (Article VI): the source is always
-    recorded, and the fact is stored as data — it is never executed or acted on."""
+    recorded, the fact is stored as data — never executed or acted on — and the
+    citation is CHECKED. Returns {id, verified, reason}. Unverified knowledge is kept
+    for the record but does not steer decisions (see `external(verified_only=True)`)."""
+    verified, reason = verify_claim(source, quote)
     c = _conn()
     try:
-        c.execute("INSERT INTO external_knowledge(topic, source, fact) VALUES(?,?,?)",
-                  (topic, source, fact))
+        c.execute("CREATE TABLE IF NOT EXISTS external_knowledge("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, source TEXT, fact TEXT)")
+        for col, ddl in (("quote", "TEXT DEFAULT ''"), ("verified", "INT DEFAULT 0"),
+                         ("reason", "TEXT DEFAULT ''")):
+            try:
+                c.execute(f"ALTER TABLE external_knowledge ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                pass
+        cur = c.execute("INSERT INTO external_knowledge(topic, source, fact, quote, "
+                        "verified, reason) VALUES(?,?,?,?,?,?)",
+                        (topic, source, fact, quote, 1 if verified else 0, reason))
         c.commit()
+        eid = cur.lastrowid
     finally:
         c.close()
+    record(-1, "ingest" if verified else "unverified",
+           f"{'VERIFIED' if verified else 'UNVERIFIED'} [{topic}] {fact[:140]} "
+           f"— {reason}")
+    return {"id": eid, "verified": verified, "reason": reason}
 
 
-def external(limit: int = 20) -> list[dict]:
+def external(limit: int = 20, verified_only: bool = False) -> list[dict]:
+    """Ingested knowledge, newest first. `verified_only` is what decision-making code
+    should read: unverified facts remain on the record but must not steer (VI.2)."""
     c = _conn()
     try:
-        rows = c.execute("SELECT id, topic, source, fact FROM external_knowledge ORDER BY id DESC "
-                         "LIMIT ?", (limit,)).fetchall()
-        return [{"id": i, "topic": t, "source": s, "fact": f} for i, t, s, f in rows]
+        try:
+            q = ("SELECT id, topic, source, fact, COALESCE(quote,''), "
+                 "COALESCE(verified,0), COALESCE(reason,'') FROM external_knowledge"
+                 + (" WHERE COALESCE(verified,0)=1" if verified_only else "")
+                 + " ORDER BY id DESC LIMIT ?")
+            rows = c.execute(q, (limit,)).fetchall()
+        except sqlite3.OperationalError:
+            rows = [(i, t, s, f, "", 0, "") for i, t, s, f in c.execute(
+                "SELECT id, topic, source, fact FROM external_knowledge "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+        return [{"id": i, "topic": t, "source": s, "fact": f, "quote": q_,
+                 "verified": bool(v), "reason": r}
+                for i, t, s, f, q_, v, r in rows]
     finally:
         c.close()
 

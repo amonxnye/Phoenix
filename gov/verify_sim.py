@@ -236,5 +236,29 @@ check("stale lessons stop steering (bounded live set)", len(live) <= 30,
       f"{len(live)} live lessons")
 check("pruned lessons remain on the record (never deleted)", A.skills_count() > 30)
 
+# ── 10. Article VI.2 enforced: a source that isn't checkable doesn't steer ──
+print("\n10. Evidence — citations are CHECKED, not just recorded")
+import tempfile
+_src_dir = tempfile.mkdtemp(dir=os.path.dirname(A.DB))
+_src = os.path.join(os.path.basename(_src_dir), "note.txt")
+with open(os.path.join(_src_dir, "note.txt"), "w") as _f:
+    _f.write("Camps raise the yield of their resource by fifty percent in this world.")
+
+v_ok = A.ingest("camps", _src, "camps raise yield", quote="raise the yield")
+check("a resolvable source containing the quote VERIFIES", v_ok["verified"], v_ok["reason"])
+v_ghost = A.ingest("ghost", "no-such-file.txt", "invented finding", quote="anything")
+check("a fabricated source is refused", not v_ghost["verified"], v_ghost["reason"])
+v_wrong = A.ingest("camps", _src, "camps double the yield", quote="double the yield")
+check("a real source that does NOT contain the claim is refused",
+      not v_wrong["verified"], v_wrong["reason"])
+v_bare = A.ingest("camps", _src, "camps are good", quote="")
+check("an unquoted assertion is never verified", not v_bare["verified"], v_bare["reason"])
+
+_ver = A.external(20, verified_only=True)
+_all = A.external(20)
+check("unverified knowledge is kept on the record but excluded from steering",
+      len(_all) > len(_ver) and all(x["verified"] for x in _ver),
+      f"{len(_ver)} verified of {len(_all)} recorded")
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
