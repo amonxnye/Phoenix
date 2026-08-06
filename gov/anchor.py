@@ -730,24 +730,50 @@ def lineage(decision_id: int) -> dict:
         c.close()
 
 
+def lesson_key(lesson: str) -> str:
+    """The gist of a lesson, for de-duplication.
+
+    Retrospectives restate the same advice with the measurement of the moment —
+    "Prioritise food early (avg 33.1/round)" and "…(avg 33.3/round)" are one lesson,
+    not two. Exact-match de-duplication let those pile up, and since lessons steer
+    future decisions, a memory full of restatements is a memory that says one thing
+    loudly. Numbers are the part that varies, so the key drops them."""
+    import re
+    k = (lesson or "").lower()
+    k = re.sub(r"[0-9][0-9,._]*%?", "#", k)        # every measurement → one placeholder
+    k = re.sub(r"[^a-z# ]+", " ", k)
+    return " ".join(k.split())
+
+
 def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> int | None:
     """Store a lesson; returns its id (citable as 'skill:<id>' in decision lineage),
-    or None if empty/duplicate."""
+    or None if empty or a restatement of one already live."""
     lesson = (lesson or "").strip()[:280]
     if not lesson:
         return None
     c = _conn()
     try:
         # de-dup: don't hoard a LIVE duplicate — but re-learning a STALE lesson is
-        # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row
-        row = c.execute("SELECT id, stale FROM skills WHERE lesson=?", (lesson,)).fetchone()
+        # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row.
+        # Matching is on the GIST, so the same advice with fresher numbers refreshes
+        # the lesson it restates instead of crowding in beside it.
+        key = lesson_key(lesson)
+        row = None
+        for sid, existing, stale in c.execute("SELECT id, lesson, stale FROM skills"):
+            if lesson_key(existing) == key:
+                row = (sid, stale)
+                break
         if row:
             sid, stale = row
             if stale:
-                c.execute("UPDATE skills SET stale=0, turn=?, ts=? WHERE id=?",
-                          (turn, time.time(), sid))
+                c.execute("UPDATE skills SET stale=0, turn=?, lesson=?, ts=? WHERE id=?",
+                          (turn, lesson, time.time(), sid))
                 c.commit()
                 return sid
+            # live restatement: keep the newer wording (its numbers are current),
+            # keep the single row, and do not pretend a new lesson was learned
+            c.execute("UPDATE skills SET lesson=?, turn=? WHERE id=?", (lesson, turn, sid))
+            c.commit()
             return None
         cur = c.execute("INSERT INTO skills(turn, lesson, source, trigger, ts) VALUES(?,?,?,?,?)",
                         (turn, lesson, source, trigger, time.time()))

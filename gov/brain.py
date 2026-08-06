@@ -60,13 +60,29 @@ def provider() -> dict | None:
 def provider_for(role: str = "") -> dict | None:
     """The provider serving a role — the arena's routing first, then the single default
     brain. An unrouted deployment resolves every role to the same provider, exactly as
-    before the arena existed."""
-    return (models.resolve(role) if role else None) or provider()
+    before the arena existed.
+
+    A role that is ASSIGNED BUT BROKEN (no key, no model named, unknown provider) does
+    NOT fall through to the default brain: raising here is what keeps Article X.3 true
+    at the seam. Silently answering with a different model is the exact failure the
+    constitution forbids, and it is invisible in the record afterwards."""
+    if not role:
+        return provider()
+    p, reason = models.resolve_detail(role)
+    if p:
+        return p
+    if reason != models.UNSET:
+        raise models.SeatMisconfigured(f"{role}: {models.explain(reason, role)}")
+    return provider()                       # unset — the default brain, as always
 
 
 def available(role: str = "") -> bool:
-    """Is a model configured for this role? An unrouted role asks the default brain."""
-    return provider_for(role) is not None
+    """Is a USABLE model configured for this role? A seat assigned a provider it cannot
+    use answers False — it is not available, and it is not the default brain either."""
+    try:
+        return provider_for(role) is not None
+    except models.SeatMisconfigured:
+        return False
 
 
 def brain_name() -> str:
@@ -81,6 +97,17 @@ def brains_by_role() -> dict:
     """role → model actually serving it. Recorded on every scorecard so a run's board
     is never a mystery after the fact (Article X.2)."""
     return models.assignments()
+
+
+def _log_fault(role: str, detail: str) -> None:
+    """A misconfigured seat is an event, not a silent None — an operator has to be able
+    to find out why a chair went quiet."""
+    try:
+        import anchor
+        anchor.record(-1, "models", f"seat '{role}' cannot be used: {detail} — "
+                                    f"it abstains; no model was substituted")
+    except Exception:
+        pass
 
 
 def _log_call(p: dict, purpose: str, role: str, t0: float, usage, ok: bool,
@@ -110,10 +137,17 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
     reply text. Raises on failure — callers keep their own rule-based fallbacks, and a
     routed role that fails abstains rather than borrowing another model."""
     role = role or models.PURPOSE_ROLE.get(purpose, "")
-    p = provider_for(role)
+    try:
+        p = provider_for(role)
+    except models.SeatMisconfigured as e:
+        # Article X.3, at the seam: the chair stays empty and says why. The caller's
+        # rule-based fallback may write the words, but the SEAT is recorded as absent.
+        models.note_call(role, "", "", 0.0, False, str(e))
+        _log_fault(role, str(e))
+        raise
     if not p:
         raise RuntimeError("no model configured")
-    models.check_budget()          # the dollar ceiling halts a run; it never downgrades it
+    models.check_budget(p["model"])   # a ceiling we cannot measure is refused, not faked
     t0 = _time.time()
     try:
         if p["kind"] == "anthropic":

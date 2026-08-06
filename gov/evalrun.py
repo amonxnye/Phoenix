@@ -58,16 +58,31 @@ def main() -> int:
     import sim_console as C
     import vision as V
 
+    # ── the seats must be usable before a turn is spent ──────────────────────
+    faults = models.seat_faults()
+    if faults:
+        for role, why in faults.items():
+            print(f"seat '{role}' is misconfigured: {why}", file=sys.stderr)
+        if not args.yes:
+            print("REFUSED: a misconfigured seat abstains for the whole run, and its "
+                  "results would not mean what they appear to mean. Fix it, or pass "
+                  "--yes to run with those chairs empty.", file=sys.stderr)
+            return 2
+
     # ── pre-flight: show the money before spending it (ARENA.md §5) ──────────
     models.reset_run_state()
     pf = models.preflight(round(args.turns * args.calls_per_turn))
     if pf["limit"]:
-        print(f"pre-flight: ~{pf['calls']} calls on {pf['model'] or 'default brain'} "
-              f"≈ ${pf['estimate_usd']:.4f} against a ${pf['limit']:.2f} ceiling"
-              + (" — model UNPRICED, estimate is a floor" if pf["unpriced"] else ""))
+        if pf["estimate_usd"] is None:
+            print(f"pre-flight: no estimate — {pf['why']}")
+        else:
+            print(f"pre-flight: ~{pf['calls']} calls on {pf['model']} "
+                  f"≈ ${pf['estimate_usd']:.4f} ({pf['basis']}) against a "
+                  f"${pf['limit']:.2f} ceiling")
         if pf["refused"] and not args.yes:
-            print("REFUSED: the estimate exceeds EVAL_BUDGET_USD. Raise the ceiling, "
-                  "shorten the run, or pass --yes to run anyway.", file=sys.stderr)
+            print(f"REFUSED: {pf['why'] or 'the estimate exceeds EVAL_BUDGET_USD'}. "
+                  "Raise the ceiling, shorten the run, load a price table, or pass "
+                  "--yes to run anyway.", file=sys.stderr)
             return 2
 
     t0 = time.time()

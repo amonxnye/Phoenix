@@ -12,6 +12,8 @@ jobs:
           python-version: "3.11"
       - name: Install pinned dependencies
         run: pip install -r requirements.txt
+      - name: Run the unit and end-to-end test suite
+        run: python3 -m unittest discover -s gov/tests -t gov/tests -v
       - name: Run the 16 acceptance checks
         run: python3 gov/verify.py
       - name: Smoke-test the live console API
@@ -22,3 +24,5 @@ jobs:
         run: python3 gov/verify_work.py
       - name: Run the Arena (per-role routing, budget, Article X) acceptance checks
         run: python3 gov/verify_arena.py
+      - name: Smoke-test a real settlement run and its invariants
+        run: python3 gov/smoke.py --turns 60 --pollers 4 --fresh

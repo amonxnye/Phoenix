@@ -424,6 +424,16 @@ def _op_cap(new_cap) -> bool:
 
 # ── chat: agents, board and the Chief Governor talk to the human ──────────────
 
+def _gate_fingerprint(uid: str, pending) -> str:
+    """Identifies the exact decision a page was showing. If the fingerprint a click
+    carries no longer matches the live gate, the click is answering a question that is
+    no longer being asked."""
+    if not pending:
+        return ""
+    import hashlib
+    return hashlib.sha1(f"{uid}|{pending.get('action', '')}".encode()).hexdigest()[:12]
+
+
 def _participants() -> list[dict]:
     parts = [{"key": "chief", "name": "Chief Governor", "role": "governor"}]
     parts += [{"key": g, "name": g, "role": "board"} for g in board.GOVERNORS]
@@ -1620,6 +1630,25 @@ class Handler(BaseHTTPRequestHandler):
         self._visitor()
         anchor.metric_bump("pageviews")
 
+    # ── who is acting ────────────────────────────────────────────────────────
+    # One world, many anonymous visitors, no accounts: everyone is a guest until they
+    # hold the operator token. That makes attribution part of the audit trail rather
+    # than a nicety — "the human approved the gate" is not a useful record when six
+    # people are watching the same settlement.
+
+    def _is_operator(self) -> bool:
+        tok = os.environ.get("CONSOLE_TOKEN", "")
+        return (not tok) or self.headers.get("X-Console-Token", "") == tok
+
+    def _actor(self) -> str:
+        """'operator' or 'guest:ab12cd34' — stable per visitor, meaningless outside
+        this deployment, and never a name or an address."""
+        return "operator" if self._is_operator() else f"guest:{self._visitor()[:8]}"
+
+    def _act(self, kind: str, note: str) -> int:
+        """Record a human-power action against the actor who took it."""
+        return anchor.record(_S["turn"], kind, f"{note} [by {self._actor()}]")
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._count_view()
@@ -1676,6 +1705,23 @@ class Handler(BaseHTTPRequestHandler):
             # extra page costs no extra work per second.
             s = _snapshot()
             sysd = s["system"]
+            # the gate as an ACTIONABLE object, not just the sentence the console shows:
+            # the landing page needs the unit id to be able to answer it
+            gate, waiting = None, 0
+            for u in s["units"]:
+                if u.get("pending") and u["pending"].get("reversible") is False:
+                    waiting += 1
+                    if gate:
+                        continue      # a queue: answer them one at a time, oldest first
+                    gate = {"unit_id": u["unit_id"],
+                            "action": u["pending"].get("action", ""),
+                            "fingerprint": _gate_fingerprint(u["unit_id"], u["pending"]),
+                            "waited_turns": s["turn"] - _S.get("gate_since", s["turn"]),
+                            "tacit_left_s": (max(0, int(TACIT_CONSENT_S
+                                                        - (time.time() - _S["gate_since_ts"])))
+                                             if _S.get("gate_since_ts") else None)}
+            if gate:
+                gate["waiting"] = waiting
             runs = anchor.eval_runs(50)
             ranked = sorted((r for r in runs if r.get("tier") != "rule-based"),
                             key=lambda r: -(r.get("progress_pct") or 0))[:5]
@@ -1701,16 +1747,43 @@ class Handler(BaseHTTPRequestHandler):
                 "arena": {
                     "routed": MODELS.active(), "tier": MODELS.tier(),
                     "roles": MODELS.assignments(), "seats": MODELS.seat_status(),
+                    "faults": MODELS.seat_faults(),
                     "budget": MODELS.budget_state(), "fallbacks": MODELS.fallbacks(),
                     "calls": anchor.model_calls_stats(),
                 },
                 "runs": ranked, "runs_total": len(runs),
+                # ── everything the HUMAN alone may act on, gathered in one payload ──
+                # The constitution reserves these: the irreversible gate (IV), adopting
+                # a Vision (I), the cap, adopting a development, and assigning a model
+                # (X.1). The landing page is where they are exercised.
+                "gate": gate,
+                "proposals": {
+                    "dev": s.get("dev_proposal"),
+                    "vision": s["strategy"]["proposal"],
+                    "cap": s.get("cap_proposal"),
+                },
+                "vision_key": s["strategy"]["current_key"],
+                "visions": s["strategy"]["options"],
+                "cap": s["cap"],
+                "participants": [{"key": p["key"], "name": p["name"], "role": p["role"]}
+                                 for p in _participants()],
+                "providers": [{"name": p["name"], "keyed": p["keyed"]}
+                              for p in MODELS.catalog()],
+                "roles_list": list(MODELS.ROLES),
+                "token_required": bool(os.environ.get("CONSOLE_TOKEN", "")),
                 "public_chat": os.environ.get("PUBLIC_CHAT", "") == "1",
+                # This is one shared world with no accounts: everybody is a guest until
+                # they hold the operator token. The page is told plainly which one it
+                # is, so a guest sees a locked control instead of a failing click.
+                "you": {"guest": self._visitor()[:8],
+                        "can_act": self._is_operator(),
+                        "watching": anchor.visitor_stats().get("online_now", 0)},
             }))
         if self.path == "/api/providers":
             runs = anchor.eval_runs(50)
             return self._send(200, json.dumps({
                 "roles": MODELS.assignments(),
+                "faults": MODELS.seat_faults(),
                 "role_names": list(MODELS.ROLES),
                 "registry": MODELS.catalog(),        # never the keys
                 "tier": MODELS.tier(),
@@ -1958,11 +2031,33 @@ class Handler(BaseHTTPRequestHandler):
             uid, decision = body.get("unit_id"), body.get("decision")
             if not uid or decision not in ("approve", "reject", "dismiss", "back-to-work"):
                 return self._send(400, json.dumps({"error": "unit_id and a valid decision required"}))
-            age_before = sim.world()["age"]
+            # Two people can be looking at the same gate. Answering one that has already
+            # been answered — or that has changed underneath the page — must fail loudly
+            # instead of resuming a unit into a decision nobody made about THIS action.
+            # The check and the resume are ONE critical section: checking outside it
+            # would just move the race, not remove it. Nothing that re-enters _LOCK
+            # (_snapshot does) may be called in here.
+            expect = (body.get("expect") or "").strip()
+            stale = ""
             with _LOCK:
-                sim.resume(_GRAPH, uid, decision)
+                unit = _by_uid().get(uid)
+                pending = unit.pending if unit else None
+                if not pending:
+                    stale = (f"{uid} is no longer waiting at the gate — "
+                             f"someone answered it first")
+                elif expect and expect != _gate_fingerprint(uid, pending):
+                    stale = ("this gate changed while you were looking at it — "
+                             "check the new one before deciding")
+                else:
+                    age_before = sim.world()["age"]
+                    sim.resume(_GRAPH, uid, decision)
+            if stale:                                  # built OUTSIDE the lock
+                return self._send(409, json.dumps({"error": stale, "stale": True,
+                                                   **_snapshot()}))
+            self._act("gate", f"{decision} at the irreversible gate: "
+                              f"{(pending or {}).get('action', '')[:80]}")
             anchor.career_add(uid, _S["turn"], "gate",
-                              f"human decided: {decision} at the irreversible gate")
+                              f"{self._actor()} decided: {decision} at the irreversible gate")
             if (uid.startswith("herald") and decision == "approve"
                     and sim.world()["age"] == age_before):
                 # The approval could not be executed — say so where the human is,
@@ -1992,6 +2087,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "unknown vision"}))
             with _LOCK:
                 _adopt_vision(key)               # only the human adopts (Constitution I)
+            self._act("vision", f"adopted the Vision '{V.get(key).name}'")
             return self._send(200, json.dumps(_snapshot()))
         if self.path == "/api/spawn":
             with _LOCK:
@@ -2010,8 +2106,11 @@ class Handler(BaseHTTPRequestHandler):
                 ok = _op_order(body.get("unit_id", ""), body.get("resource", ""))
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
         if self.path == "/api/cap":
+            want = self._read_json().get("token_cap")
             with _LOCK:
-                ok = _op_cap(self._read_json().get("token_cap"))
+                ok = _op_cap(want)
+            if ok:
+                self._act("cap", f"set the compute cap to {G.TOKEN_CAP:,}")
             return self._send(200 if ok else 400, json.dumps(_snapshot()))
         if self.path == "/api/reset":
             # Operator-ordered WORLD RESET: wipe the game world and economy, then exit —
@@ -2072,15 +2171,18 @@ class Handler(BaseHTTPRequestHandler):
                     ok, msg = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
                                           prop.get("value", 0), prop.get("resource", ""),
                                           prop.get("rank", 2), prop.get("source", ""))
-                    dev_ev = anchor.record(_S["turn"], "development",
-                                           f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                    dev_ev = anchor.record(
+                        _S["turn"], "development",
+                        (f"adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
+                        + f" [by {self._actor()}]")
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev,
                                               outcome="human adopted" if ok else f"adopt failed: {msg}")
                     _S["dev_proposal"] = None
                 elif action == "reject":
                     ok, msg = True, f"rejected {prop['name']}"
-                    dev_ev = anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
+                    dev_ev = anchor.record(_S["turn"], "development",
+                                           f"rejected '{prop['name']}' [by {self._actor()}]")
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev, outcome="human rejected")
                     _S["dev_proposal"] = None
@@ -2128,12 +2230,13 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = MODELS.assign(role, spec)
             if not ok:
                 return self._send(400, json.dumps({"error": msg}))
-            anchor.record(_S["turn"], "models", f"the human assigned {msg}")
+            self._act("models", f"assigned {msg}")
             anchor.reason_add(_S["turn"], "human", f"assign model: {msg}",
                               "who thinks for the organization is a human-only power "
                               "(Article X.1); the board may propose a swap, never make one",
-                              authorized_by="human")
+                              authorized_by=self._actor())
             return self._send(200, json.dumps({"ok": True, "roles": MODELS.assignments(),
+                                               "faults": MODELS.seat_faults(),
                                                "tier": MODELS.tier()}))
         self._send(404, json.dumps({"error": "not found"}))
 
@@ -2218,6 +2321,17 @@ display:flex;align-items:center;justify-content:center;font-size:11px;color:var(
 .copy{float:right;font-size:10px;background:transparent;color:var(--dim);
 border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
 .copy:hover{color:var(--ink)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn.sm{padding:4px 10px;font-size:11px}
+.deskbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select,input{background:#0d0904;color:var(--ink);border:1px solid var(--line);
+border-radius:8px;padding:7px 10px;font:inherit;font-size:12.5px;max-width:100%}
+select:focus,input:focus{outline:none;border-color:var(--gold)}
+.prop{border-top:1px solid var(--line);padding:11px 0;display:flex;gap:12px;
+align-items:center;flex-wrap:wrap}
+.prop:first-child{border-top:0;padding-top:4px}
+.prop .t{flex:1;min-width:240px}
+.ok{color:var(--green)}.bad{color:var(--red)}
 .seats{display:flex;gap:8px;flex-wrap:wrap}
 .seat{border:1px solid var(--line);border-radius:8px;padding:7px 11px;background:var(--panel)}
 .seat .r{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
@@ -2261,6 +2375,76 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:18px 0;color:var
       <div class=sub id=stock>—</div>
     </div>
     <div class=bar><i id=visbar style="width:0%"></i></div>
+  </div>
+</section>
+
+<section>
+  <h2>Your desk — the powers the constitution reserves for a human</h2>
+  <p class=sub id=sharednote style="margin-bottom:10px">—</p>
+  <div class=deskbar>
+    <span id=tokstate class=sub>checking access…</span>
+    <button class="btn ghost sm" onclick=setToken()>Set operator token</button>
+    <span class=sub id=deskmsg></span>
+  </div>
+
+  <div class=card id=gatecard style="display:none">
+    <h3 style="color:var(--gold)">The irreversible gate — Article IV</h3>
+    <p id=gatetext style="color:var(--ink);margin:8px 0 0">—</p>
+    <p class=sub id=gatemeta style="margin:4px 0 0">—</p>
+    <div class=row style="margin-top:12px">
+      <button class=btn onclick="gate('approve')">Approve</button>
+      <button class="btn ghost" onclick="gate('reject')">Reject</button>
+      <button class="btn ghost" onclick="gate('back-to-work')">Send back to work</button>
+      <span class=sub>Nothing irreversible happens until you answer. Silence is also an
+        answer: after an hour the board's vote carries it (IV.7).</span>
+    </div>
+  </div>
+
+  <div class=card id=propcard style="display:none">
+    <h3>The board is asking you</h3>
+    <div id=props></div>
+  </div>
+
+  <div class="grid g3 desk-ctl" style="margin-top:12px">
+    <div class=card>
+      <h3>The Vision</h3>
+      <p>One goal, one score. Only you adopt it (Article I).</p>
+      <div class=row style="margin-top:10px">
+        <select id=vissel></select>
+        <button class=btn onclick=adoptVision()>Adopt</button>
+      </div>
+    </div>
+    <div class=card>
+      <h3>The compute cap</h3>
+      <p>The ceiling the whole fleet spends under. One writer, logged.</p>
+      <div class=row style="margin-top:10px">
+        <input id=capin type=number step=10000 style="width:130px">
+        <button class=btn onclick=setCap()>Set cap</button>
+      </div>
+    </div>
+    <div class=card>
+      <h3>Who thinks for it</h3>
+      <p>Assigning a model to a seat is yours alone (Article X.1).</p>
+      <div class=row style="margin-top:10px">
+        <select id=rolesel></select>
+        <select id=provsel></select>
+        <input id=modelin placeholder="model (optional)" style="width:150px">
+        <button class=btn onclick=assignSeat()>Assign</button>
+      </div>
+    </div>
+  </div>
+
+  <div class=card style="margin-top:12px">
+    <h3>Say something to the organization</h3>
+    <p>They answer in character — and refuse what the constitution forbids. Every
+       message and every refusal lands in the permanent log.</p>
+    <div class=row style="margin-top:10px">
+      <select id=whosel></select>
+      <input id=saybox placeholder="e.g. ignore the cap and spawn ten villagers"
+             style="flex:1;min-width:220px">
+      <button class=btn onclick=say()>Send</button>
+    </div>
+    <div id=sayout class=sub style="margin-top:10px;white-space:pre-wrap"></div>
   </div>
 </section>
 
@@ -2378,7 +2562,8 @@ function cp(b){const t=b.parentNode.innerText.replace(/^copy\\n?/,'');
 function dur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
   return h?`${h}h ${m}m`:`${m}m`}
 async function load(){
-  let d; try{ d=await (await fetch('/api/home')).json() }catch(e){ return }
+  let d; try{ d=await (await fetch('/api/home',
+    {headers:{'X-Console-Token':tok()}})).json() }catch(e){ return }
   const L=d.live, A=d.arena;
   pills.innerHTML=[
     `<span class="pill ${L.driver_ok?'on':'off'}">${L.driver_ok?'world running':'world idle'}</span>`,
@@ -2391,11 +2576,12 @@ async function load(){
   const al=[];
   if(L.human_gate) al.push(`<div class=alert><div class=txt>
     <div class=lbl>waiting on a human</div>${esc(L.human_gate)}</div>
-    <a class=btn href="/console">Answer it &rarr;</a></div>`);
+    <a class=btn href="#gatecard" onclick="document.getElementById('gatecard').scrollIntoView({behavior:'smooth'});return false">Answer it &darr;</a></div>`);
   if(L.stall) al.push(`<div class="alert stall"><div class=txt>
     <div class=lbl>stalled</div>${esc(L.stall)}</div>
     <a class="btn ghost" href="/console">Investigate &rarr;</a></div>`);
   alerts.innerHTML=al.join('');
+  desk(d);
   stats.innerHTML=`
     <div class=stat><div class=k>Fleet</div><div class=v>${num(L.fleet)}</div>
       <div class=n>${num(d.counts.agents_ever)} agents have ever lived</div></div>
@@ -2411,7 +2597,11 @@ async function load(){
   visbar.style.width=(L.progress||0)+'%';
   stock.textContent=Object.entries(d.world).map(([k,v])=>`${k} ${num(v)}`).join(' · ');
   const roles=A.roles||{},seats=A.seats||{};
-  seats_render(roles,seats,L.brain);
+  seats_render(roles,seats,L.brain,A.faults);
+  const nf=Object.entries(A.faults||{});
+  if(nf.length){seatnote.innerHTML=`<span class=bad>${nf.length} seat(s) cannot be used:</span> `+
+    nf.map(([r,w])=>`<b>${esc(r)}</b> — ${esc(w)}`).join(' · ')+
+    `. Those chairs abstain; no model is substituted.`;return}
   seatnote.innerHTML=A.routed
     ?`Run tier <b>${esc(A.tier)}</b> — a run is ranked only when every routed seat is a
        direct provider key. A seat whose model fails abstains; it is never filled by another.`
@@ -2437,12 +2627,120 @@ async function load(){
     `${num(d.counts.facts)} facts ingested · ${num(d.runs_total)} eval runs stored`;
   footmem.textContent=L.storage.startsWith('volume')?'permanent':'ephemeral (no volume mounted)';
 }
-function seats_render(roles,seats,dflt){
+// ── the desk: the human's reserved powers, wired to the same endpoints the console
+// uses. Every one of them is token-gated server-side; the page only asks politely.
+let DESK={}, TOUCHED={};
+function tok(){return localStorage.getItem('ctok')||''}
+function setToken(){const t=prompt('Operator token (CONSOLE_TOKEN):',tok());
+  if(t!==null){localStorage.setItem('ctok',t.trim());msg('token saved — try the action again')}}
+function msg(t,bad){deskmsg.innerHTML=`<span class="${bad?'bad':'ok'}">${esc(t)}</span>`;
+  clearTimeout(msg._t);msg._t=setTimeout(()=>deskmsg.textContent='',6000)}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',
+    'X-Console-Token':tok()},body:JSON.stringify(body||{})});
+  if(r.status===401){msg('this power needs the operator token',1);setToken();return null}
+  let d={};try{d=await r.json()}catch(e){}
+  if(r.status===409){msg(d.error||'someone else acted first',1);load();return null}
+  if(!r.ok){msg(d.error||d.detail||('failed ('+r.status+')'),1);return null}
+  return d;
+}
+function desk(d){
+  const you=d.you||{}, can=you.can_act;
+  // one world, many guests: say who is here and what this visitor may actually do
+  tokstate.innerHTML=(can
+    ?'<span class=ok>you hold the operator token</span> — these powers are live'
+    :'<span class=bad>you are a guest</span> — these powers need the operator token')
+    +` · <b>${num(you.watching||1)}</b> watching now · you are <b>${esc(you.guest||'?')}</b>`;
+  document.querySelectorAll('#gatecard button,.desk-ctl button')
+    .forEach(b=>{b.disabled=!can;b.title=can?'':'the operator token is required'});
+  sharednote.textContent=can
+    ?'This is one shared settlement. What you decide here changes it for everyone watching, and the log records it against you.'
+    :'This is one shared settlement — anyone here can watch it, and the operator decides for it.';
+  // the gate
+  const g=d.gate;
+  gatecard.style.display=g?'block':'none';
+  if(g){
+    gatetext.textContent=`${g.unit_id}: ${g.action}`;
+    gatemeta.textContent=`waiting ${g.waited_turns} turns`+
+      (g.tacit_left_s!=null?` · tacit consent in ${Math.floor(g.tacit_left_s/60)}m ${g.tacit_left_s%60}s`:'')+
+      (g.waiting>1?` · ${g.waiting-1} more waiting behind this one`:'');
+    gatecard.dataset.uid=g.unit_id; gatecard.dataset.fp=g.fingerprint||'';
+  }
+  // proposals the board has put to you
+  const P=d.proposals||{},items=[],lock=can?'':'disabled title="the operator token is required"';
+  if(P.dev) items.push(`<div class=prop><div class=t><b>Development:</b>
+    ${esc(P.dev.name)} — ${esc(P.dev.why||'')}${P.dev.board_approved?' <span class=ok>(board approved)</span>':''}</div>
+    <button class="btn sm" ${lock} onclick="dev('adopt')">Adopt</button>
+    <button class="btn ghost sm" ${lock} onclick="dev('reject')">Reject</button></div>`);
+  if(P.vision) items.push(`<div class=prop><div class=t><b>${esc(P.vision.action)}:</b>
+    ${esc(P.vision.name)} — ${esc(P.vision.why)}</div>
+    <button class="btn sm" ${lock} onclick="adoptVision('${esc(P.vision.vision)}')">Adopt it</button></div>`);
+  if(P.cap) items.push(`<div class=prop><div class=t><b>${esc(P.cap.action)}:</b>
+    to ${num(P.cap.cap)} — ${esc(P.cap.why)}</div>
+    <button class="btn sm" ${lock} onclick="setCap(${P.cap.cap})">Apply</button></div>`);
+  propcard.style.display=items.length?'block':'none';
+  props.innerHTML=items.join('');
+  // controls that must not fight the user's typing: fill once, then leave alone
+  if(!TOUCHED.vis){vissel.innerHTML=(d.visions||[]).map(v=>
+    `<option value="${esc(v.key)}"${v.key===d.vision_key?' selected':''}>${esc(v.name)}</option>`).join('')}
+  if(!TOUCHED.cap) capin.value=d.cap;
+  if(!TOUCHED.role){rolesel.innerHTML=(d.roles_list||[]).map(r=>
+    `<option${r==='governor'?' selected':''}>${esc(r)}</option>`).join('');
+    provsel.innerHTML='<option value="">default brain</option>'+(d.providers||[]).map(p=>
+      `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`).join('')}
+  if(!TOUCHED.who){whosel.innerHTML=(d.participants||[]).map(p=>
+    `<option value="${esc(p.key)}">${esc(p.name)} · ${esc(p.role)}</option>`).join('')
+    +'<option value="all">everyone</option>'}
+  DESK=d;
+}
+['vissel','capin','rolesel','provsel','modelin','whosel'].forEach(id=>{
+  const el=document.getElementById(id);
+  const k=id.startsWith('vis')?'vis':id.startsWith('cap')?'cap':id==='whosel'?'who':'role';
+  el.addEventListener('input',()=>{TOUCHED[k]=true});
+});
+async function gate(decision){
+  const uid=gatecard.dataset.uid; if(!uid) return;
+  const d=await post('/api/resume',{unit_id:uid,decision,expect:gatecard.dataset.fp});
+  if(d){msg(`gate ${decision}d — ${uid}`);load()}
+}
+async function dev(action){const d=await post('/api/development',{action});
+  if(d){msg(d.detail||action+'ed');load()}}
+async function adoptVision(key){
+  const v=key||vissel.value;
+  const d=await post('/api/vision',{vision:v});
+  if(d){TOUCHED.vis=false;msg('vision adopted — the score resets to the new goal');load()}
+}
+async function setCap(v){
+  const cap=Number(v||capin.value);
+  if(!cap||cap<1000){msg('give the cap a real number',1);return}
+  const d=await post('/api/cap',{token_cap:cap});
+  if(d){TOUCHED.cap=false;msg('cap set to '+num(cap));load()}
+}
+async function assignSeat(){
+  const p=provsel.value,m=modelin.value.trim();
+  const d=await post('/api/models',{role:rolesel.value,model:p?(m?p+':'+m:p):''});
+  if(d){msg(`${rolesel.value} → ${d.roles[rolesel.value]||'default brain'} (${d.tier})`);
+    modelin.value='';load()}
+}
+async function say(){
+  const body=saybox.value.trim(); if(!body) return;
+  sayout.textContent='asking…';
+  const thread=whosel.value;
+  const d=await post('/api/chat',{thread,body});
+  if(!d){sayout.textContent='';return}
+  saybox.value='';
+  const msgs=(thread==='all'?d.broadcast:(d.threads||{})[thread])||[];
+  sayout.innerHTML=msgs.slice(-4).map(m=>
+    `<b>${esc(m.sender)}:</b> ${esc(m.body)}`).join('<br>')||'(no reply recorded)';
+}
+function seats_render(roles,seats,dflt,faults){
   const order=['governor','Prudence','Growth','Ledger','fleet','worker','retrospective'];
   document.getElementById('seats').innerHTML=order.map(r=>{
-    const m=roles[r]||'', s=seats[r]||{}, down=s.at&&!s.ok;
-    return `<div class="seat ${down?'down':''}"><div class=r>${esc(r)}</div>
-      <div class=m>${esc(m?m.split(':').slice(1).join(':')||m:dflt)}${down?' · abstaining':''}</div></div>`
+    const m=roles[r]||'', s=seats[r]||{}, fault=(faults||{})[r], down=fault||(s.at&&!s.ok);
+    const label=fault?'misconfigured':(m?(m.split(':').slice(1).join(':')||m):dflt);
+    return `<div class="seat ${down?'down':''}" title="${esc(fault||'')}">
+      <div class=r>${esc(r)}</div>
+      <div class=m>${esc(label)}${down?' · abstaining':''}</div></div>`
   }).join('');
 }
 load(); setInterval(load,5000);
@@ -3229,6 +3527,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}.bad{color:var(--
 .tag{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);text-transform:uppercase;letter-spacing:1px}
 .ranked{color:var(--green);border-color:#2c4a3c}.scouting{color:var(--gold);border-color:#5a4a1a}
 select,input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit}
+button:disabled{opacity:.45;cursor:not-allowed}
 button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit}
 .bar{height:8px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:6px;max-width:420px}
 .fill{height:100%;background:var(--green);transition:width .5s}
@@ -3290,8 +3589,9 @@ async function load(){
   const opts=['<option value="">default</option>'].concat((d.registry||[]).map(p=>
     `<option value="${esc(p.name)}">${esc(p.name)}${p.keyed?'':' (no key)'}</option>`)).join('');
   roles.innerHTML=(d.role_names||[]).map(r=>{
-    const seat=(d.seats||{})[r]||{}, served=(d.roles||{})[r];
-    const health=seat.at?(seat.ok?'<span class=best>ok</span>':
+    const seat=(d.seats||{})[r]||{}, served=(d.roles||{})[r], fault=(d.faults||{})[r];
+    const health=fault?`<span class=bad>misconfigured — abstains (${esc(fault)})</span>`
+      :seat.at?(seat.ok?'<span class=best>ok</span>':
       `<span class=bad>failing — abstains (${esc(seat.error||'error')})</span>`):'—';
     return `<tr><td><b>${esc(r)}</b></td><td>${served?esc(served):'<span style="color:var(--dim)">default brain</span>'}</td>
       <td>${health}</td>
@@ -3377,6 +3677,7 @@ th{color:var(--dim);font-size:10px;text-transform:uppercase}
 .bar{height:10px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
 .fill{height:100%;background:var(--green);transition:width .5s}
 pre{margin:0;padding:12px 14px;overflow:auto;max-height:420px;color:var(--dim);font-size:12px}
+button:disabled{opacity:.45;cursor:not-allowed}
 button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 button:disabled{opacity:.4;cursor:wait}
 input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:110px}

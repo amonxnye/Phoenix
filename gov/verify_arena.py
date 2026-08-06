@@ -173,16 +173,19 @@ check("an open decision counts as neither hit nor miss",
 check("grounding is measured, not assumed",
       hit["model-a"]["grounded"] == 1, str(hit["model-a"]["grounded_pct"]) + "%")
 
-print("\n5. The price table is human-maintained, and cost is computed at log time")
-check("a seeded price gives a real dollar figure",
-      M.cost_usd("deepseek-v4-flash", 1_000_000, 1_000_000) == 0.7)
+print("\n5. The price table is the operator's, and nothing is invented in its absence")
+check("the platform ships NO prices — a published price would be stale and unnoticed",
+      M.SEED_PRICES == {} and M.prices() == {})
+check("with no table loaded, every model is unpriced and costs nothing",
+      M.unpriced("model-a") and M.cost_usd("model-a", 1_000_000, 1_000_000) == 0.0)
+os.environ["MODEL_PRICES"] = json.dumps({"model-a": {"in": 2.0, "out": 8.0},
+                                         "claude-sonnet": {"in": 3.0, "out": 15.0}})
+check("a loaded table prices calls at log time",
+      M.cost_usd("model-a", 1_000_000, 500_000) == 6.0 and not M.unpriced("model-a"))
 check("longest-prefix matching finds a dated model name",
       M.cost_usd("claude-sonnet-5-20260101", 1_000_000, 0) == 3.0)
-check("an unpriced model costs zero and SAYS it is unpriced",
-      M.cost_usd("model-a", 1_000_000, 1_000_000) == 0.0 and M.unpriced("model-a"))
-os.environ["MODEL_PRICES"] = json.dumps({"model-a": {"in": 2.0, "out": 8.0}})
-check("the human's price table overrides the seed",
-      M.cost_usd("model-a", 1_000_000, 500_000) == 6.0 and not M.unpriced("model-a"))
+check("a model outside the table stays unpriced — no neighbour's price is borrowed",
+      M.unpriced("model-b-pro"))
 
 print("\n6. The ceiling is structural — the run halts, it never downgrades")
 M.reset_run_state()
@@ -213,6 +216,21 @@ pf = M.preflight(1000, "model-a", 1000, 200)
 check("a pre-flight estimate is computed before a dollar is spent",
       pf["estimate_usd"] == round(2.0 + 1.6, 4), str(pf["estimate_usd"]))
 check("an estimate over the ceiling is REFUSED up front", pf["refused"] is True)
+pf2 = M.preflight(1000, "no-price-model", 1000, 200)
+check("an UNPRICED model yields no estimate and refuses under a ceiling",
+      pf2["estimate_usd"] is None and pf2["refused"] is True and "unpriced" in pf2["why"])
+try:
+    M.check_budget("no-price-model")
+    refused = False
+except M.BudgetExceeded as e:
+    refused = "unpriced" in str(e)
+check("the seam refuses to enforce a ceiling it cannot measure", refused)
+del os.environ["MODEL_PRICES"]
+M.reset_run_state()
+pf3 = M.preflight(500)
+check("with no history and no prices, preflight says so instead of guessing",
+      pf3["estimate_usd"] is None and pf3["why"] != "", pf3["why"])
+os.environ["MODEL_PRICES"] = json.dumps({"model-a": {"in": 2.0, "out": 8.0}})
 
 print("\n7. A model that errors scores the error (EVAL.md §5)")
 M.reset_run_state()
@@ -226,9 +244,13 @@ del os.environ["MODEL_ROLE_GOVERNOR"]
 M.reset_run_state()
 
 print("\n8. Routers are scouting, never ranked (ARENA.md §1)")
-check("a direct board is ranked", M.tier() == "ranked")
-os.environ["MODEL_ROLE_FLEET"] = "openrouter"
+check("a direct board is ranked", M.tier() == "ranked", M.tier())
 os.environ["OPENROUTER_API_KEY"] = "k-router"
+os.environ["MODEL_ROLE_FLEET"] = "openrouter"          # provider named, model not
+check("a provider with no model named is a FAULT, not a silent default",
+      M.misconfigured("fleet") == M.NO_MODEL and M.tier() == "incomplete")
+check("a run with a broken seat is not a ranked result", M.tier() == "incomplete")
+os.environ["MODEL_ROLE_FLEET"] = "openrouter:some-lab/some-model"
 check("one router anywhere makes the whole run scouting", M.tier() == "scouting",
       M.tier())
 check("the router is identified by its base URL, not by trust",
@@ -306,8 +328,8 @@ try:
           code == 200 and body["roles"]["governor"] == "labA:model-a")
     check("the assignment is on the permanent record",
           any("assigned governor" in e for e in A.event_log(50)))
-    check("the decision record names the human as the authority",
-          any(r["authorized_by"] == "human" and "assign model" in r["decision"]
+    check("the decision record names WHICH human took it — one world, many guests",
+          any(r["authorized_by"] == "operator" and "assign model" in r["decision"]
               for r in A.reasons_top(10)))
     code, body = post("/api/models", {"role": "governor", "model": "ghostlab"},
                       "arena-test-token")

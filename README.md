@@ -290,6 +290,19 @@ not try to make agents smarter. It tries to make an organization of them account
 - [ ] Disputed-knowledge flag — contradictory facts quarantined at write time
 - [ ] Raids & defence — adversarial pressure for the settlement ([`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md))
 
+## What the Settlement taught us
+
+Fourteen principles for making agents work, each naming the measurement that forced it
+and the code that enforces it — from "score the outcome, never the activity" (talk:action
+went 3.78:1 → 0.32:1 when the score stopped being able to see talk) to "refuse to measure
+what you cannot measure". Open defects are listed as open, with numbers:
+[`AGENT-PRINCIPLES.md`](AGENT-PRINCIPLES.md).
+
+```bash
+python3 -m unittest discover -s gov/tests -t gov/tests   # 185 unit + end-to-end tests
+python3 gov/smoke.py --turns 150 --pollers 8 --fresh     # a real run, measured
+```
+
 ## Contributing
 
 1. Read the constitution first. It's the spec.
@@ -303,7 +316,8 @@ not try to make agents smarter. It tries to make an organization of them account
 ## The documents
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
-[`EVAL.md`](EVAL.md) · [`ARENA.md`](ARENA.md) · [`NEXT.md`](NEXT.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
+[`EVAL.md`](EVAL.md) · [`ARENA.md`](ARENA.md) · [`AGENT-PRINCIPLES.md`](AGENT-PRINCIPLES.md) ·
+[`NEXT.md`](NEXT.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
 [`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 

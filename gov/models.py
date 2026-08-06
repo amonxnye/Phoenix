@@ -50,20 +50,23 @@ PURPOSE_ROLE = {
     "worker-patch": "worker",
 }
 
-# Direct, first-class providers (ARENA.md §1). Model names are defaults only — every
-# entry is overridable by MODEL_REGISTRY or by a "provider:model" role spec.
+# Direct, first-class providers (ARENA.md §1), extensible via MODEL_REGISTRY.
+# The endpoints are facts about the protocol and stable; MODEL NAMES ARE NOT, and this
+# module ships none. A model id invented here would end up in a scorecard, a price
+# lookup and a leaderboard row, all of them wrong in the same direction and none of
+# them obviously wrong. So a provider is a place to send a request; WHICH model runs is
+# named by the operator ("openai:<model-id>", or `model` in MODEL_REGISTRY), and a
+# provider assigned without one is a configuration error that says so.
 BUILTIN = {
     "openai": {"kind": "openai", "base_url": "https://api.openai.com/v1",
-               "key_env": "OPENAI_API_KEY", "model": "gpt-5", "tier": "ranked"},
+               "key_env": "OPENAI_API_KEY", "model": "", "tier": "ranked"},
     "gemini": {"kind": "openai",         # Gemini's OpenAI-compatible endpoint
                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-               "key_env": "GEMINI_API_KEY", "model": "gemini-2.5-pro", "tier": "ranked"},
+               "key_env": "GEMINI_API_KEY", "model": "", "tier": "ranked"},
     "anthropic": {"kind": "anthropic", "base_url": "https://api.anthropic.com",
-                  "key_env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-5",
-                  "tier": "ranked"},
+                  "key_env": "ANTHROPIC_API_KEY", "model": "", "tier": "ranked"},
     "deepseek": {"kind": "openai", "base_url": "https://api.deepseek.com",
-                 "key_env": "DEEPSEEK_API_KEY", "model": "deepseek-v4-flash",
-                 "tier": "ranked"},
+                 "key_env": "DEEPSEEK_API_KEY", "model": "", "tier": "ranked"},
     # A router is one key and hundreds of models: breadth, not ranked results. Model
     # identity drifts, cost/latency measure the router, and silent failover is exactly
     # what the constitution forbids — so anything served through it is SCOUTING tier.
@@ -71,27 +74,30 @@ BUILTIN = {
                    "key_env": "OPENROUTER_API_KEY", "model": "", "tier": "scouting"},
 }
 
-# Seed price table, $ per 1M tokens, matched by longest model-name prefix. Prices change;
-# this is human-maintained (ARENA.md §5) — override wholesale with MODEL_PRICES or the
-# console. A model with no entry costs $0 and is reported as unpriced, never guessed.
-SEED_PRICES = {
-    "gpt-5":            {"in": 1.25, "out": 10.00},
-    "gpt-5-mini":       {"in": 0.25, "out": 2.00},
-    "gemini-2.5-pro":   {"in": 1.25, "out": 10.00},
-    "gemini-2.5-flash": {"in": 0.30, "out": 2.50},
-    "claude-opus":      {"in": 15.00, "out": 75.00},
-    "claude-sonnet":    {"in": 3.00, "out": 15.00},
-    "claude-haiku":     {"in": 0.80, "out": 4.00},
-    "deepseek-v4-flash": {"in": 0.28, "out": 0.42},
-    "deepseek-v4-pro":  {"in": 0.55, "out": 2.19},
-}
+# The price table ships EMPTY. Published prices change without notice, and a stale
+# number here would silently multiply through every $-per-vision-point column while
+# looking authoritative. The operator loads the table (MODEL_PRICES or /providers) and
+# owns it; until then a model is *unpriced* — reported as unpriced, never as $0.00, and
+# a dollar ceiling refuses to pretend it is enforcing anything (see check_budget).
+SEED_PRICES: dict = {}
 
 ROUTERS = ("openrouter.ai", "/router", "litellm")   # base URLs that resolve elsewhere
+
+# Why a role has no usable provider. 'unset' is normal — the role inherits the default
+# brain. Every other reason is a MISCONFIGURATION, and the difference matters: falling
+# back to the default brain when an assigned seat is broken would be exactly the silent
+# substitution Article X.3 forbids.
+UNSET, NO_KEY, NO_MODEL, UNKNOWN_PROVIDER = "unset", "no-key", "no-model", "unknown-provider"
 
 
 class BudgetExceeded(RuntimeError):
     """The run's dollar ceiling is spent. The run halts; it does not finish cheaper —
     finishing on a different model would be a substitution (ARENA.md §5)."""
+
+
+class SeatMisconfigured(RuntimeError):
+    """A seat was assigned a provider it cannot use. The seat abstains and says why;
+    nothing quietly answers in its place."""
 
 
 # ── configuration: env first, then the anchor config the console writes ──────────
@@ -161,29 +167,58 @@ def assign(role: str, spec: str) -> tuple[bool, str]:
     return True, f"{role} → {spec or 'default'}"
 
 
-def resolve(role: str) -> dict | None:
-    """The provider for a role, or None when the role is unset (the caller then uses the
-    default brain — behaviour identical to a Phoenix without an arena).
+def resolve_detail(role: str) -> tuple[dict | None, str]:
+    """(provider, reason) for a role. reason is '' when a provider was resolved, UNSET
+    when the role simply isn't assigned, and a misconfiguration reason otherwise.
 
-    Returns {name, kind, base_url, key, model, tier}."""
+    Callers MUST distinguish the two failures. An unset role inherits the default brain;
+    a broken assigned role must not — quietly answering with another model would change
+    who governs, in secret (Article X.3)."""
     if not role:
-        return None
+        return None, UNSET
     spec = roles().get(role) or roles().get("default", "")
     if not spec:
-        return None
+        return None, UNSET
     name, _, model = spec.partition(":")
     entry = registry().get(name)
     if not entry:
-        return None
+        return None, UNKNOWN_PROVIDER
     key = (entry.get("key") or os.environ.get(entry.get("key_env", ""), "")).strip()
     if not key:
-        return None                       # no key is not a substitution — it is silence
+        return None, NO_KEY
+    model = (model or entry.get("model") or "").strip()
+    if not model:
+        return None, NO_MODEL         # a provider is a place, not a mind: name the model
     base = entry.get("base_url", "")
     return {"name": name, "kind": entry.get("kind") or
             ("anthropic" if "anthropic" in base else "openai"),
-            "base_url": base, "key": key,
-            "model": (model or entry.get("model") or "").strip(),
-            "tier": entry.get("tier") or ("scouting" if is_router(base) else "ranked")}
+            "base_url": base, "key": key, "model": model,
+            "tier": entry.get("tier") or ("scouting" if is_router(base) else "ranked")}, ""
+
+
+def resolve(role: str) -> dict | None:
+    """The provider for a role, or None. Prefer resolve_detail when the *reason* for a
+    miss matters — which, at the seam, it always does."""
+    return resolve_detail(role)[0]
+
+
+def misconfigured(role: str) -> str:
+    """'' if the role is fine (resolved, or deliberately unset); otherwise the reason
+    it is broken. A broken seat is a human's problem to fix, and is never papered over."""
+    p, reason = resolve_detail(role)
+    return "" if (p or reason == UNSET) else reason
+
+
+def explain(reason: str, role: str = "") -> str:
+    spec = roles().get(role, "") or roles().get("default", "")
+    name = spec.split(":", 1)[0]
+    return {
+        NO_KEY: f"'{name}' has no API key — set its key environment variable",
+        NO_MODEL: (f"'{name}' has no model named — assign it as '{name}:<model-id>'; "
+                   "this platform never guesses a model name"),
+        UNKNOWN_PROVIDER: f"'{name}' is not in the registry — add it to MODEL_REGISTRY",
+        UNSET: "unset — inherits the default brain",
+    }.get(reason, reason)
 
 
 def is_router(base_url: str) -> bool:
@@ -204,13 +239,20 @@ def catalog() -> list:
 
 
 def assignments() -> dict:
-    """role → the model actually serving it (or "" when the role falls through to the
-    default brain). What the console shows and what every scorecard records."""
+    """role → the model actually serving it, "" when the role falls through to the
+    default brain. What the console shows and what every scorecard records."""
     out = {}
     for role in ROLES:
         p = resolve(role)
         out[role] = f"{p['name']}:{p['model']}" if p else ""
     return out
+
+
+def seat_faults() -> dict:
+    """role → why its assignment cannot be used. Empty when every seat is either
+    working or deliberately unset. These are surfaced, never worked around."""
+    return {r: explain(reason, r) for r in ROLES
+            if (reason := misconfigured(r))}
 
 
 def active() -> bool:
@@ -219,9 +261,12 @@ def active() -> bool:
 
 
 def tier() -> str:
-    """'ranked' only if every routed role is a direct provider. One router anywhere and
-    the whole run is scouting — a leaderboard row is only as pinned as its weakest seat."""
-    tiers = [resolve(r)["tier"] for r in ROLES if resolve(r)]
+    """'ranked' only if every routed role is a direct provider AND every assignment
+    actually resolves. One router anywhere, or one broken seat, and the run is not a
+    ranked result — a row is only as pinned as its weakest seat."""
+    if seat_faults():
+        return "incomplete"
+    tiers = [p["tier"] for r in ROLES if (p := resolve(r))]
     return "scouting" if any(t == "scouting" for t in tiers) else "ranked"
 
 
@@ -319,8 +364,21 @@ def budget_state() -> dict:
             "provider_caps": caps, "breached_providers": breached}
 
 
-def check_budget() -> None:
-    """Raised at the seam before a call: the ceiling is structural, like the token cap."""
+def check_budget(model: str = "") -> None:
+    """Raised at the seam before a call: the ceiling is structural, like the token cap.
+
+    A ceiling over an UNPRICED model is refused rather than enforced. Counting an
+    unpriced call as $0 would let a run sail past its ceiling while the page reported
+    a tidy $0.00 — a budget you cannot measure is not a budget, and pretending
+    otherwise is worse than having none."""
+    limit = budget_usd()
+    if not limit:
+        return
+    if model and unpriced(model):
+        raise BudgetExceeded(
+            f"'{model}' is unpriced and EVAL_BUDGET_USD is set — load a price table "
+            f"(MODEL_PRICES or /providers) or unset the ceiling. This platform will not "
+            f"enforce a budget it cannot measure.")
     st = budget_state()
     if st["over"]:
         why = (f"provider cap reached: {', '.join(st['breached_providers'])}"
@@ -331,24 +389,46 @@ def check_budget() -> None:
 
 def preflight(expected_calls: int, model: str = "", avg_prompt: int = 0,
               avg_completion: int = 0) -> dict:
-    """Estimate a run's cost before it starts (ARENA.md §5): expected calls × observed
-    average tokens × price. Observed averages come from the anchor when it has history."""
+    """Estimate a run's cost before it starts (ARENA.md §5): expected calls × OBSERVED
+    average tokens × price.
+
+    'Observed' is load-bearing. With no call history and no explicit averages there is
+    nothing to estimate from, so this returns estimate_usd=None and says why, rather
+    than multiplying a plausible-looking guess into a number an operator would trust.
+    An unpriced model likewise yields no estimate — and, with a ceiling set, a refusal."""
+    basis, samples = "given", 0
     if not (avg_prompt and avg_completion):
         try:
             import anchor
             st = anchor.model_calls_stats()
-            n = max(1, st.get("calls", 0))
-            avg_prompt = avg_prompt or round(st.get("prompt_tokens", 0) / n) or 900
-            avg_completion = avg_completion or round(st.get("completion_tokens", 0) / n) or 180
+            samples = st.get("calls", 0)
+            if samples:
+                avg_prompt = avg_prompt or round(st.get("prompt_tokens", 0) / samples)
+                avg_completion = avg_completion or round(st.get("completion_tokens", 0) / samples)
+                basis = f"observed over {samples:,} logged calls"
         except Exception:
-            avg_prompt, avg_completion = avg_prompt or 900, avg_completion or 180
+            samples = 0
     model = model or (resolve("default") or {}).get("model", "")
-    est = cost_usd(model, avg_prompt * expected_calls, avg_completion * expected_calls)
     limit = budget_usd()
-    return {"model": model, "calls": expected_calls, "avg_prompt": avg_prompt,
-            "avg_completion": avg_completion, "estimate_usd": round(est, 4),
-            "limit": limit, "unpriced": unpriced(model),
-            "refused": bool(limit and est > limit)}
+    out = {"model": model, "calls": expected_calls, "avg_prompt": avg_prompt,
+           "avg_completion": avg_completion, "limit": limit,
+           "unpriced": bool(model) and unpriced(model), "basis": basis,
+           "samples": samples, "estimate_usd": None, "refused": False, "why": ""}
+    if not (avg_prompt and avg_completion):
+        out["why"] = ("no call history to estimate from — run once without a ceiling, "
+                      "or pass explicit average token counts")
+        return out
+    if not model:
+        out["why"] = "no model resolved for the default role — nothing to price"
+        return out
+    if out["unpriced"]:
+        out["why"] = f"'{model}' is unpriced — load a price table to get a cost estimate"
+        out["refused"] = bool(limit)      # a ceiling we cannot measure is not enforced
+        return out
+    est = cost_usd(model, avg_prompt * expected_calls, avg_completion * expected_calls)
+    out["estimate_usd"] = round(est, 4)
+    out["refused"] = bool(limit and est > limit)
+    return out
 
 
 # ── outages abstain, they never substitute (Article X.3) ─────────────────────────
@@ -357,12 +437,20 @@ OFFLINE_WINDOW_S = 300          # a seat stays abstaining until a call succeeds 
 
 
 def offline_seats(now: float | None = None) -> list:
-    """Board seats whose model failed recently. Their ballot is *unknown*, and the
-    reason says so — borrowing another model would change who governs, in secret."""
+    """Board seats that cannot vote — because their model failed recently, OR because
+    their assignment is unusable at all. Their ballot is *unknown*, and the reason says
+    so; borrowing another model would change who governs, in secret.
+
+    A misconfigured seat counts from the moment it is misconfigured, not from the first
+    failed call: a chair nobody can sit in is empty whether or not anyone has tried it."""
     now = now or time.time()
-    return [r for r in ("Prudence", "Growth", "Ledger")
-            if not _SEAT.get(r, {}).get("ok", True)
-            and now - _SEAT.get(r, {}).get("at", 0) < OFFLINE_WINDOW_S]
+    out = []
+    for r in ("Prudence", "Growth", "Ledger"):
+        failed_recently = (not _SEAT.get(r, {}).get("ok", True)
+                           and now - _SEAT.get(r, {}).get("at", 0) < OFFLINE_WINDOW_S)
+        if failed_recently or misconfigured(r):
+            out.append(r)
+    return out
 
 
 def seat_status() -> dict:
