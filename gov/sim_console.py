@@ -1607,10 +1607,20 @@ class Handler(BaseHTTPRequestHandler):
             import workspace as WS
             WS.init()
             wtasks = WS.sync_tasks()              # sync first so counts are current
+            # the file under work is derived from the first open task, not hardcoded —
+            # the workspace may be pointed at any repo (BUILDER.md §5.1)
+            focus = next((WS.find_source_for(t["test"]) for t in wtasks
+                          if t["status"] in ("open", "assigned")), "")
+            focus = focus or next((WS.find_source_for(t["test"]) for t in wtasks), "")
+            try:
+                module_src = WS.read_file(focus) if focus else ""
+            except OSError:
+                module_src = ""
             return self._send(200, json.dumps({
                 "world": WS.world(),
                 "tasks": wtasks,
-                "module": WS.read_file("calculator.py"),
+                "focus": focus,
+                "module": module_src,
                 "brain": brain.brain_name(),
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
@@ -2809,7 +2819,10 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
-    <div class=bar><div class=fill id=fill style="width:0%"></div></div></div></div>
+    <div class=bar><div class=fill id=fill style="width:0%"></div></div>
+    <div style="margin-top:8px;color:var(--dim)">repo <b id=repo>—</b> &middot;
+      oracle <code id=cmd>—</code></div>
+    <div id=oerr style="margin-top:6px;color:var(--gold);display:none"></div></div></div>
   <div class=card><h2>Tasks — derived from failing tests, closed only by the oracle</h2>
     <table><thead><tr><th>Task</th><th>Status</th><th>Solved by</th></tr></thead><tbody id=tasks></tbody></table></div>
   <div class=card><h2>Run a worker</h2><div class=p>
@@ -2819,7 +2832,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
     <div style="margin-top:10px" id=result>The worker reads the first open task and its failing test,
     proposes a fix through the live brain, applies it in the sandbox, and the oracle re-scores.
     A patch that breaks tests is auto-reverted. It cannot edit the tests.</div></div></div>
-  <div class="card wide"><h2>The code under work — sandbox/calculator.py</h2><pre id=code></pre></div>
+  <div class="card wide"><h2>The code under work — <span id=focusfile>—</span></h2><pre id=code></pre></div>
   <div class="card wide"><h2>Recent work events</h2><div class=log id=log></div></div>
 </main>
 <script>
@@ -2831,6 +2844,10 @@ async function load(){
   suite.textContent=`${w.tests_passing}/${w.tests_total}`;
   taskmeta.textContent=`${w.tasks_open} open · ${w.tasks_done} done · progress ${w.progress_pct}%`;
   fill.style.width=w.progress_pct+'%';
+  repo.textContent=w.repo||'—'; cmd.textContent=w.test_cmd||'—';
+  oerr.style.display=w.oracle_ok?'none':'block';
+  oerr.textContent=w.oracle_ok?'':'NO VERDICT — '+(w.oracle_error||'the test command did not report results');
+  focusfile.textContent=d.focus||'—';
   tasks.innerHTML=(d.tasks||[]).map(t=>`<tr><td>${esc(t.title)}</td>
     <td><span class="tag t-${esc(t.status)}">${esc(t.status)}</span></td>
     <td>${esc(t.solved_by||'—')}</td></tr>`).join('')||'<tr><td colspan=3>no tasks</td></tr>';

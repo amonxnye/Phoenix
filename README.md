@@ -49,9 +49,29 @@ given a compute budget, and trusted to work unattended overnight because:
 The economic simulation exists because progress toward "reach the Castle Age" is
 objective, instant, and free to read. That property — a **cheap oracle** — is what
 makes governance testable at all. Swap the oracle for a test suite and the same
-machinery runs against real software: that adapter is **already built**
-(`gov/workspace.py` — the test suite is the oracle, failing tests are the open
-tasks). The first sandboxed code task has already landed and been paid for:
+machinery runs against real software: that adapter is **already built**, and it now
+runs **unattended against a real git repository**:
+
+```
+python3 gov/builder.py  run --repo /path/to/repo --test-cmd "python -m pytest -q"
+python3 gov/campaign.py run --repo /path/to/repo --agents 4 --rounds 6
+python3 gov/builder.py gate              # branches waiting, with diffs and test deltas
+python3 gov/builder.py approve --id 1    # the one irreversible act, taken by you
+```
+
+`builder` sends one agent at each failing test. `campaign` sends a **fleet** at one
+hard problem — different agents given genuinely different strategies, escalating as
+they get stuck, keeping a champion commit that only ever advances. See **CAMPAIGN.md**.
+
+New here? Open **`index.html`** — the guarantees, a five-step start, and an honest
+list of what it does not do yet.
+
+Each task is worked in its own git worktree and branch, so your checkout is never
+written to — not even mid-run. Attempts are capped and budgeted; a patch is kept only
+if the repo's own suite says it helped and broke nothing; and every success parks a
+reviewable diff at a human gate. Agents have no push rights. See **BUILDER.md**.
+
+The first sandboxed code task has already landed and been paid for:
 
 ```
 dev-01 patched calculator.py — 6 tests newly green, suite 9/9,
@@ -109,7 +129,7 @@ the specification, and every article names its enforcing module.
 | **II** | Agents are born by quorum, promoted on merit, retired *before* the overshooting spend. No immortals, no zombies, never reaped to empty. | `economy.py`, `sim_console.py` |
 | **III** | Limits are read before acting. The cap has one writer; a blocked action escalates **once**, naming the value, then mutes until it changes. | `governor.py`, `sim_console._breaker` |
 | **IV** | Irreversible actions stop at the gate. The wait is priced, re-routed if unanswered, and bounded by timeout. Reversible work never pauses. | `sim.py` interrupt, `sim_console.py` |
-| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them. | `workspace.py` |
+| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them, their configuration, or the CI that runs them. | `workspace.py` |
 | **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. | `anchor.py` |
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
@@ -133,14 +153,28 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
-python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
+# the acceptance suites (CI runs every one of them on each push)
+python3 gov/verify.py           #  16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py       #  36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py      #  39 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_builder.py   #  51 — the autonomous loop, isolation, the merge gate
+python3 gov/verify_campaign.py  #  37 — the fleet, strategies, the champion, dry rounds
+python3 gov/verify_guests.py    #  48 — guest identity: forged, edited, replayed cookies
+python3 gov/verify_metrics.py   #  65 — the ledger, its arithmetic, starter workspaces
+python3 gov/verify_gate.py      #  67 — the service over real HTTP, two guests, isolation
+python3 gov/console_smoke.py    #       headless console API smoke
 
-# the live console
-python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+# end to end, with the numbers — provisions repos, runs fleets, merges, reports
+python3 gov/smoke.py
+
+# the merge gate, as a page: your repository, bound to loopback
+python3 gov/gate.py --repo ~/yourrepo      # → http://127.0.0.1:8788
+
+# or as a service: a guest session and a starter workspace per visitor
+python3 gov/gate.py --serve --port 8788
+
+# the settlement console
+python3 gov/sim_console.py --seed
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to
@@ -153,6 +187,8 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
+| `GATE_SECRET` | signs guest sessions — set it so a restart does not sign everyone out |
+| `GATE_MAX_RUNS` / `GATE_MAX_CONCURRENT` | what one anonymous visitor, and the instance, may spend |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |
 
 Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console reads
@@ -226,8 +262,16 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `governor.py` | the read view over the checkpointer, the spend cap |
 | `economy.py` | budgets, tiers, promotion, the ledger |
 | `sim.py` | the settlement — resources, builds, decay, trade, era pricing, the gate |
-| `workspace.py` | the real-work world — the test-suite oracle, tasks, the closed sandbox |
+| `workspace.py` | the real-work world — any repo's test command as oracle, tasks, the closed workspace |
 | `worker.py` | the coding agent — patch, test, get paid for green |
+| `worktree.py` | isolation — a git branch and checkout per task; your tree is never touched |
+| `solver.py` | the executor seam — a task in, files out; plus the strategy ladder |
+| `builder.py` | autonomous development — the unattended run, the human merge gate, the retrospective |
+| `gate.py` | the gate as a page — the review surface, single-operator or multi-guest |
+| `guests.py` | identity without accounts — signed sessions, one workspace each |
+| `starter.py` | real repositories with real defects, built on demand for a guest |
+| `metrics.py` | the ledger — every sortie, kept or not; keep rates, cost per test |
+| `campaign.py` | the fleet — many agents, many strategies, one problem, a champion that only ever advances |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -250,7 +294,19 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Real board dissent — disjoint evidence, `unknown` votes, degeneracy detection
 - [x] The sandbox — Article V's execution path, first code task shipped
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
-- [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
+- [x] **Any repository as the workspace** — `WORKSPACE_REPO` + `WORKSPACE_TEST_CMD`,
+      pytest or unittest, the target file derived from the failing test, and
+      "no verdict" kept distinct from "no failures" (BUILDER.md §5.1)
+- [x] **Worktree isolation** — a branch and checkout per task (`worktree.py`); the
+      agent cannot touch your working tree, and a bad run costs a deleted branch
+- [x] **The merge gate** — dossiers carrying branch, diff, test delta, risk class and
+      lineage; `approve` merges, `reject` becomes a lesson (`builder.py`). Agents have
+      no push rights; publishing needs `BUILDER_ALLOW_PUSH`
+- [x] **Campaigns** — a fleet against one problem: a champion commit that only ever
+      advances, a strategy ladder that escalates as rounds fail, agents reaped and
+      replaced, and one reviewable diff at the end (`campaign.py`, CAMPAIGN.md)
+- [ ] **The gate as a pull request** — same act, GitHub API transport
+- [ ] **Board pre-vote on dossiers** — disjoint evidence before a human sees a diff
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
       requests, stalls and tacit-consent countdowns to Slack/Discord/Telegram

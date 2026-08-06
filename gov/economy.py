@@ -74,6 +74,46 @@ def enlist(agent: str, tier: int = 0) -> None:
         c.close()
 
 
+def ensure(agent: str, tier: int = 0) -> None:
+    """Enlist an agent ONLY if it is not already on the books.
+
+    `enlist` deliberately resets a reused id to a fresh villager. That is right for
+    the settlement, and wrong for anything that works more than once: a caller that
+    enlists at the start of every work cycle silently wipes the contribution it
+    earned last cycle, so no agent ever reaches a promotion gate. Repeated work uses
+    this instead."""
+    c = _conn()
+    try:
+        c.execute("INSERT OR IGNORE INTO ledger(agent, tier, contribution, budget, alive) "
+                  "VALUES(?,?,0,?,1)", (agent, tier, TIERS[tier]["budget"]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def charge(agent: str, amount: int) -> int:
+    """Debit an agent's budget for work done and return what is left. Article II:
+    the budget is the thing that ends a runaway agent, so it has to actually move."""
+    c = _conn()
+    try:
+        c.execute("UPDATE ledger SET budget=MAX(0, budget-?) WHERE agent=?",
+                  (max(0, int(amount)), agent))
+        c.commit()
+        row = c.execute("SELECT budget FROM ledger WHERE agent=?", (agent,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        c.close()
+
+
+def budget_left(agent: str) -> int:
+    c = _conn()
+    try:
+        row = c.execute("SELECT budget FROM ledger WHERE agent=?", (agent,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        c.close()
+
+
 def credit(agent: str, amount: int) -> None:
     """Record measured contribution (value produced) for this agent."""
     c = _conn()

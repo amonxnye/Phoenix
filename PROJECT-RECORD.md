@@ -131,7 +131,7 @@ need the platform. Separating them made every subsequent decision easy.
 | Artifact | What it is |
 |---|---|
 | `SRS-Project-Phoenix-v2.md` | Rewritten spec — trust boundary, Measurer role, capability-based safety, context compaction, spend cap, kill switch, 12 acceptance criteria with full FR coverage |
-| `phoenix-command.html` | Interactive RTS-style operator console mockup — resource meters, unit grid, idle alert, approval queue, event log |
+| `index.html` | The landing page — what the Builder guarantees, how to run it, and what it will not do (replaced the RTS console mockup) |
 | `gov/runtime.py` | LangGraph graph, durable checkpointer, `interrupt()` at the irreversible step |
 | `gov/governor.py` | The control plane — read view over the checkpointer, hard spend cap, idle detection |
 | `gov/verify.py` | 16 acceptance checks, including durability across real process boundaries |
