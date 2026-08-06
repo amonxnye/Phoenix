@@ -34,3 +34,6 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+
+# Local screenshots (not source)
+.shots/

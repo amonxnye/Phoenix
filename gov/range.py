@@ -1,41 +1,39 @@
-"""The Range — where a reproduced system is hosted and hacked (SECURITY.md, extended).
+"""The Range — where a reproduction is hosted and hacked, for real (SECURITY.md, extended).
 
-A *reproduction* is a self-contained rebuild of one vulnerability: three files —
+A *reproduction* is a self-contained rebuild of one vulnerability, written in the source
+language of the code it models, as a set of files in a job directory:
 
-    target.py     the minimal system that exhibits the flaw, with a .trace of what it did
-    invariant.py  the oracle: check(target) -> [violations], the property that must hold
-    poc.py        the exploit: exploit(target), which provokes the flaw through the target
+    JS   target.mjs   invariant.mjs   exploit.mjs     (run by NodeRange)
+    py   target.py    invariant.py    poc.py          (run by InProcessRange)
 
-A *Range* hosts that reproduction and runs the exploit against it, then hands back the
-trace-based verdict. The exploit's own claims are ignored; only the invariant's reading
-of the trace counts (the harness's first law).
+A *Range* hosts that reproduction and runs the exploit against it in a real, contained
+runtime, then returns the invariant's trace-based verdict. The exploit's own claims are
+ignored; only the invariant's reading of the trace counts (the harness's first law).
 
-Two backends, one interface:
+Containment is real, not a promise:
 
-- ``InProcessRange`` — runs the reproduction here, in this process, inside the same audit
-  cage the PoC runner uses: no network, no subprocess, no write outside the box. It runs
-  anywhere Python does, needs nothing, and is what the tests and the offline demo use.
+- ``NodeRange`` runs the JS reproduction with **actual Node** under Node's permission
+  model (``--experimental-permission`` scoped to the job dir): ``child_process`` is
+  denied, filesystem access outside the job dir is denied, and a preload neutralises the
+  network. A JS flaw is therefore proven *as JS*, not by a stand-in.
+- ``InProcessRange`` runs the Python reproduction here, in a stripped subprocess with an
+  audit cage (no network, no subprocess, no write outside the dir).
+- ``ComputerRange`` is the production seam: each reproduction in its own Cloudflare
+  Computer workspace. Declared, not wired — it needs the Cloudflare runtime.
 
-- ``ComputerRange`` — the production target: each reproduction gets its **own Cloudflare
-  Computer workspace** (a VFS in a Durable Object with a real execution backend — see the
-  scanned `@cloudflare/computer`). The system is *actually rebuilt and run* there, and the
-  exploit runs against it with real per-workspace isolation as the blast radius. Same
-  invariant, same gate. It is a declared seam, not yet wired — standing it up needs the
-  Cloudflare runtime, which this offline engine cannot host.
-
-The Range never reaches a real system. Hosting a *reproduction you built* and exploiting
-it is defensive research; pointing an exploit at someone's running service is the gated,
-human-only act (SECURITY.md §4), and no backend here can perform it.
+Every Range is per-job: a reproduction runs in a directory of its own, so concurrent
+runs (many guests at once) never share state. The caller owns the directory's lifecycle.
 """
 
-import importlib.util
 import json
 import os
 import subprocess
 import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Python audit-cage denials (InProcessRange).
 DENIED_EVENTS = (
     "socket.", "urllib.Request", "http.client", "ftplib.", "smtplib.",
     "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn",
@@ -44,29 +42,40 @@ DENIED_EVENTS = (
 
 
 class Verdict(dict):
-    """A reproduction's result. ``reproduced`` is True only if the invariant — reading
-    the trace — found a violation. Everything else is diagnostics."""
+    """A reproduction's result. ``reproduced`` is True only if the invariant found a
+    violation in the trace. ``elapsed_ms`` times the host+exploit run."""
+
+
+def _node() -> str | None:
+    for cand in ("node", "/opt/node22/bin/node", "/usr/bin/node", "/usr/local/bin/node"):
+        try:
+            r = subprocess.run([cand, "--version"], capture_output=True, timeout=8)
+            if r.returncode == 0:
+                return cand
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+NODE = _node()
+NODE_AVAILABLE = NODE is not None
 
 
 class Range:
-    def run(self, repro_dir: str) -> Verdict:            # pragma: no cover - interface
+    lang = ""
+    def run(self, job_dir: str) -> Verdict:              # pragma: no cover - interface
         raise NotImplementedError
 
 
-# ── the in-process range (the cage, generalized from pocrunner) ───────────────
+# ── Python reproductions (the audit cage) ─────────────────────────────────────
 
-_HOST_CHILD = r"""
+_PY_RUNNER = r"""
 import importlib.util, json, os, sys
 sys.dont_write_bytecode = True
-REPRO = sys.argv[1]
-SANDBOX = os.path.realpath(REPRO)
-DENIED = {denied!r}
-denials = []
-
+JOB = os.path.realpath(sys.argv[1]); DENIED = {denied!r}; denials = []
 def _inside(p):
-    try: return os.path.realpath(str(p)).startswith(SANDBOX + os.sep)
+    try: return os.path.realpath(str(p)).startswith(JOB + os.sep) or os.path.realpath(str(p)) == JOB
     except Exception: return False
-
 def _hook(event, args):
     if event.startswith(DENIED):
         denials.append(event); raise PermissionError("REFUSED: " + event)
@@ -75,74 +84,137 @@ def _hook(event, args):
         if mode and any(c in str(mode) for c in "wxa+") and not _inside(path):
             denials.append("open:" + str(mode)); raise PermissionError("REFUSED: write " + str(path))
 sys.addaudithook(_hook)
-
 def _load(name):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(REPRO, name + ".py"))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(JOB, name + ".py"))
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
-
-verdict = {{"reproduced": False, "violations": [], "denied": [], "requests": 0, "error": ""}}
+v = {{"reproduced": False, "violations": [], "denied": [], "requests": 0, "error": ""}}
 t = None
 try:
     target = _load("target"); invariant = _load("invariant"); poc = _load("poc")
-    check = invariant.check
-    t = target.Target()
-    poc.exploit(t)
-    verdict["requests"] = len(getattr(t, "trace", []))
-    verdict["violations"] = check(t)
+    t = target.Target(); poc.exploit(t)
+    v["requests"] = len(getattr(t, "trace", [])); v["violations"] = invariant.check(t)
 except BaseException as e:
-    verdict["error"] = (type(e).__name__ + ": " + str(e))[:400]
+    v["error"] = (type(e).__name__ + ": " + str(e))[:400]
     if t is not None:
-        try:
-            verdict["violations"] = _load("invariant").check(t)
-            verdict["requests"] = len(getattr(t, "trace", []))
+        try: v["violations"] = _load("invariant").check(t); v["requests"] = len(getattr(t, "trace", []))
         except Exception: pass
-verdict["reproduced"] = bool(verdict["violations"])
-verdict["denied"] = sorted(set(denials))
-print("__RANGE__ " + json.dumps(verdict))
+v["reproduced"] = bool(v["violations"]); v["denied"] = sorted(set(denials))
+print("__RANGE__ " + json.dumps(v))
 """
 
 
 class InProcessRange(Range):
-    """Host and hack a reproduction in a stripped subprocess with an audit cage. The
-    exploit cannot reach the network, spawn a process, or write outside the reproduction
-    dir — the same Article-V enforcement the PoC runner uses, now backend-agnostic."""
+    lang = "py"
 
     def __init__(self, timeout_s: int = 30):
         self.timeout_s = timeout_s
 
-    def run(self, repro_dir: str) -> Verdict:
-        child = _HOST_CHILD.format(denied=DENIED_EVENTS)
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": repro_dir,
+    def run(self, job_dir: str) -> Verdict:
+        runner = _PY_RUNNER.format(denied=DENIED_EVENTS)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": job_dir,
                "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+        t0 = time.time()
         try:
-            proc = subprocess.run([sys.executable, "-c", child, repro_dir],
-                                  cwd=repro_dir, env=env, capture_output=True,
+            proc = subprocess.run([sys.executable, "-c", runner, job_dir], cwd=job_dir,
+                                  env=env, capture_output=True, text=True, timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            return Verdict(reproduced=False, violations=[], denied=[], requests=0,
+                           error=f"timeout after {self.timeout_s}s", elapsed_ms=self.timeout_s * 1000)
+        dt = int((time.time() - t0) * 1000)
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith("__RANGE__ "):
+                v = Verdict(**json.loads(line[len("__RANGE__ "):])); v["elapsed_ms"] = dt
+                return v
+        return Verdict(reproduced=False, violations=[], denied=[], requests=0,
+                       error=("no verdict: " + (proc.stderr or proc.stdout or "").strip()[-300:]),
+                       elapsed_ms=dt)
+
+
+# ── JavaScript reproductions (real Node, contained) ───────────────────────────
+
+_NETBLOCK = """// defence-in-depth: neutralise network vectors before the reproduction runs
+globalThis.fetch = () => { throw new Error('REFUSED: network disabled in the range'); };
+try { const net = await import('node:net'); net.Socket.prototype.connect = () => { throw new Error('REFUSED: net.connect disabled'); }; } catch {}
+try { const dns = await import('node:dns'); const b=(_h,_o,cb)=>{ const e=new Error('REFUSED: dns disabled'); (cb||_o)(e); }; dns.lookup=b; } catch {}
+"""
+
+_JS_RUNNER = """import { Target } from './target.mjs';
+import { check } from './invariant.mjs';
+import { exploit } from './exploit.mjs';
+const v = { reproduced:false, violations:[], denied:[], requests:0, error:'' };
+let t;
+try { t = new Target(); await exploit(t); v.requests = (t.trace||[]).length; v.violations = check(t); }
+catch (e) {
+  v.error = String(e && e.message ? e.message : e).slice(0,400);
+  if (String(e).includes('ERR_ACCESS_DENIED')) v.denied.push('fs-or-exec');
+  if (String(e).includes('REFUSED')) v.denied.push('network');
+  try { v.violations = check(t); v.requests = (t.trace||[]).length; } catch {}
+}
+v.reproduced = v.violations.length > 0;
+console.log('__RANGE__ ' + JSON.stringify(v));
+"""
+
+
+class NodeRange(Range):
+    """Run a JS reproduction with real Node, contained by the permission model + a
+    net-block preload. child_process denied, fs limited to the job dir, network refused."""
+    lang = "js"
+    available = NODE_AVAILABLE
+
+    def __init__(self, timeout_s: int = 30):
+        self.timeout_s = timeout_s
+
+    def run(self, job_dir: str) -> Verdict:
+        if not NODE_AVAILABLE:
+            return Verdict(reproduced=False, violations=[], denied=[], requests=0,
+                           error="node runtime not available", elapsed_ms=0)
+        # write the harness plumbing the reproduction plugs into
+        with open(os.path.join(job_dir, "netblock.mjs"), "w") as f:
+            f.write(_NETBLOCK)
+        with open(os.path.join(job_dir, "runner.mjs"), "w") as f:
+            f.write(_JS_RUNNER)
+        cmd = [NODE, "--experimental-permission",
+               f"--allow-fs-read={job_dir}", f"--allow-fs-write={job_dir}",
+               "--import", os.path.join(job_dir, "netblock.mjs"),
+               os.path.join(job_dir, "runner.mjs")]
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": job_dir,
+               "NODE_NO_WARNINGS": "1"}
+        t0 = time.time()
+        try:
+            proc = subprocess.run(cmd, cwd=job_dir, env=env, capture_output=True,
                                   text=True, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
             return Verdict(reproduced=False, violations=[], denied=[], requests=0,
-                           error=f"reproduction exceeded {self.timeout_s}s")
+                           error=f"timeout after {self.timeout_s}s", elapsed_ms=self.timeout_s * 1000)
+        dt = int((time.time() - t0) * 1000)
         for line in (proc.stdout or "").splitlines():
             if line.startswith("__RANGE__ "):
-                return Verdict(**json.loads(line[len("__RANGE__ "):]))
+                d = json.loads(line[len("__RANGE__ "):])
+                d.setdefault("denied", [])
+                v = Verdict(**d); v["elapsed_ms"] = dt
+                return v
         return Verdict(reproduced=False, violations=[], denied=[], requests=0,
-                       error=("no verdict: " + (proc.stderr or proc.stdout or "").strip()[-300:]))
+                       error=("no verdict: " + (proc.stderr or proc.stdout or "").strip()[-300:]),
+                       elapsed_ms=dt)
 
 
 class ComputerRange(Range):
     """Production seam: host each reproduction in its own Cloudflare Computer workspace
-    and exploit it there, with real code execution and real isolation. Not wired yet —
-    it needs the Cloudflare runtime (@cloudflare/computer), which this engine can't host.
-    Named here so the pipeline is backend-agnostic the day that substrate is available."""
-
+    with real execution and real isolation. Not wired — needs the Cloudflare runtime."""
+    lang = "*"
     available = False
 
-    def run(self, repro_dir: str) -> Verdict:            # pragma: no cover - not wired
+    def run(self, job_dir: str) -> Verdict:              # pragma: no cover - not wired
         raise NotImplementedError(
             "ComputerRange needs the Cloudflare Computer runtime (Workers + Durable "
-            "Objects + a container/isolate backend). Use InProcessRange offline; wire "
-            "this when a Computer deployment is reachable — the reproduction contract "
-            "(target/invariant/poc) is identical, only the host changes.")
+            "Objects + a container/isolate backend). The reproduction contract is "
+            "identical to NodeRange/InProcessRange; only the host changes.")
 
 
-def default_range() -> Range:
-    return InProcessRange()
+def range_for(lang: str) -> Range:
+    """Pick the Range for a reproduction's language."""
+    if lang == "js":
+        return NodeRange()
+    if lang == "py":
+        return InProcessRange()
+    raise ValueError(f"no range for language {lang!r}")

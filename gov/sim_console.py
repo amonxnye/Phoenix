@@ -1580,6 +1580,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
+            # the front door is the usable audit workbench (scan → prove), not the game
+            self._count_view()
+            return self._send(200, AUDIT_PAGE, "text/html; charset=utf-8")
+        if self.path == "/console":
+            # the governance/settlement console lives here now
             self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
@@ -2517,7 +2522,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2583,7 +2588,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2672,7 +2677,7 @@ mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
   <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -2764,7 +2769,7 @@ td.why{color:var(--blue);white-space:normal}
 </style>
 <header>
   <h1>&#9670; SKILLS &amp; REASONING</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -2837,7 +2842,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2916,7 +2921,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/security">Security</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/security">Security</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3006,7 +3011,7 @@ input{background:#170c0c;color:var(--ink);border:1px solid var(--line);border-ra
 .uncov{color:var(--gold)}
 </style>
 <header><h1>&#9670; SECURITY — governed defensive hardening</h1>
-  <a href="/">Console</a><a href="/audit">Audit</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/audit">Audit</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>&mdash;</b> &middot; a reproducing PoC is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3125,7 +3130,7 @@ button{background:#14212c;color:var(--info);border:1px solid #2c4256;border-radi
 .k{color:var(--dim)}.ack{opacity:.45}
 </style>
 <header><h1>&#9670; WATCH — the security org sees its own agents</h1>
-  <a href="/">Console</a><a href="/audit">Audit</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
+  <a href="/console">Console</a><a href="/audit">Audit</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
   <span class=meta>a signal is a refusal that happened, not an opinion &middot; open: <b id=open>&mdash;</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3229,7 +3234,7 @@ tr.reprovable td{cursor:default}
 @keyframes s{to{transform:rotate(360deg)}}
 </style>
 <header><h1>&#9670; PHOENIX &middot; AUDIT</h1>
-  <div class=nav><a href="/security">Security</a><a href="/watch">Watch</a><a href="/">Console</a></div></header>
+  <div class=nav><a href="/security">Security</a><a href="/watch">Watch</a><a href="/console">Console</a></div></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div class=spin style="width:34px;height:34px"></div>
   <div style="color:var(--dim);letter-spacing:2px">LOADING PHOENIX&hellip;</div></div>
