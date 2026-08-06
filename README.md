@@ -166,7 +166,8 @@ Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console re
 
 | Page | What you govern there |
 |---|---|
-| `/` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
+| `/` | **The landing page** — what Phoenix is, whether the world is alive, anything waiting on a human, the board's current models and cost, best runs, and the three commands that put your own model in the chair |
+| `/console` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
 | `/agents` | System health (stalls, burn, value per 1k compute), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent ever, permanently, with downloadable careers & health telemetry |
 | `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, a button that sends a live agent to fix the code — oracle-scored, auto-reverting |
 | `/chats` | Talk to any agent, the board, or the Chief Governor; watch votes narrated with live evidence (runway, momentum, affordability) |

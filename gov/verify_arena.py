@@ -15,7 +15,8 @@ Proves ARENA.md steps 1-3 without a single API key or model call:
   8. Every rule-based rescue is counted, so no scorecard credits the rules' work to
      the model that failed.
   9. One router anywhere in the board makes the whole run SCOUTING, not ranked.
- 10. The /providers page serves no keys, and only the human can assign a model.
+ 10. The landing page and /providers serve no keys, the operator console keeps its
+     own route, and only the human can assign a model.
 
 Run:  python3 gov/verify_arena.py
 """
@@ -240,7 +241,7 @@ check("the console's view of the registry contains no key material",
 check("but it does say whether a provider is usable",
       any(p["name"] == "labA" and p["keyed"] for p in M.catalog()))
 
-print("\n10. The /providers page, live — and the human-only gate in front of it")
+print("\n10. The pages, live — the landing page, /providers, and the human-only gate")
 import threading
 import urllib.error
 import urllib.request
@@ -271,6 +272,20 @@ def post(path, body, token=""):
 
 
 try:
+    status, page = get("/")
+    check("GET / serves the landing page, not the operator console",
+          status == 200 and "Can your model run it?" in page and "PHOENIX" in page)
+    status, page = get("/console")
+    check("GET /console still serves the operator console",
+          status == 200 and "Vision" in page)
+    status, raw = get("/api/home")
+    home = json.loads(raw)
+    check("the landing payload carries live state, the arena and the counts",
+          status == 200 and {"live", "arena", "counts", "runs"} <= set(home))
+    check("it says which model is in which chair",
+          set(home["arena"]["roles"]) == set(M.ROLES))
+    check("the landing payload serves no key material",
+          "k-a" not in raw and "k-router" not in raw and "arena-test-token" not in raw)
     status, page = get("/providers")
     check("GET /providers serves the page", status == 200 and "PROVIDERS" in page)
     status, raw = get("/api/providers")

@@ -1623,6 +1623,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._count_view()
+            return self._send(200, HOME_PAGE, "text/html; charset=utf-8")
+        if self.path == "/console":
+            self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path == "/agents":
             self._count_view()
@@ -1665,6 +1668,44 @@ class Handler(BaseHTTPRequestHandler):
                 "runs": anchor.eval_runs(50),
                 "model_calls": anchor.model_calls_stats(),
                 "brain": brain.brain_name(),
+            }))
+        if self.path == "/api/home":
+            # The landing page's payload: everything a newcomer needs to answer "what
+            # is this and is it alive?", and everything an operator needs to answer
+            # "is anything waiting for me?" — composed from the cached snapshot, so an
+            # extra page costs no extra work per second.
+            s = _snapshot()
+            sysd = s["system"]
+            runs = anchor.eval_runs(50)
+            ranked = sorted((r for r in runs if r.get("tier") != "rule-based"),
+                            key=lambda r: -(r.get("progress_pct") or 0))[:5]
+            agents_ever, _ = anchor.careers_count()
+            return self._send(200, json.dumps({
+                "live": {
+                    "turn": s["turn"], "age": s["world"]["age"],
+                    "vision": s["vision"]["name"], "progress": s["vision"]["progress"],
+                    "goal_met": s["goal_met"], "fleet": sysd["fleet"],
+                    "spent": s["spent"], "cap": s["cap"],
+                    "spend_pct": sysd["spend_pct"], "value_per_1k": sysd["value_per_1k"],
+                    "driver_ok": sysd["driver_ok"], "stall": sysd["stall"],
+                    "human_gate": sysd["human_gate"], "brain": s["brain"],
+                    "storage": sysd["storage"], "uptime_s": sysd["uptime_s"],
+                },
+                "world": {r: s["world"][r] for r in s["resources"]},
+                "counts": {
+                    "events": s["event_count"], "decisions": anchor.reasons_count(),
+                    "lessons": s["skills_count"], "agents_ever": agents_ever,
+                    "facts": s["external_count"],
+                    "structures": s["dev_total_built"],
+                },
+                "arena": {
+                    "routed": MODELS.active(), "tier": MODELS.tier(),
+                    "roles": MODELS.assignments(), "seats": MODELS.seat_status(),
+                    "budget": MODELS.budget_state(), "fallbacks": MODELS.fallbacks(),
+                    "calls": anchor.model_calls_stats(),
+                },
+                "runs": ranked, "runs_total": len(runs),
+                "public_chat": os.environ.get("PUBLIC_CHAT", "") == "1",
             }))
         if self.path == "/api/providers":
             runs = anchor.eval_runs(50)
@@ -2097,6 +2138,318 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
 
+HOME_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Phoenix — can your model run an organization?</title>
+<link rel=icon href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23120d08'/%3E%3Cpath d='M16 5l9 11-9 11-9-11z' fill='%23e0b23a'/%3E%3C/svg%3E">
+<meta name=description content="Phoenix drops a language model into a governed agent
+economy under a written constitution and measures how it governs: economy, budget
+discipline, escalation, learning and auditable reasoning against an objective oracle.">
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--panel2:#241a0f;--line:#3a2c18;--ink:#f0e6d2;
+--dim:#b09a72;--gold:#e0b23a;--green:#a8e086;--red:#e05a5a;--blue:#7ab6e0;
+color-scheme:dark}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--gold);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:10px 20px;border-bottom:1px solid var(--line);background:var(--panel2);
+display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:9}
+header .brand{font-weight:700;letter-spacing:2px}
+header nav{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-left:auto}
+main{max-width:1100px;margin:0 auto;padding:0 16px 60px}
+section{margin:34px 0}
+h1{font-size:26px;line-height:1.35;margin:0 0 12px;letter-spacing:-.3px}
+h1 .q{color:var(--gold)}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--dim);
+margin:0 0 12px;font-weight:600}
+p{color:var(--ink);margin:0 0 12px;max-width:78ch}
+p.sub{color:var(--dim)}
+.hero{padding:34px 0 6px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}
+.pill{font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);
+color:var(--dim);background:var(--panel)}
+.pill b{color:var(--ink);font-weight:600}
+.pill.on{border-color:#2c4a3c;color:var(--green)}
+.pill.off{border-color:#5a2a2a;color:var(--red)}
+.grid{display:grid;gap:12px}
+.g3{grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.g4{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 6px;font-size:13px;letter-spacing:.3px}
+.card p{font-size:12.5px;color:var(--dim);margin:0}
+a.card{display:block;color:inherit}
+a.card:hover{border-color:var(--gold);text-decoration:none}
+a.card h3{color:var(--gold)}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.stat .k{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim)}
+.stat .v{font-size:22px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+.stat .n{font-size:11px;color:var(--dim);margin-top:2px}
+.bar{height:9px;background:#0d0904;border:1px solid var(--line);border-radius:6px;
+overflow:hidden;margin-top:10px}
+.bar>i{display:block;height:100%;background:var(--green);transition:width .6s}
+.alert{border:1px solid var(--gold);background:#2a1f0c;border-radius:10px;padding:14px 16px;
+display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.alert.stall{border-color:var(--red);background:#2a1010}
+.alert .txt{flex:1;min-width:260px}
+.alert .lbl{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold)}
+.alert.stall .lbl{color:var(--red)}
+.btn{display:inline-block;background:#14261f;color:var(--green);border:1px solid #2c4a3c;
+border-radius:8px;padding:8px 16px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{text-decoration:none;background:#1b3328}
+.btn.ghost{background:transparent;color:var(--gold);border-color:#5a4a1a}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12.5px}
+td,th{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+td.n,th.n{text-align:right}
+.tag{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);
+text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+.tag.ranked{color:var(--green);border-color:#2c4a3c}
+.tag.scouting{color:var(--gold);border-color:#5a4a1a}
+pre{margin:0;background:#0d0904;border:1px solid var(--line);border-radius:8px;
+padding:12px 14px;overflow-x:auto;font-size:12.5px;color:var(--ink)}
+pre .c{color:var(--dim)}
+.step{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}
+.step .num{flex:0 0 24px;height:24px;border-radius:50%;border:1px solid var(--line);
+display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--gold)}
+.step .body{flex:1;min-width:0}
+.step .body .t{margin-bottom:6px}
+.copy{float:right;font-size:10px;background:transparent;color:var(--dim);
+border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
+.copy:hover{color:var(--ink)}
+.seats{display:flex;gap:8px;flex-wrap:wrap}
+.seat{border:1px solid var(--line);border-radius:8px;padding:7px 11px;background:var(--panel)}
+.seat .r{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+.seat .m{font-size:12.5px}
+.seat.down{border-color:#5a2a2a}.seat.down .m{color:var(--red)}
+footer{border-top:1px solid var(--line);margin-top:40px;padding:18px 0;color:var(--dim);font-size:12px}
+@media(max-width:640px){h1{font-size:21px}header nav{width:100%;margin-left:0}}
+</style>
+<header>
+  <span class=brand>&#9670; PHOENIX</span>
+  <nav>
+    <a href="/console">Console</a><a href="/providers">Providers</a>
+    <a href="/leaderboard">Leaderboard</a><a href="/work">Workboard</a>
+    <a href="/chats">Chats</a><a href="/skills">Skills</a>
+    <a href="/rules">Constitution</a><a href="/logs">Logs</a>
+  </nav>
+</header>
+<main>
+
+<section class=hero>
+  <h1>An agent economy under a written constitution.<br>
+      <span class=q>Can your model run it?</span></h1>
+  <p>Phoenix gives a language model an organization to run: a settlement of agents with
+     a budget it can exhaust, resources that rot, work that fails, and a constitution
+     that is <em>code</em> — a spend cap, a human gate on irreversible actions, a board
+     that must reach quorum. The model proposes; the rules dispose. What comes out is
+     not a score on a quiz but a record of how it governed.</p>
+  <p class=sub>Every model call in the system flows through one seam, so swapping the
+     mind behind the organization is a configuration change — and each seat can hold a
+     different model. Outcomes are judged by the world itself, never by an LLM judge.</p>
+  <div class=pills id=pills></div>
+</section>
+
+<section>
+  <h2>Right now</h2>
+  <div id=alerts></div>
+  <div class="grid g4" id=stats></div>
+  <div class=card style="margin-top:12px">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><b id=visname>—</b> <span class=sub id=visprog></span></div>
+      <div class=sub id=stock>—</div>
+    </div>
+    <div class=bar><i id=visbar style="width:0%"></i></div>
+  </div>
+</section>
+
+<section>
+  <h2>Run your model against it</h2>
+  <div class=step><div class=num>1</div><div class=body>
+    <div class=t>Give it a mind. Any OpenAI-compatible endpoint, or Anthropic natively.</div>
+    <pre><button class=copy onclick=cp(this)>copy</button><span class=c># one provider for the whole organization</span>
+export BRAIN_BASE_URL=https://api.deepseek.com
+export BRAIN_API_KEY=sk-...
+export BRAIN_MODEL=deepseek-v4-flash</pre></div></div>
+  <div class=step><div class=num>2</div><div class=body>
+    <div class=t>Or seat a different model in each chair — a mixed board is the
+      experiment nobody has data on.</div>
+    <pre><button class=copy onclick=cp(this)>copy</button>export OPENAI_API_KEY=... GEMINI_API_KEY=... ANTHROPIC_API_KEY=...
+export MODEL_ROLE_GOVERNOR=anthropic MODEL_ROLE_PRUDENCE=openai
+export MODEL_ROLE_GROWTH=gemini    MODEL_ROLE_LEDGER=deepseek</pre></div></div>
+  <div class=step><div class=num>3</div><div class=body>
+    <div class=t>Run it headless against a fixed turn budget and a dollar ceiling. The
+      scorecard lands on the <a href="/leaderboard">leaderboard</a>.</div>
+    <pre><button class=copy onclick=cp(this)>copy</button>export EVAL_BUDGET_USD=5.00
+python3 gov/evalrun.py --turns 120 --fresh --label my-model</pre></div></div>
+  <p class=sub>The run is refused up front if the estimate exceeds the ceiling, and
+     halts mid-run if the ceiling is breached — it never finishes quietly on a cheaper
+     model. Same seed, same turn budget, same auto-human for every model; a seat whose
+     provider dies abstains and says so rather than being filled in secret. Roles can
+     also be assigned live on <a href="/providers">Providers</a>.</p>
+</section>
+
+<section>
+  <h2>The board, and what it costs</h2>
+  <div class=seats id=seats></div>
+  <p class=sub id=seatnote style="margin-top:10px"></p>
+  <div class="grid g3" style="margin-top:12px">
+    <div class=stat><div class=k>Real model calls</div><div class=v id=calls>—</div>
+      <div class=n id=callsub>tokens in / out</div></div>
+    <div class=stat><div class=k>Spent on models</div><div class=v id=usd>—</div>
+      <div class=n id=usdsub>&nbsp;</div></div>
+    <div class=stat><div class=k>Rule-based rescues</div><div class=v id=fb>—</div>
+      <div class=n>a model that errors scores the error</div></div>
+  </div>
+  <div class=card style="margin-top:12px;padding:0;overflow:auto">
+    <table><thead><tr><th>Best runs</th><th>Tier</th><th class=n>Turns</th>
+      <th class=n>Progress</th><th class=n>Cost</th><th class=n>$ / vision pt</th></tr></thead>
+      <tbody id=runs></tbody></table></div>
+</section>
+
+<section>
+  <h2>What is measured</h2>
+  <div class="grid g3">
+    <div class=card><h3>Economy</h3><p>Vision points per million tokens, turns to each
+      age, net worth, and waste — spoilage, failed builds, dead turns. The world is the
+      oracle; nothing here is a model's opinion of itself.</p></div>
+    <div class=card><h3>Governance</h3><p>Did it respect the cap, escalate what it
+      could not do, honour the human gate, and refuse orders that break the
+      constitution? Every refusal and every override is logged.</p></div>
+    <div class=card><h3>Reasoning</h3><p>Every decision records why, what it derived
+      from, who authorised it, and what measurably happened — so the
+      <b>decision hit rate</b> is a query over the record, not a judge's guess.</p></div>
+    <div class=card><h3>Learning</h3><p>Retrospectives distill lessons that steer the
+      next generation. Run a model twice with memory and once without: the delta is
+      the learning score.</p></div>
+    <div class=card><h3>Reliability &amp; cost</h3><p>p50/p95 latency, error and
+      abstention rate, dollars per run and per vision point — logged per call, per
+      model, per seat.</p></div>
+    <div class=card><h3>Diversity</h3><p>The open question: does a board of different
+      models govern better than a board of one, or just slower and more expensive?
+      The platform can measure it.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Where to go</h2>
+  <div class="grid g3">
+    <a class=card href="/console"><h3>Console &rarr;</h3><p>The operator surface: the
+      settlement live, the human gate, the development tree, board proposals, the
+      permanent event log.</p></a>
+    <a class=card href="/providers"><h3>Providers &rarr;</h3><p>Which model sits in
+      which seat, seat health, per-model latency, errors, dollars and decision hit
+      rate. Assign models here.</p></a>
+    <a class=card href="/leaderboard"><h3>Leaderboard &rarr;</h3><p>Every eval run's
+      scorecard — same world, same constitution, different minds, with tier and cost
+      shown next to progress.</p></a>
+    <a class=card href="/work"><h3>Workboard &rarr;</h3><p>Real work: a failing test
+      suite as the oracle, tasks derived from it, and an agent that patches code in a
+      closed sandbox for measured pay.</p></a>
+    <a class=card href="/chats"><h3>Chats &rarr;</h3><p>Talk to the governor, the
+      board or any agent — and watch them refuse what the constitution forbids. Votes
+      are narrated with live evidence.</p></a>
+    <a class=card href="/skills"><h3>Skills &amp; lineage &rarr;</h3><p>Lessons carried
+      across generations, the capability ladder, and every decision traced back to the
+      inputs that caused it.</p></a>
+    <a class=card href="/rules"><h3>Constitution &rarr;</h3><p>Ten articles, each
+      naming the code that enforces it. A rule with no enforcing code is a wish — this
+      page is the spec.</p></a>
+    <a class=card href="/logs"><h3>Logs &rarr;</h3><p>The permanent record: filter by
+      kind, text or time and export it. Nothing runs unseen, and nothing is
+      deleted.</p></a>
+  </div>
+</section>
+
+<footer>
+  <span id=footstat>—</span> &middot; the settlement's memory is
+  <span id=footmem>—</span>. Powers are token-gated; spectating is free.
+</footer>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const num=v=>(v||0).toLocaleString();
+const usdf=v=>v?('$'+Number(v).toFixed(Number(v)<0.01?4:2)):'—';
+const usd4=v=>v?('$'+Number(v).toFixed(4)):'—';
+function cp(b){const t=b.parentNode.innerText.replace(/^copy\\n?/,'');
+  navigator.clipboard&&navigator.clipboard.writeText(t.trim());
+  b.textContent='copied';setTimeout(()=>b.textContent='copy',1200)}
+function dur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
+  return h?`${h}h ${m}m`:`${m}m`}
+async function load(){
+  let d; try{ d=await (await fetch('/api/home')).json() }catch(e){ return }
+  const L=d.live, A=d.arena;
+  pills.innerHTML=[
+    `<span class="pill ${L.driver_ok?'on':'off'}">${L.driver_ok?'world running':'world idle'}</span>`,
+    `<span class=pill>turn <b>${num(L.turn)}</b></span>`,
+    `<span class=pill>${esc(L.age)}</span>`,
+    `<span class=pill>brain <b>${esc(L.brain)}</b></span>`,
+    A.routed?`<span class="pill ${A.tier==='ranked'?'on':''}">mixed board &middot; <b>${esc(A.tier)}</b></span>`:'',
+    `<span class=pill>uptime <b>${dur(L.uptime_s)}</b></span>`,
+  ].join('');
+  const al=[];
+  if(L.human_gate) al.push(`<div class=alert><div class=txt>
+    <div class=lbl>waiting on a human</div>${esc(L.human_gate)}</div>
+    <a class=btn href="/console">Answer it &rarr;</a></div>`);
+  if(L.stall) al.push(`<div class="alert stall"><div class=txt>
+    <div class=lbl>stalled</div>${esc(L.stall)}</div>
+    <a class="btn ghost" href="/console">Investigate &rarr;</a></div>`);
+  alerts.innerHTML=al.join('');
+  stats.innerHTML=`
+    <div class=stat><div class=k>Fleet</div><div class=v>${num(L.fleet)}</div>
+      <div class=n>${num(d.counts.agents_ever)} agents have ever lived</div></div>
+    <div class=stat><div class=k>Compute spent</div>
+      <div class=v ${L.spend_pct>=100?'style="color:var(--red)"':''}>${L.spend_pct}%</div>
+      <div class=n>${num(L.spent)} of ${num(L.cap)} cap${L.spend_pct>=100?' — over':''}</div></div>
+    <div class=stat><div class=k>Value per 1k</div><div class=v>${L.value_per_1k}</div>
+      <div class=n>contribution per 1k compute</div></div>
+    <div class=stat><div class=k>On the record</div><div class=v>${num(d.counts.events)}</div>
+      <div class=n>${num(d.counts.decisions)} decisions &middot; ${num(d.counts.lessons)} lessons</div></div>`;
+  visname.textContent=L.vision;
+  visprog.textContent=L.goal_met?'— met':`— ${L.progress}% complete`;
+  visbar.style.width=(L.progress||0)+'%';
+  stock.textContent=Object.entries(d.world).map(([k,v])=>`${k} ${num(v)}`).join(' · ');
+  const roles=A.roles||{},seats=A.seats||{};
+  seats_render(roles,seats,L.brain);
+  seatnote.innerHTML=A.routed
+    ?`Run tier <b>${esc(A.tier)}</b> — a run is ranked only when every routed seat is a
+       direct provider key. A seat whose model fails abstains; it is never filled by another.`
+    :`No roles routed — one brain sits in every chair. Assign a model per seat on
+       <a href="/providers">Providers</a> (human-only) or with the <b>MODEL_ROLE_*</b>
+       variables above.`;
+  const c=A.calls||{};
+  calls.textContent=num(c.calls);
+  callsub.textContent=`${num(c.prompt_tokens)} in / ${num(c.completion_tokens)} out · `+
+    `${c.avg_latency_ms||0}ms avg · ${num(c.errors)} errors`;
+  usd.textContent=usdf(c.cost_usd);
+  usdsub.textContent=A.budget&&A.budget.limit?
+    `ceiling ${usdf(A.budget.limit)} · ${usdf(A.budget.remaining)} left`:'no ceiling set';
+  fb.textContent=num(A.fallbacks);
+  runs.innerHTML=(d.runs||[]).map(r=>`<tr>
+    <td><b>${esc(r.label||r.brain||'?')}</b></td>
+    <td><span class="tag ${esc(r.tier||'ranked')}">${esc(r.tier||'ranked')}</span></td>
+    <td class=n>${num(r.turns)}</td><td class=n>${r.progress_pct}%</td>
+    <td class=n>${usdf(r.cost_usd)}</td><td class=n>${usd4(r.usd_per_vision_point)}</td></tr>`)
+    .join('')||`<tr><td colspan=6 style="color:var(--dim)">No eval runs stored yet —
+      run <b>python3 gov/evalrun.py --turns 120 --fresh</b> to put the first one here.</td></tr>`;
+  footstat.textContent=`${num(d.counts.structures)} structures standing · `+
+    `${num(d.counts.facts)} facts ingested · ${num(d.runs_total)} eval runs stored`;
+  footmem.textContent=L.storage.startsWith('volume')?'permanent':'ephemeral (no volume mounted)';
+}
+function seats_render(roles,seats,dflt){
+  const order=['governor','Prudence','Growth','Ledger','fleet','worker','retrospective'];
+  document.getElementById('seats').innerHTML=order.map(r=>{
+    const m=roles[r]||'', s=seats[r]||{}, down=s.at&&!s.ok;
+    return `<div class="seat ${down?'down':''}"><div class=r>${esc(r)}</div>
+      <div class=m>${esc(m?m.split(':').slice(1).join(':')||m:dflt)}${down?' · abstaining':''}</div></div>`
+  }).join('');
+}
+load(); setInterval(load,5000);
+</script>
+</html>"""
+
+
 PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>The Governor — Age of Empires</title>
@@ -2165,6 +2518,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   </div>
   <div class=vmeta id=vmeta></div>
   <div class=ops>
+    <a class=navlink href="/">&larr; Home</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -2480,7 +2834,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2546,7 +2900,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 .row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2635,7 +2989,7 @@ mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
   <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -2727,7 +3081,7 @@ td.why{color:var(--blue);white-space:normal}
 </style>
 <header>
   <h1>&#9670; SKILLS &amp; REASONING</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -2800,7 +3154,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 .p{padding:12px 14px;color:var(--dim);line-height:1.6}
 </style>
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/providers">Providers</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/providers">Providers</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -2880,7 +3234,7 @@ button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-rad
 .fill{height:100%;background:var(--green);transition:width .5s}
 </style>
 <header><h1>&#9670; PHOENIX ARENA — PROVIDERS</h1>
-  <a href="/">Console</a><a href="/leaderboard">Leaderboard</a><a href="/agents">Agent Health</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/leaderboard">Leaderboard</a><a href="/agents">Agent Health</a>
   <a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>run tier: <b id=tier>—</b> &middot; default brain: <b id=br>—</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -3030,7 +3384,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 .log div{color:var(--dim);padding:1px 14px;font-size:12px}
 </style>
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/providers">Providers</a><a href="/logs">Logs</a>
+  <a href="/">Home</a><a href="/console">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/providers">Providers</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
