@@ -14,19 +14,39 @@ a one-line edit to that file.
 
 ---
 
-## What the image contains
+## git is a hard requirement, and platforms drop it
 
-`Dockerfile` is the build. It installs `git` — not optional, since every attempt runs
-in a worktree and the branch is the only undo — and `requirements-gate.txt`, which is
-just `openai`.
+Every attempt runs in a `git worktree` and rejecting a patch means deleting a branch,
+so an image without git does not degrade the Builder — it removes its only undo. The
+service detects this and says so (`/api/state` → `git.available`) rather than failing
+when someone clicks, but it cannot work around it.
+
+Python buildpacks routinely install git for the build and drop it from the runtime
+image. On Railway, add it with an environment variable — no repo change, no builder
+change:
+
+    NIXPACKS_PKGS=git            # Nixpacks builder
+    NIXPACKS_APT_PKGS=git        # if the above does not land it
+
+Confirm with `curl https://<your-app>/api/state` — `git.available` must be `true`.
+
+## Or build the image yourself
+
+`deploy/Dockerfile` is a verified runtime: python:3.11-slim, git, and
+`requirements-gate.txt` (one line — `openai`). It lives outside the repository root
+deliberately, so a platform that auto-detects a root Dockerfile is not switched onto
+it by accident.
+
+    docker build -f deploy/Dockerfile -t phoenix-gate .
+    docker run -p 8788:8788 -e GATE_SECRET=... phoenix-gate
 
 The gate imports no langgraph, langsmith or langchain; that tree belongs to the
-settlement console and is ~70MB of install the service never loads. `requirements.txt`
-remains the full set for running everything from a checkout.
+settlement console. `requirements.txt` stays the full set for running everything from
+a checkout.
 
-Verified by building and running the image, not by reading it: `git available: True`,
-a real workspace provisions inside the container, and both `verify_gate.py` (87/87)
-and `smoke.py` (21/21) pass in it.
+Verified by building and running it, not by reading it: `git available: True`, a real
+workspace provisions inside the container, and both `verify_gate.py` (87/87) and
+`smoke.py` (21/21) pass in it.
 
 ## The gate as a public service
 
