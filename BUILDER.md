@@ -1,9 +1,17 @@
 # Phoenix Builder — a governed organization that ships software
 
-**Status:** foundation shipped (`workspace.py`, `worker.py`, the `/work` console);
-**step 1 of §5 shipped** — the repo and its test command are now configuration, so the
-loop runs on any tested codebase. This branch extends it from a toy sandbox to **real
-repositories and systems**.
+**Status:** **steps 1–3 of §5 shipped.** The Builder runs unattended against a real
+git repository: worktree per task, iterative attempts judged by the repo's own test
+suite, and every success parked at a human merge gate. One command:
+
+```
+python3 gov/builder.py run --repo /path/to/repo --test-cmd "python -m pytest -q"
+python3 gov/builder.py gate            # what is waiting, and why
+python3 gov/builder.py approve --id 1  # the one irreversible act, taken by you
+```
+
+Verified end to end by `gov/verify_builder.py` (51/51) with scripted solvers, so the
+machinery is proven without depending on any model.
 Where RESEARCH.md discovers and REALWORK.md set the thesis, Builder is the thesis
 running at production scale.
 
@@ -29,9 +37,9 @@ That is the whole machine, proven on a toy module. Builder scales each axis.
 | Codebase | one `calculator.py` | a real git repo, many modules — **done** |
 | Oracle | one unittest file | the repo's full CI (pytest, lint, type-check, build) — **test command done** |
 | Task source | failing tests | issues, TODOs, failing CI, a human's feature request |
-| Isolation | in-process file writes | a git **worktree per agent** (already supported by the Agent layer) |
-| The gate | none (toy) | **the pull request**: a human reviews the diff + green CI and merges |
-| Fleet | one agent | a board-staffed team splitting a backlog |
+| Isolation | in-process file writes | a git **worktree per agent** — **done** (`worktree.py`) |
+| The gate | none (toy) | a human reviews the diff + test delta and merges — **done** (`builder.py`); as a PR, not yet |
+| Fleet | one agent | a team splitting a backlog — **running**; board staffing not yet |
 
 ## 3. The gate is the pull request
 
@@ -77,10 +85,16 @@ them. Builder adds:
    on a real repo the exam includes everything that decides how the exam is run.
    Verified by `gov/verify_work.py` (39/39), which builds, breaks and fixes a second
    repository with a different layout and test command on every run.
-2. Worktree-per-agent isolation so a team works in parallel without collisions
-   (the Agent tool's `isolation: worktree` is the model).
-3. The **PR gate**: agent → branch + diff + CI result → human review/merge, via the
-   GitHub API, token-gated. Careers/lineage record authorship and approval.
+2. ~~Worktree-per-agent isolation so a team works in parallel without collisions.~~
+   **Shipped** (`worktree.py`): a branch cut from the base commit, in its own
+   directory. Your checkout is never written to, including mid-run, and a failed run
+   costs a deleted branch and nothing else.
+3. ~~The **PR gate**: agent → branch + diff + CI result → human review/merge.~~
+   **Shipped as a merge gate** (`builder.py`): the dossier carries the branch, the
+   diff, the oracle's test delta, the attempt history, a risk class, and the lineage
+   id. `approve` merges; `reject` deletes the branch and turns the reason into a
+   lesson. Agents have no push rights — the gate pushes only under
+   `BUILDER_ALLOW_PUSH`. Opening a real PR is the remaining transport change.
 4. Board staffing over a real backlog (issues/TODOs), governor reports scored on
    tests-passing delta per token (VIII.5 transfers verbatim).
 5. The eval race on real work: which frontier model runs the best governed

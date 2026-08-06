@@ -84,9 +84,14 @@ def _env_list(name: str) -> tuple:
 
 
 def configure(repo: str = "", test_cmd: str = "", timeout: int = 0,
-              protected: tuple = ()) -> dict:
+              protected: tuple = (), key: str = "") -> dict:
     """Point the workspace at a repository. Every argument falls back to the
-    matching WORK_* environment variable, then to the toy sandbox defaults."""
+    matching WORKSPACE_* environment variable, then to the toy sandbox defaults.
+
+    ``key`` decouples *where the files are* from *whose backlog this is*: an agent
+    working in a git worktree reads and writes its own checkout, but the tasks stay
+    anchored to the repository they came from, so parallel worktrees share one
+    backlog instead of each inventing a copy."""
     global _CFG
     repo = repo or os.environ.get("WORKSPACE_REPO", "").strip() or TOY_REPO
     repo = os.path.realpath(os.path.expanduser(repo))
@@ -101,7 +106,8 @@ def configure(repo: str = "", test_cmd: str = "", timeout: int = 0,
     prot = tuple(protected) or _env_list("WORKSPACE_PROTECTED") or DEFAULT_PROTECTED
     _CFG = {"repo": repo, "test_cmd": argv, "timeout": max(5, tmo),
             "protected": prot, "passthrough": _env_list("WORKSPACE_ENV_PASSTHROUGH"),
-            "is_toy": repo == os.path.realpath(TOY_REPO)}
+            "is_toy": repo == os.path.realpath(TOY_REPO),
+            "key": os.path.realpath(os.path.expanduser(key)) if key else repo}
     return config()
 
 
@@ -120,8 +126,9 @@ def repo_root() -> str:
 
 def _repo_key() -> str:
     """Tasks and snapshots are scoped to a repo, so re-pointing the workspace at a
-    different codebase can never mix two backlogs."""
-    return repo_root()
+    different codebase can never mix two backlogs. Worktrees of the same repo share
+    the key, and therefore the backlog."""
+    return config()["key"]
 
 
 def __getattr__(name):

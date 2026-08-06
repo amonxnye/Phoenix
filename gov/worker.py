@@ -135,7 +135,7 @@ def apply_and_score(agent: str, module: str, content: str,
         anchor.career_add(agent, -1, "retask", f"patch reverted: broke {', '.join(broke)}")
         return {"agent": agent, "did": "reverted", "broke": broke}
 
-    economy.enlist(agent)
+    economy.ensure(agent)          # never `enlist` here: it would wipe prior contribution
     got = CREDIT_PER_TEST * len(newly)
     if got:
         economy.credit(agent, got)

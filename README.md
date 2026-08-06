@@ -49,15 +49,19 @@ given a compute budget, and trusted to work unattended overnight because:
 The economic simulation exists because progress toward "reach the Castle Age" is
 objective, instant, and free to read. That property — a **cheap oracle** — is what
 makes governance testable at all. Swap the oracle for a test suite and the same
-machinery runs against real software: that adapter is **already built**
-(`gov/workspace.py` — the test suite is the oracle, failing tests are the open
-tasks), and it is no longer tied to the toy sandbox — point it at any repository
-and its own test command:
+machinery runs against real software: that adapter is **already built**, and it now
+runs **unattended against a real git repository**:
 
 ```
-WORKSPACE_REPO=/path/to/repo WORKSPACE_TEST_CMD="python -m pytest -q" \
-    python3 gov/worker.py --agent dev-01
+python3 gov/builder.py run --repo /path/to/repo --test-cmd "python -m pytest -q"
+python3 gov/builder.py gate              # branches waiting, with diffs and test deltas
+python3 gov/builder.py approve --id 1    # the one irreversible act, taken by you
 ```
+
+Each task is worked in its own git worktree and branch, so your checkout is never
+written to — not even mid-run. Attempts are capped and budgeted; a patch is kept only
+if the repo's own suite says it helped and broke nothing; and every success parks a
+reviewable diff at a human gate. Agents have no push rights. See **BUILDER.md**.
 
 The first sandboxed code task has already landed and been paid for:
 
@@ -236,6 +240,9 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `sim.py` | the settlement — resources, builds, decay, trade, era pricing, the gate |
 | `workspace.py` | the real-work world — any repo's test command as oracle, tasks, the closed workspace |
 | `worker.py` | the coding agent — patch, test, get paid for green |
+| `worktree.py` | isolation — a git branch and checkout per task; your tree is never touched |
+| `solver.py` | the executor seam — a task in, files out; the native one calls the brain |
+| `builder.py` | autonomous development — the unattended run, and the human merge gate |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -261,7 +268,13 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] **Any repository as the workspace** — `WORKSPACE_REPO` + `WORKSPACE_TEST_CMD`,
       pytest or unittest, the target file derived from the failing test, and
       "no verdict" kept distinct from "no failures" (BUILDER.md §5.1)
-- [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
+- [x] **Worktree isolation** — a branch and checkout per task (`worktree.py`); the
+      agent cannot touch your working tree, and a bad run costs a deleted branch
+- [x] **The merge gate** — dossiers carrying branch, diff, test delta, risk class and
+      lineage; `approve` merges, `reject` becomes a lesson (`builder.py`). Agents have
+      no push rights; publishing needs `BUILDER_ALLOW_PUSH`
+- [ ] **The gate as a pull request** — same act, GitHub API transport
+- [ ] **Board pre-vote on dossiers** — disjoint evidence before a human sees a diff
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
       requests, stalls and tacit-consent countdowns to Slack/Discord/Telegram
