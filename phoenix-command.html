@@ -3,333 +3,177 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project Phoenix — Command Surface</title>
+<title>Phoenix — Governed Code-Audit Engine</title>
 <style>
-  :root {
+  :root{
     color-scheme: dark;
-    --plane:      #0d0d0d;
-    --surface:    #1a1a19;
-    --surface-2:  #202020;
-    --ink:        #ffffff;
-    --ink-2:      #c3c2b7;
-    --muted:      #898781;
-    --grid:       #2c2c2a;
-    --border:     rgba(255,255,255,0.10);
-
-    --accent:     #3987e5;
-    --accent-trk: #143a6b;
-
-    --good:       #0ca30c;
-    --warning:    #fab219;
-    --serious:    #ec835a;
-    --critical:   #d03b3b;
-
-    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --bg:#0b0f0e; --panel:#131917; --panel2:#0f1513; --line:#22302c;
+    --ink:#eaf1ee; --dim:#8ba299; --faint:#5f7169;
+    --green:#7bd88f; --gold:#e0b23a; --blue:#6ab7ff;
+    --crit:#ff5b5b; --high:#f8a37b; --med:#e0b23a;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono: ui-monospace,Menlo,Consolas,monospace;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--plane); color: var(--ink);
-    font-family: var(--sans); font-size: 13px; line-height: 1.45;
-    padding: 14px; display: flex; flex-direction: column; gap: 10px;
-    min-height: 100vh;
-  }
-  .panel {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 12px 14px;
-  }
-  .ptitle {
-    font-size: 10px; letter-spacing: .10em; text-transform: uppercase;
-    color: var(--muted); margin: 0 0 10px; font-weight: 600;
-  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 var(--sans)}
+  a{color:var(--gold);text-decoration:none}
+  code,.mono{font-family:var(--mono)}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 22px}
+  header{border-bottom:1px solid var(--line);background:rgba(15,21,19,.7);position:sticky;top:0;backdrop-filter:blur(6px);z-index:5}
+  .bar{display:flex;align-items:center;gap:14px;height:56px}
+  .logo{font-family:var(--mono);font-weight:700;letter-spacing:1px}
+  .logo b{color:var(--green)}
+  nav{margin-left:auto;display:flex;gap:16px;font-size:14px;font-family:var(--mono)}
+  nav a{color:var(--dim)} nav a:hover{color:var(--ink)}
+  .cta{display:inline-block;background:#16261f;color:var(--green);border:1px solid #2c4a3c;border-radius:9px;padding:9px 18px;font-family:var(--mono);font-size:14px}
+  .cta:hover{background:#1b3227}
+  .cta.gold{background:#241f0f;color:var(--gold);border-color:#5a4a1a}
 
-  /* ---------- resource strip ---------- */
-  .resources { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-  .res { background: var(--surface); border: 1px solid var(--border);
-         border-radius: 10px; padding: 11px 14px; }
-  .res-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
-               color: var(--muted); font-weight: 600; }
-  .res-val { font-size: 25px; font-weight: 600; margin: 3px 0 1px; letter-spacing: -.02em; }
-  .res-val small { font-size: 13px; font-weight: 400; color: var(--ink-2); letter-spacing: 0; }
-  .meter { height: 5px; border-radius: 3px; background: var(--accent-trk);
-           overflow: hidden; margin-top: 8px; }
-  .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
-  .meter.warn > i { background: var(--warning); }
-  .meter.crit > i { background: var(--critical); }
-  .res-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .hero{padding:64px 0 40px;border-bottom:1px solid var(--line)}
+  .tag{font-family:var(--mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--faint)}
+  .hero h1{font-size:40px;line-height:1.15;margin:14px 0 16px;letter-spacing:-.5px}
+  .hero h1 span{color:var(--green)}
+  .hero p{font-size:17px;color:var(--dim);max-width:680px;margin:0 0 26px}
+  .ctas{display:flex;gap:12px;flex-wrap:wrap}
 
-  /* ---------- idle alert ---------- */
-  .alert {
-    display: flex; align-items: center; gap: 10px;
-    background: var(--surface); border: 1px solid var(--serious);
-    border-left: 3px solid var(--serious);
-    border-radius: 10px; padding: 10px 14px;
-  }
-  .alert .glyph { color: var(--serious); font-size: 15px; }
-  .alert b { font-weight: 600; }
-  .alert span { color: var(--ink-2); }
-  .alert .spacer { flex: 1; }
+  .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:40px 0}
+  @media(max-width:720px){.flow{grid-template-columns:1fr 1fr}.hero h1{font-size:31px}}
+  .node{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .node .n{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .node h3{margin:6px 0 6px;font-size:16px}
+  .node p{margin:0;font-size:13px;color:var(--dim)}
+  .node b{color:var(--green)}
 
-  /* ---------- main ---------- */
-  .main { display: grid; grid-template-columns: 1fr 320px; gap: 10px; align-items: start; }
-  .units { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px,1fr)); gap: 9px; }
+  section{padding:44px 0;border-bottom:1px solid var(--line)}
+  section h2{font-size:13px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin:0 0 20px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .law{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+  .law h3{margin:0 0 8px;font-size:16px}
+  .law h3 .k{font-family:var(--mono);color:var(--green);font-size:13px}
+  .law p{margin:0;color:var(--dim);font-size:14px}
 
-  .unit {
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 9px; padding: 10px 11px; cursor: pointer;
-    transition: border-color .12s, transform .12s;
-  }
-  .unit:hover { border-color: var(--muted); }
-  .unit[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .unit-top { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
-  .unit-id { font-size: 11px; font-weight: 600; color: var(--ink-2);
-             font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .unit-task { font-size: 12.5px; color: var(--ink); margin-bottom: 9px;
-               min-height: 34px; }
-  .unit-foot { display: flex; justify-content: space-between;
-               font-size: 11px; color: var(--muted);
-               font-variant-numeric: tabular-nums; }
+  .layers{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:720px){.layers{grid-template-columns:1fr}}
+  .layer{background:linear-gradient(160deg,#12201b,#0f1513);border:1px solid var(--line);border-radius:12px;padding:20px}
+  .layer .lbl{font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--faint)}
+  .layer h3{margin:6px 0 8px;font-size:18px}
+  .layer p{margin:0;color:var(--dim);font-size:14px}
+  .layer .soon{display:inline-block;margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--gold);border:1px solid #5a4a1a;border-radius:20px;padding:1px 10px}
 
-  .chip { display: inline-flex; align-items: center; gap: 4px;
-          font-size: 9.5px; font-weight: 700; letter-spacing: .07em;
-          text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
-          border: 1px solid currentColor; margin-left: auto; white-space: nowrap; }
-  .chip.running  { color: var(--good); }
-  .chip.orders   { color: var(--warning); }
-  .chip.idle     { color: var(--serious); }
-  .chip.failed   { color: var(--critical); }
+  .demo{background:var(--panel2);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-family:var(--mono);font-size:13px}
+  .demo .top{padding:8px 14px;border-bottom:1px solid var(--line);color:var(--faint);font-size:12px}
+  .demo pre{margin:0;padding:16px;overflow:auto;color:var(--dim);line-height:1.7}
+  .demo .g{color:var(--green)} .demo .b{color:var(--blue)} .demo .r{color:var(--crit)} .demo .y{color:var(--gold)}
 
-  /* ---------- right rail ---------- */
-  .rail { display: flex; flex-direction: column; gap: 10px; }
-  .kv { display: flex; justify-content: space-between; padding: 5px 0;
-        border-bottom: 1px solid var(--grid); font-size: 12px; }
-  .kv:last-of-type { border-bottom: none; }
-  .kv span:first-child { color: var(--muted); }
-  .kv span:last-child { color: var(--ink-2); font-variant-numeric: tabular-nums; }
-  .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 11px; }
-  button {
-    font-family: var(--sans); font-size: 11.5px; font-weight: 600;
-    padding: 7px 8px; border-radius: 6px; cursor: pointer;
-    background: transparent; color: var(--ink-2);
-    border: 1px solid var(--border); transition: background .12s, color .12s;
-  }
-  button:hover { background: rgba(255,255,255,.06); color: var(--ink); }
-  button.primary { border-color: var(--accent); color: var(--accent); }
-  button.danger  { border-color: var(--critical); color: var(--critical); }
+  .surfaces{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:720px){.surfaces{grid-template-columns:1fr}}
+  .surf{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;display:block}
+  .surf:hover{border-color:#33504a}
+  .surf .t{font-size:16px;color:var(--ink);margin-bottom:4px}
+  .surf .d{font-size:13px;color:var(--dim)}
+  .surf .go{font-family:var(--mono);font-size:12px;color:var(--green);margin-top:10px}
 
-  /* ---------- approvals ---------- */
-  .appr { border: 1px solid var(--border); border-left: 3px solid var(--warning);
-          border-radius: 7px; padding: 9px 10px; margin-bottom: 7px;
-          background: var(--surface-2); }
-  .appr-kind { font-size: 9.5px; font-weight: 700; letter-spacing: .07em;
-               text-transform: uppercase; color: var(--warning); margin-bottom: 4px; }
-  .appr-body { font-size: 12px; color: var(--ink); margin-bottom: 3px; }
-  .appr-meta { font-size: 10.5px; color: var(--muted); margin-bottom: 8px; }
-  .appr-btns { display: flex; gap: 6px; }
-  .appr-btns button { flex: 1; padding: 5px; font-size: 11px; }
-  .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 6px 0; }
-
-  /* ---------- log ---------- */
-  .log { max-height: 210px; overflow-y: auto; font-size: 11.5px;
-         font-variant-numeric: tabular-nums; }
-  .log div { padding: 2.5px 0; color: var(--ink-2); border-bottom: 1px solid var(--grid); }
-  .log div:last-child { border-bottom: none; }
-  .log time { color: var(--muted); margin-right: 9px; }
-
-  .hint { font-size: 11px; color: var(--muted); margin-top: 9px; font-style: italic; }
-  @media (max-width: 880px) { .main { grid-template-columns: 1fr; }
-                              .resources { grid-template-columns: repeat(2,1fr); } }
+  footer{padding:30px 0 60px;color:var(--faint);font-size:13px}
+  .note{background:#191410;border:1px solid #3a2c18;border-radius:10px;padding:12px 16px;color:#d8c9a6;font-size:13px;margin-top:18px}
 </style>
 </head>
 <body>
+<header><div class="wrap bar">
+  <span class="logo">&#9670; PHOENIX <b>·</b> AUDIT</span>
+  <nav>
+    <a href="/audit">Audit</a><a href="/security">Security</a><a href="/watch">Watch</a>
+    <a href="/">Console</a>
+  </nav>
+</div></header>
 
-<div class="resources">
-  <div class="res">
-    <div class="res-label">Token budget</div>
-    <div class="res-val">$18.40 <small>/ $50.00</small></div>
-    <div class="meter"><i style="width:37%"></i></div>
-    <div class="res-sub">Burn $2.60/hr · 12h 8m left at rate</div>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="tag">Governed code-audit engine</div>
+    <h1>Scan real code. Rebuild the flaw.<br><span>Exploit it. Prove it.</span></h1>
+    <p>Point Phoenix at a repository. It finds vulnerability candidates, rebuilds each one as a
+       runnable system in an isolated sandbox, exploits it, and lets the working exploit be the proof.
+       A claim is worth nothing — a reproduction is everything.</p>
+    <div class="ctas">
+      <a class="cta" href="/audit">Open the workbench →</a>
+      <a class="cta gold" href="#how">How it works</a>
+    </div>
   </div>
-  <div class="res">
-    <div class="res-label">Ad spend</div>
-    <div class="res-val">$0.00 <small>/ $40.00</small></div>
-    <div class="meter"><i style="width:0%"></i></div>
-    <div class="res-sub">Authorized, none released</div>
+
+  <div class="flow" id="how">
+    <div class="node"><div class="n">01</div><h3>Scan</h3><p>Walk a checkout, report <b>candidates</b> — class, file, line. Read-only; the code is never run.</p></div>
+    <div class="node"><div class="n">02</div><h3>Rebuild</h3><p>Recreate the flaw as a minimal <b>runnable system</b>: target, oracle, exploit — plus a hardened variant.</p></div>
+    <div class="node"><div class="n">03</div><h3>Host &amp; exploit</h3><p>Run the exploit in a <b>cage</b> — no network, no subprocess, no escape. Isolation is the blast radius.</p></div>
+    <div class="node"><div class="n">04</div><h3>Prove</h3><p>The oracle judges from the trace. <b>Confirmed</b> only if the fix stops the same exploit.</p></div>
   </div>
-  <div class="res">
-    <div class="res-label">Sandbox hours</div>
-    <div class="res-val">18.6 <small>/ 24.0</small></div>
-    <div class="meter warn"><i style="width:78%"></i></div>
-    <div class="res-sub">2 units consuming while idle</div>
-  </div>
-  <div class="res">
-    <div class="res-label">Units</div>
-    <div class="res-val">5 <small>/ 8 active</small></div>
-    <div class="meter"><i style="width:62%"></i></div>
-    <div class="res-sub">1 idle · 1 awaiting orders · 1 failed</div>
-  </div>
+
+  <section>
+    <h2>What you actually run</h2>
+    <div class="surfaces">
+      <a class="surf" href="/audit"><div class="t">◆ Audit workbench</div><div class="d">Enter a repo path, scan it, and prove a finding — rebuild, exploit and verdict, live.</div><div class="go">Start here →</div></a>
+      <a class="surf" href="/security"><div class="t">◆ Security harness</div><div class="d">The governed find→prove→fix loop on a sandbox replica, with the human gate for anything irreversible.</div><div class="go">Open →</div></a>
+      <a class="surf" href="/watch"><div class="t">◆ Watch</div><div class="d">The org watching itself — every refusal the cage made, correlated into alerts with provenance.</div><div class="go">Open →</div></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Two laws that keep it honest and safe</h2>
+    <div class="grid2">
+      <div class="law"><h3><span class="k">confirmed =</span> vuln reproduces &amp; fix stops it</h3>
+        <p>A finding counts only when the vulnerable rebuild is exploited <em>and</em> the hardened rebuild
+           refuses the same exploit. That pairing kills the false positive that “reproduces” no matter what —
+           the disease every scanner suffers.</p></div>
+      <div class="law"><h3><span class="k">rebuild,</span> don’t attack</h3>
+        <p>Phoenix hosts and hacks a reproduction <em>it built</em>, never your running service. Recreating a
+           pattern to prove it is defensive research; aiming it at live infrastructure is a gated, human-only
+           act — and the cage removes the capability, so it can’t happen by accident.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>A worked run — the scanned Cloudflare Computer repo</h2>
+    <div class="demo">
+      <div class="top">$ scan → prove &nbsp;·&nbsp; 133k lines of TypeScript</div>
+<pre><span class="b">scan</span>  /workspace/…/computer-cloufare   541 files → <span class="y">90 candidates</span>
+      most are leads, not findings (test fixtures, parameterised SQL) — that's the point
+
+<span class="b">lead</span>  traversal  packages/computer/src/git/diff.ts:312
+      const data = await readFile(`${dir}/${filepath}`);
+
+<span class="g">prove</span> rebuild → host → exploit → oracle
+      vulnerable rebuild  → reproduced: <span class="r">YES</span>   INV-PATH  served ../SECRET.txt
+      hardened rebuild    → same exploit: <span class="g">no — the fix stops it</span>
+      verdict: <span class="g">✓ EXPLOIT PROVEN on the reproduction; the fix stops it</span></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>Brain and body — one seam</h2>
+    <div class="layers">
+      <div class="layer"><div class="lbl">The governed brain — shipped</div>
+        <h3>Phoenix</h3>
+        <p>The scanner, the reproduce-or-it-didn’t-happen oracle, an economy that promotes what contributes and
+           reaps what thrashes, careers and lineage that remember, and the gate that stops the irreversible at a
+           human. It decides who works, on what, and what’s allowed.</p></div>
+      <div class="layer"><div class="lbl">The sandboxed body — a declared seam</div>
+        <h3>The Computer</h3>
+        <p>Each reproduction gets its own isolated workspace with real code execution, so systems are rebuilt and
+           exploited for real with per-workspace isolation as the blast radius. Same reproduction contract — only
+           the host changes.</p>
+        <span class="soon">Cloudflare Computer backend · next</span></div>
+    </div>
+    <div class="note"><b>Autonomous by design.</b> A campaign points a squad at a problem and works until it’s
+      solved — persistent, escalating creativity on a bounded ladder when stuck, and never destroying value
+      (the score is ratcheted, thrashers are reaped, every decision keeps its lineage).</div>
+  </section>
+
+  <footer class="wrap">
+    <div class="ctas"><a class="cta" href="/audit">Open the workbench →</a></div>
+    <p style="margin-top:18px">Phoenix — a governed AI organization for defensive security work. Authorized targets
+      only; the sandbox has no credentials and no route out. MIT-licensed.</p>
+  </footer>
+
 </div>
-
-<div class="alert">
-  <span class="glyph">⏹</span>
-  <b>2 units idle.</b>
-  <span>probe-04 blocked 41m on LinkedIn API scope · recon-08 failed, not restarted. Both still billing sandbox time.</span>
-  <span class="spacer"></span>
-  <button id="reassign">Reassign both</button>
-</div>
-
-<div class="main">
-  <div class="panel">
-    <p class="ptitle">Units — Silk NOVA / daily marketing loop</p>
-    <div class="units" id="units"></div>
-    <p class="hint">Click a unit to select it and issue orders. Nothing irreversible executes without an approval below.</p>
-
-    <div style="border-top:1px solid var(--grid);margin-top:12px;padding-top:12px">
-      <p class="ptitle">Event log</p>
-      <div class="log" id="log"></div>
-    </div>
-  </div>
-
-  <div class="rail">
-    <div class="panel">
-      <p class="ptitle">Selected unit</p>
-      <div id="detail"></div>
-    </div>
-
-    <div class="panel">
-      <p class="ptitle">Awaiting orders — irreversible</p>
-      <div id="approvals"></div>
-    </div>
-  </div>
-</div>
-
-<script>
-const STATES = {
-  running: { cls:'running', glyph:'▶', label:'Running'   },
-  orders:  { cls:'orders',  glyph:'◆', label:'Needs orders' },
-  idle:    { cls:'idle',    glyph:'⏹', label:'Idle'      },
-  failed:  { cls:'failed',  glyph:'✕', label:'Failed'    }
-};
-
-const units = [
-  { id:'scout-01', state:'running', task:'Draft daily X post — founder-story angle',
-    el:'4m 12s', tok:'12.1K', hyp:'H-084', model:'deepseek-v4-flash', note:'Third variant; two rejected by tone filter.' },
-  { id:'scout-02', state:'running', task:'Draft daily X post — problem-first angle',
-    el:'3m 48s', tok:'9.4K',  hyp:'H-085', model:'deepseek-v4-flash', note:'Awaiting competitor scan from recon-07.' },
-  { id:'probe-03', state:'running', task:'Analyse last 14 posts for engagement pattern',
-    el:'11m 02s', tok:'31.7K', hyp:'H-081', model:'deepseek-v4-flash', note:'n=14 — below significance threshold, flagged.' },
-  { id:'probe-04', state:'idle',    task:'Draft LinkedIn variant',
-    el:'41m 19s', tok:'2.2K',  hyp:'H-086', model:'—', note:'Blocked: LinkedIn MDP scope not approved. No retry path.' },
-  { id:'forge-05', state:'orders',  task:'Generate 3 ad creative concepts',
-    el:'8m 55s', tok:'44.0K', hyp:'H-087', model:'deepseek-v4-flash', note:'Concepts ready. Release requires ad-spend approval.' },
-  { id:'forge-06', state:'running', task:'Landing page copy — variant B',
-    el:'6m 31s', tok:'18.9K', hyp:'H-083', model:'deepseek-v4-flash', note:'Writing against staging, not production.' },
-  { id:'recon-07', state:'running', task:'Competitor posting cadence scan',
-    el:'2m 07s', tok:'6.8K',  hyp:'H-085', model:'deepseek-v4-flash', note:'Read-only. 6 accounts in scope.' },
-  { id:'recon-08', state:'failed',  task:'Keyword gap analysis',
-    el:'—',      tok:'5.1K',  hyp:'H-082', model:'—', note:'Egress denied: host not on allowlist. Critic logged syntax-tier rule.' }
-];
-
-let approvals = [
-  { kind:'Publish — irreversible', body:'Post to @silknova: "Most founders discover their pricing is wrong six months too late…"',
-    meta:'scout-01 · H-084 · cannot be unsent' },
-  { kind:'Spend — $40', body:'Release $40/day to X Ads campaign "silk-nova-cold-01"',
-    meta:'forge-05 · H-087 · real money, non-refundable' },
-  { kind:'Deploy', body:'Promote landing page variant B from staging to production',
-    meta:'forge-06 · H-083 · reversible via rollback' }
-];
-
-let sel = 'forge-05';
-
-function renderUnits() {
-  document.getElementById('units').innerHTML = units.map(u => {
-    const s = STATES[u.state];
-    return `<div class="unit" data-id="${u.id}" aria-selected="${u.id===sel}">
-      <div class="unit-top">
-        <span class="unit-id">${u.id}</span>
-        <span class="chip ${s.cls}">${s.glyph} ${s.label}</span>
-      </div>
-      <div class="unit-task">${u.task}</div>
-      <div class="unit-foot"><span>${u.hyp}</span><span>${u.el} · ${u.tok}</span></div>
-    </div>`;
-  }).join('');
-  document.querySelectorAll('.unit').forEach(el =>
-    el.onclick = () => { sel = el.dataset.id; renderUnits(); renderDetail(); });
-}
-
-function renderDetail() {
-  const u = units.find(x => x.id === sel), s = STATES[u.state];
-  document.getElementById('detail').innerHTML = `
-    <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px">
-      <b style="font-size:14px;white-space:nowrap">${u.id}</b>
-      <span class="chip ${s.cls}">${s.glyph} ${s.label}</span>
-    </div>
-    <div style="font-size:12px;color:var(--ink-2);margin-bottom:11px">${u.task}</div>
-    <div class="kv"><span>Hypothesis</span><span>${u.hyp}</span></div>
-    <div class="kv"><span>Elapsed</span><span>${u.el}</span></div>
-    <div class="kv"><span>Tokens</span><span>${u.tok}</span></div>
-    <div class="kv"><span>Model</span><span>${u.model}</span></div>
-    <div style="font-size:11.5px;color:var(--muted);margin-top:10px">${u.note}</div>
-    <div class="orders">
-      <button class="primary">Redirect</button>
-      <button>Pause</button>
-      <button>Clone</button>
-      <button class="danger">Terminate</button>
-    </div>`;
-}
-
-function renderApprovals() {
-  const box = document.getElementById('approvals');
-  if (!approvals.length) { box.innerHTML = '<div class="empty">Queue clear. No irreversible actions pending.</div>'; return; }
-  box.innerHTML = approvals.map((a,i) => `
-    <div class="appr">
-      <div class="appr-kind">${a.kind}</div>
-      <div class="appr-body">${a.body}</div>
-      <div class="appr-meta">${a.meta}</div>
-      <div class="appr-btns">
-        <button class="primary" data-ok="${i}">Approve</button>
-        <button class="danger" data-no="${i}">Reject</button>
-      </div>
-    </div>`).join('');
-  box.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => resolve(+b.dataset.ok, 'approved'));
-  box.querySelectorAll('[data-no]').forEach(b => b.onclick = () => resolve(+b.dataset.no, 'rejected'));
-}
-
-function resolve(i, verdict) {
-  const a = approvals[i];
-  approvals.splice(i,1);
-  addLog(`${verdict === 'approved' ? 'APPROVED' : 'REJECTED'} — ${a.kind.split(' —')[0]} · ${a.meta.split(' · ')[0]}`);
-  renderApprovals();
-}
-
-const log = [
-  '11:04:22  recon-08 terminated — egress denied (host not on allowlist)',
-  '11:04:19  Critic appended syntax-tier rule to blacklist.txt',
-  '11:02:55  forge-05 wrote 3 proposals to approval queue',
-  '10:58:40  probe-03 flagged H-081: n=14 below significance threshold',
-  '10:51:07  probe-04 blocked — LinkedIn MDP scope missing',
-  '10:44:33  Measurer wrote verdict for H-079: refuted (CTR 0.4% vs 1.2% predicted)',
-  '10:44:31  Critic appended strategy-tier rule: "feature-led hooks underperform on cold audience"',
-  '10:31:12  Daily cap reset — 8 units spawned'
-];
-function addLog(msg) {
-  const t = new Date().toTimeString().slice(0,8);
-  log.unshift(`${t}  ${msg}`);
-  renderLog();
-}
-function renderLog() {
-  document.getElementById('log').innerHTML = log.map(l => {
-    const t = l.slice(0,8), rest = l.slice(8);
-    return `<div><time>${t}</time>${rest}</div>`;
-  }).join('');
-}
-
-document.getElementById('reassign').onclick = () => {
-  units.forEach(u => { if (u.state==='idle'||u.state==='failed') { u.state='running'; u.el='0m 04s'; u.note='Reassigned by operator.'; } });
-  addLog('Operator reassigned 2 idle units');
-  renderUnits(); renderDetail();
-};
-
-renderUnits(); renderDetail(); renderApprovals(); renderLog();
-</script>
 </body>
 </html>

@@ -1636,6 +1636,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/watch":
             self._count_view()
             return self._send(200, WATCH_PAGE, "text/html; charset=utf-8")
+        if self.path in ("/audit", "/start"):
+            self._count_view()
+            return self._send(200, AUDIT_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/watchdata":
             import sentinel as SN
             SN.scan()                            # correlate before reading
@@ -2030,6 +2033,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "alert id required"}))
             ok = SN.acknowledge(aid, who="operator")
             return self._send(200, json.dumps({"ok": ok, "alert": aid}))
+        if self.path == "/api/scan":
+            import scanner as SC
+            body = self._read_json()
+            path = (body.get("path") or "").strip() or os.path.dirname(HERE)
+            if not os.path.isdir(path):
+                return self._send(400, json.dumps({"error": f"not a directory: {path}"}))
+            try:
+                res = SC.scan(path)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            # cap the payload; the ranked head is what a user acts on
+            res["candidates"] = res["candidates"][:150]
+            anchor.record(_S["turn"], "audit",
+                          f"scanned {path}: {res['total']} candidates "
+                          f"across {res['files_scanned']} files")
+            return self._send(200, json.dumps(res))
+        if self.path == "/api/prove":
+            import reproducer as RP
+            body = self._read_json()
+            cand = body.get("candidate") or {}
+            if not cand.get("class"):
+                return self._send(400, json.dumps({"error": "a candidate with a class is required"}))
+            try:
+                out = RP.prove(cand)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)[:300]}))
+            verdict = ("confirmed" if out.get("confirmed") else "not-confirmed")
+            anchor.record(_S["turn"], "audit",
+                          f"prove {cand.get('class')} @ {cand.get('file')}:{cand.get('line')} "
+                          f"-> {verdict}")
+            return self._send(200, json.dumps(out))
         if self.path == "/api/chat":
             body = self._read_json()
             thread, text = body.get("thread", ""), (body.get("body") or "").strip()
@@ -2171,6 +2205,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
     <a class=navlink href="/work">Workboard &rarr;</a>
+    <a class=navlink href="/audit">Audit &rarr;</a>
     <a class=navlink href="/security">Security &rarr;</a>
     <a class=navlink href="/watch">Watch &rarr;</a>
     <span>Add villager</span>
@@ -2971,7 +3006,7 @@ input{background:#170c0c;color:var(--ink);border:1px solid var(--line);border-ra
 .uncov{color:var(--gold)}
 </style>
 <header><h1>&#9670; SECURITY — governed defensive hardening</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/audit">Audit</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/watch">Watch</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>&mdash;</b> &middot; a reproducing PoC is the oracle</span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3090,7 +3125,7 @@ button{background:#14212c;color:var(--info);border:1px solid #2c4256;border-radi
 .k{color:var(--dim)}.ack{opacity:.45}
 </style>
 <header><h1>&#9670; WATCH — the security org sees its own agents</h1>
-  <a href="/">Console</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/audit">Audit</a><a href="/security">Security</a><a href="/agents">Agent Health</a><a href="/logs">Logs</a>
   <span class=meta>a signal is a refusal that happened, not an opinion &middot; open: <b id=open>&mdash;</b></span></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3136,6 +3171,165 @@ async function ack(id){
   load();
 }
 load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+AUDIT_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Phoenix Audit — scan, rebuild, exploit, prove</title>
+<style>
+:root{--bg:#0c0f0e;--panel:#131917;--panel2:#0f1513;--line:#22302c;--ink:#e9f1ee;--dim:#8ba299;
+--gold:#e0b23a;--green:#7bd88f;--red:#f8837b;--crit:#ff5b5b;--high:#f8a37b;--med:#e0b23a;--blue:#6ab7ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+a{color:var(--gold);text-decoration:none}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:#101815}
+h1{font-size:15px;margin:0;letter-spacing:1px}
+.nav{margin-left:auto;display:flex;gap:12px;font-size:12px}
+main{max-width:1180px;margin:0 auto;padding:18px}
+.hero{background:linear-gradient(160deg,#12201b,#0f1513);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-bottom:16px}
+.hero h2{margin:0 0 8px;font-size:20px;letter-spacing:.3px}
+.hero p{margin:0;color:var(--dim);max-width:760px;font-size:13.5px}
+.flow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.step{border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--ink)}
+.step b{color:var(--green)}
+.arrow{color:var(--dim);align-self:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden}
+.card h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:11px 16px;border-bottom:1px solid var(--line)}
+.pad{padding:14px 16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=text]{flex:1;min-width:280px;background:#0d1513;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit}
+button{background:#16261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:9px 16px;cursor:pointer;font:inherit}
+button:disabled{opacity:.45;cursor:wait}
+button.ghost{color:var(--gold);border-color:#5a4a1a;background:#241f0f}
+.ex{color:var(--dim);font-size:12px;margin-top:8px}
+.ex code{color:var(--blue);cursor:pointer;border-bottom:1px dotted var(--blue)}
+.tiles{display:flex;gap:10px;flex-wrap:wrap}
+.tile{flex:1;min-width:88px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-align:center;background:var(--panel2)}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+.pill{padding:1px 8px;border-radius:20px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid}
+.sev-critical{color:var(--crit);border-color:var(--crit);font-weight:700}
+.sev-high{color:var(--high);border-color:var(--high)}.sev-medium{color:var(--med);border-color:var(--med)}
+.sev-low{color:var(--dim);border-color:var(--line)}
+.snip{color:var(--dim);font-size:12px;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loc{color:var(--blue)}.tst{color:var(--dim);font-size:10px;border:1px solid var(--line);border-radius:10px;padding:0 6px;margin-left:6px}
+.provable{color:var(--green)}
+tr.reprovable td{cursor:default}
+#verdict{white-space:pre-wrap;font-size:12px}
+.ok{color:var(--green)}.no{color:var(--red)}.muted{color:var(--dim)}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700}
+.badge.y{background:#123020;color:var(--green);border:1px solid #2c4a3c}
+.badge.n{background:#301818;color:var(--red);border:1px solid #4a2c2c}
+.hint{color:var(--dim);font-size:12px;margin-top:6px}
+.spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;display:inline-block;animation:s 1s linear infinite;vertical-align:-3px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+<header><h1>&#9670; PHOENIX &middot; AUDIT</h1>
+  <div class=nav><a href="/security">Security</a><a href="/watch">Watch</a><a href="/">Console</a></div></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div class=spin style="width:34px;height:34px"></div>
+  <div style="color:var(--dim);letter-spacing:2px">LOADING PHOENIX&hellip;</div></div>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})();setTimeout(()=>{const l=document.getElementById('ldr');if(l)l.remove()},600)</script>
+<main>
+  <div class=hero>
+    <h2>Scan real code. Rebuild the flaw. Exploit it. Prove it.</h2>
+    <p>Point Phoenix at a repository. It scans for vulnerability <b>candidates</b>, then — for the classes it
+    understands — <b>rebuilds</b> each flaw as a runnable system in an isolated sandbox, <b>exploits</b> it, and
+    the working exploit is the proof. A claim is worth nothing; a reproduction is everything. Nothing here touches a
+    live system: it hacks a rebuild it made, never your infrastructure.</p>
+    <div class=flow>
+      <span class=step>1 · <b>Scan</b> source</span><span class=arrow>&rarr;</span>
+      <span class=step>2 · <b>Rebuild</b> the flaw</span><span class=arrow>&rarr;</span>
+      <span class=step>3 · <b>Host + exploit</b> in a cage</span><span class=arrow>&rarr;</span>
+      <span class=step>4 · <b>Prove</b> (fix must stop it)</span>
+    </div>
+  </div>
+
+  <div class=card><h3>1 · Scan a repository</h3><div class=pad>
+    <div class=row>
+      <input id=path type=text placeholder="/path/to/a/checkout on this machine" value="">
+      <button id=scanbtn onclick=scan()>Scan</button>
+    </div>
+    <div class=ex>Examples on this machine:
+      <code onclick="pick(this)">/workspace/amonxnye/computer-cloufare</code> &middot;
+      <code onclick="pick(this)">/home/user/Phoenix</code>
+      &nbsp;— read-only; the scanner never runs the code it reads.</div>
+    <div id=scanmeta class=hint></div>
+  </div></div>
+
+  <div class=card id=sumcard style="display:none"><h3>Candidates by severity</h3>
+    <div class=pad><div class=tiles id=tiles></div>
+      <div class=hint>Most candidates are leads, not findings — test fixtures and parameterised queries look alike to a scanner.
+      The <span class=provable>provable</span> classes (traversal, rce) can be rebuilt and exploited right here.</div></div></div>
+
+  <div class=card id=candcard style="display:none"><h3>2–4 · Candidates &middot; click Prove to rebuild → exploit → prove</h3>
+    <table><thead><tr><th>Sev</th><th>Class</th><th>Location</th><th>Snippet</th><th></th></tr></thead>
+      <tbody id=cands></tbody></table></div>
+
+  <div class=card id=vcard style="display:none"><h3>The proof</h3><div class=pad>
+    <div id=vhead></div>
+    <div id=verdict class=muted></div></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const PROVABLE=new Set(['traversal','rce']);
+function tok(){return localStorage.getItem('ctok')||''}
+function pick(el){document.getElementById('path').value=el.textContent}
+async function post(url,body){
+  let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':tok()},body:JSON.stringify(body||{})});
+  if(r.status===401){const t=prompt('Console token required:');if(t){localStorage.setItem('ctok',t);return post(url,body)}return null}
+  return r.json();
+}
+async function scan(){
+  const path=document.getElementById('path').value.trim();
+  scanbtn.disabled=true; scanmeta.innerHTML='<span class=spin></span> scanning…';
+  const d=await post('/api/scan',{path});
+  scanbtn.disabled=false;
+  if(!d){scanmeta.textContent='';return}
+  if(d.error){scanmeta.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
+  scanmeta.innerHTML=`scanned <b>${d.files_scanned}</b> files under <span class=loc>${esc(d.root)}</span> — <b>${d.total}</b> candidates`;
+  const sevs=['critical','high','medium','low'];
+  tiles.innerHTML=sevs.map(s=>`<div class=tile><b class="sev-${s}">${d.by_severity[s]||0}</b><span>${s}</span></div>`).join('')
+    +Object.entries(d.by_class).map(([c,n])=>`<div class=tile><b>${n}</b><span>${esc(c)}</span></div>`).join('');
+  sumcard.style.display='block';
+  cands.innerHTML=(d.candidates||[]).map((c,i)=>{
+    const prov=PROVABLE.has(c.class);
+    return `<tr>
+      <td><span class="pill sev-${esc(c.severity)}">${esc(c.severity)}</span></td>
+      <td>${esc(c.class)}${prov?' <span class=provable title="can be rebuilt & exploited">&#9670;</span>':''}</td>
+      <td><span class=loc>${esc(c.file)}:${c.line}</span>${c.is_test?'<span class=tst>test</span>':''}</td>
+      <td class=snip title="${esc(c.snippet)}">${esc(c.snippet)}</td>
+      <td>${prov?`<button data-i="${i}" onclick='prove(${i})'>Prove</button>`:'<span class=muted>no template</span>'}</td></tr>`;
+  }).join('')||'<tr><td colspan=5 class=muted>no candidates — clean, or an unsupported language</td></tr>';
+  window._cands=d.candidates||[];
+  candcard.style.display='block';
+}
+async function prove(i){
+  const c=window._cands[i]; if(!c)return;
+  const btn=document.querySelector(`button[data-i="${i}"]`); if(btn){btn.disabled=true;btn.innerHTML='<span class=spin></span>'}
+  vcard.style.display='block'; vhead.innerHTML='<span class=spin></span> rebuilding, hosting, exploiting…'; verdict.textContent='';
+  vcard.scrollIntoView({behavior:'smooth',block:'nearest'});
+  const d=await post('/api/prove',{candidate:c});
+  if(btn){btn.disabled=false;btn.textContent='Prove'}
+  if(!d){vhead.textContent='';return}
+  if(d.error){vhead.innerHTML='<span class=no>'+esc(d.error)+'</span>';return}
+  const yes=d.confirmed;
+  vhead.innerHTML=`<span class="badge ${yes?'y':'n'}">${yes?'✓ EXPLOIT PROVEN':'✗ NOT CONFIRMED'}</span>
+    &nbsp;<b>${esc(d.class)}</b> <span class=muted>modelling ${esc(d.provenance||'')}</span>`;
+  const lines=[];
+  if(d.vulnerable){lines.push(`vulnerable rebuild → reproduced: ${d.vulnerable.reproduced?'YES':'no'}`);
+    (d.vulnerable.violations||[]).forEach(v=>lines.push(`   ${v.id} [${v.class}] ${v.detail}`));
+    if(d.vulnerable.denied&&d.vulnerable.denied.length)lines.push(`   cage denied: ${d.vulnerable.denied.join(', ')}`);
+    if(d.vulnerable.error)lines.push(`   note: ${d.vulnerable.error}`);}
+  if(d.hardened)lines.push(`hardened rebuild → same exploit reproduced: ${d.hardened.reproduced?'YES (still vulnerable!)':'no — the fix stops it'}`);
+  lines.push('');lines.push(`verdict: ${d.verdict||''}`);
+  verdict.textContent=lines.join('\\n');
+}
+window.addEventListener('DOMContentLoaded',()=>{const l=document.getElementById('ldr');if(l)l.remove()});
 </script>
 </html>"""
 
