@@ -110,7 +110,7 @@ the specification, and every article names its enforcing module.
 | **III** | Limits are read before acting. The cap has one writer; a blocked action escalates **once**, naming the value, then mutes until it changes. | `governor.py`, `sim_console._breaker` |
 | **IV** | Irreversible actions stop at the gate. The wait is priced, re-routed if unanswered, and bounded by timeout. Reversible work never pauses. | `sim.py` interrupt, `sim_console.py` |
 | **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them; researchers hold no procurement credential, no lab actuator, and cannot write the literature they cite. | `workspace.py`, `research_world.py` |
-| **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. | `anchor.py` |
+| **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. External evidence enters only through a human-run ingest, stamped with its source, licence and date. | `anchor.py`, `literature.py` |
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
 | **IX** | Inaction is an action, and it is gated too. Ten dead turns or a frozen score is a stall that names its binding constraint and escalates. | `sim_console.py` liveness |
@@ -133,12 +133,13 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all five on every push)
-python3 gov/verify.py           # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py       # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py      # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/verify_research.py  # 40 — citation oracle, reproduction gate, dossier gate
-python3 gov/console_smoke.py    # headless console API smoke
+# the acceptance suites (CI runs all six on every push)
+python3 gov/verify.py            # 16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_research.py   # 40 — citation oracle, reproduction gate, dossier gate
+python3 gov/verify_literature.py # 36 — real biomedical evidence, offline and quoted
+python3 gov/console_smoke.py     # headless console API smoke
 
 # the live console
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
@@ -231,6 +232,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `worker.py` | the coding agent — patch, test, get paid for green |
 | `research_world.py` | the research world — citation oracle, reproduction gate, assay, the dossier gate |
 | `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
+| `literature.py` | the real biomedical literature as evidence — Europe PMC retrieval, verbatim quote checking, sentence-level support |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -255,6 +257,9 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
 - [x] Oracle adapter #2 — citations, benchmark reproduction and computational assays
       (`research_world.py`); the gate is anything physical or public ([`RESEARCH.md`](RESEARCH.md))
+- [x] Oracle adapter #3 — the **real biomedical literature** (`literature.py`): Europe
+      PMC evidence, quotes checked verbatim against the stored paper, negation and
+      opposite-direction citations refused by name — offline and deterministic
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate

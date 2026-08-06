@@ -1,0 +1,16 @@
+{
+  "abstract": "Pancreatic cancer is the third leading cause of cancer-related death, with a 5-year survival rate of only 10%. Preclinical studies remain essential for identifying novel therapeutic strategies, discovering biomarkers, and deepening the understanding of disease biology. The most frequent driver mutation in pancreatic cancer is the G12D mutation in the KRAS gene, present in approximately 90% of the tumors. A recent study demonstrated complete regression of KRAS-driven pancreatic cancer upon systemic ablation up- and downstream signaling proteins EGFR and C-RAF. Building on these findings, we investigated the therapeutic benefit of combining the EGFR inhibitor erlotinib with the novel pan-RAF inhibitor LXH-254. The anticancer effects of this combination were assessed in vitro in murine and human pancreatic cancer cell lines by evaluating cell proliferation, cell death and phosphorylation of key signaling proteins. Subsequent in vivo studies were performed in an orthotopic murine pancreatic cancer model and in genetically engineered KPC mice, using daily oral administration of LXH-254 (35 mg/kg) and erlotinib (75 mg/kg). While the treatment robustly inhibited MAPK signaling and caused significant anti-proliferative effects in vitro, it did not improve survival or reduce tumor burden in either in vivo model. hese results contrast with previous reports of efficacy from monotherapies in xenograft models, highlighting the limitations of current preclinical approaches. Our findings underscore the need to develop more effective pathway-targeted inhibitors, and preclinical models that predict clinical outcomes more accurately.",
+  "authors": "Brandstetter J, Goldstein L, Schreiber T, Palme R, Lindner T, Joksch M, Krause B, Vollmar B, Kumstel S.",
+  "doi": "10.1371/journal.pone.0347843",
+  "id": "PMID:42030284",
+  "journal": "PloS one",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13108728",
+  "pmid": "42030284",
+  "retrieved_at": "2026-08-06T06:09:09Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42030284",
+  "title": "Targeting pancreatic cancer with combined inhibition of EGFR and RAF.",
+  "year": "2026"
+}

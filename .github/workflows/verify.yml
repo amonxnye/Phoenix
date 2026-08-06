@@ -22,3 +22,5 @@ jobs:
         run: python3 gov/verify_work.py
       - name: Run the Research (science) acceptance checks
         run: python3 gov/verify_research.py
+      - name: Run the real-literature (biomedical evidence) acceptance checks
+        run: python3 gov/verify_literature.py

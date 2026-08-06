@@ -1,0 +1,16 @@
+{
+  "abstract": "Background Circular RNA (circRNA) is involved in the occurrence and development of many cancers. It has been reported that circRNA Polo like kinase 1 (PLK1) is up-regulated in non-small cell lung cancer (NSCLC), but the mechanism of circPLK1 in NSCLC remains to be further explored. Methods THP-1 cells were induced to M2 macrophage polarization to obtain the exosomes from M2 macrophage (M2-Exo). The uptake of M2-Exo and its role in osimertinib (OSI) sensitivity, apoptosis, and activation of Epidermal growth factor receptor (EGFR) were detected. Next, circPLK1 expression and its role on the above mentioned indicators were also detected. The targets of circPLK1 were predicted by CircInteractome. Finally, the regulatory effects of circPLK1 on miRNA and pathways were verified. Results M2 macrophages induced OSI resistance and reduced apoptosis of NSCLC cells. circPLK1 was up-regulated in H1975 cells after co-culture with M2 and M2-Exo. CircPLK1 overexpression decreased OSI sensitivity, inhibited apoptosis, and increased phosphorylation of EGFR in NSCLC cells. miR-186 was a target of circPLK1, and its expression was decreased in M2-Exo and circPLK1 overexpressed NSCLC cells. Further, co-culture with M2-Exo increased the phosphorylation of EGFR, AKT, and extracellular signal-regulated kinase (ERK) in NSCLC cells. miR-186 mimic decreased the levels of phosphorylation of these proteins. In OSI-treated NSCLC cells, circPLK1 overexpression increased the phosphorylation of EGFR, AKT, and ERK in NSCLC cells. miR-186 mimic eliminated the effect of circPLK1 on these proteins in NSCLC cells. Conclusion circPLK1 in exosomes derived from M2-polarized macrophages promotes OSI resistance in NSCLC.",
+  "authors": "Li C, Sun X, Wang Z.",
+  "doi": "10.1007/s12672-025-03025-w",
+  "id": "PMID:40591172",
+  "journal": "Discover oncology",
+  "license": "cc by-nc-nd",
+  "open_access": true,
+  "pmcid": "PMC12214218",
+  "pmid": "40591172",
+  "retrieved_at": "2026-08-06T06:09:42Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/40591172",
+  "title": "Tumor-associated macrophages derived exosomal circPLK1 promotes resistance to EGFR inhibitor osimertinib in non-small cell lung cancer.",
+  "year": "2025"
+}

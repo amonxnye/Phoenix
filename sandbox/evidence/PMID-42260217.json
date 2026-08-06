@@ -1,0 +1,16 @@
+{
+  "abstract": "The nucleotide-binding domain leucine-rich repeat and pyrin domain-containing protein-3 (NLRP3) inflammasome plays a central role in inflammatory diseases, including cardiovascular, gastrointestinal, neurodegenerative, autoimmune, hepatic, renal, and pulmonary disorders. Although various cellular pathways tightly regulate its activation, the precise mechanisms remain unclear. Emerging evidence highlights adenosine monophosphate-activated protein kinase (AMPK) as a critical regulator of energy balance and cellular metabolism, suggesting its potential involvement in modulating NLRP3 inflammasome activity. This review explores the structural dynamics of the NLRP3 inflammasome and the activation of AMPK signaling. It focuses on the mechanistic pathways underlying AMPK-mediated suppression of the NLRP3 inflammasome, including autophagy-dependent regulation, sirtuin-mediated regulation, ER stress/TXNIP signaling pathway, regulation of mitochondrial homeostasis, NF-\u03baB/MyD88-mediated priming, and maintenance of lysosomal integrity. Furthermore, the review discusses the interplay of these pathways in CNS-specific disease models, such as Ischemic stroke/cerebral ischemia, Alzheimer's disease, Parkinson's disease, multiple sclerosis, diabetic neuropathy, and neuroinflammation models, as well as traumatic brain injury, streptozotocin-induced neuroinflammation, and lipopolysaccharide-induced neuroinflammation. Additionally, this review examined therapeutic strategies targeting the AMPK-NLRP3 axis in neuroinflammatory and neurodegenerative disorders.",
+  "authors": "Kodi T, Nandakumar K, Kishore A.",
+  "doi": "10.1007/s12035-026-05932-7",
+  "id": "PMID:42260217",
+  "journal": "Molecular neurobiology",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13246848",
+  "pmid": "42260217",
+  "retrieved_at": "2026-08-06T06:10:13Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42260217",
+  "title": "AMPK-NLRP3 Inflammasome Crosstalk: Structural Insights, Molecular Mechanisms, and Therapeutic Implications for Inflammation and Neuroinflammation.",
+  "year": "2026"
+}

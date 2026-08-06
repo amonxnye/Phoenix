@@ -38,8 +38,12 @@ import json
 import os
 import re
 import sqlite3
+import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+
+import literature as L                             # the real-literature oracle (offline)
 SANDBOX = os.path.join(os.path.dirname(_HERE), "sandbox")
 CORPUS_DIR = "corpus"                              # read-only: the literature
 LAB_DIR = "lab"                                    # the researcher's only writable ground
@@ -74,7 +78,11 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS claims("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, relation TEXT, "
                   "object TEXT, novel INT DEFAULT 0, agent TEXT, citations TEXT, "
-                  "support TEXT, UNIQUE(subject, relation, object))")
+                  "support TEXT, quotes TEXT DEFAULT '{}', "
+                  "UNIQUE(subject, relation, object))")
+        cols = {row[1] for row in c.execute("PRAGMA table_info(claims)")}
+        if "quotes" not in cols:                   # a store written before quoting
+            c.execute("ALTER TABLE claims ADD COLUMN quotes TEXT DEFAULT '{}'")
         c.execute("CREATE TABLE IF NOT EXISTS reproductions("
                   "agent TEXT, compound TEXT, target TEXT, reported REAL, "
                   "truth REAL, ok INT, PRIMARY KEY(agent, compound, target))")
@@ -187,12 +195,28 @@ def compose(r1: str, r2: str) -> str | None:
     return INDIRECT[SIGN[r1] * SIGN[r2]]
 
 
-def check_claim(claim: dict, citations: list) -> dict:
-    """Score a hypothesis against the cited literature. Pure — writes nothing — so the
-    oracle can be exercised, and trusted, without a model or a database.
+def _support_ref(pid: str) -> str:
+    """Lineage refs carry their kind: 'paper:P-001', 'PMID:42260217', 'claim:7'."""
+    return pid if ":" in pid else f"paper:{pid}"
+
+
+def check_claim(claim: dict, citations: list, quotes: dict | None = None) -> dict:
+    """Score a hypothesis against its evidence. Pure — writes nothing — so the oracle
+    can be exercised, and trusted, without a model or a database.
+
+    A citation is one of three things, and all three are checked the same way — by
+    something that is not the agent's word for it:
+      ``P-001``            a structured finding in the toy corpus
+      ``PMID:42260217``    a real paper in the evidence store, which must be QUOTED:
+                           the quote is checked verbatim against the stored text, then
+                           the quoted sentence must actually assert the claim
+      ``claim:7``          a claim this organization already verified, offered as one
+                           step of an inference
 
     verdict is one of: novel | known | unresolved-citation | contradicted |
-    sign-error | unsupported | malformed."""
+    fabricated-quote | unquoted | not-mentioned | no-verifiable-text | sign-error |
+    unsupported | malformed."""
+    quotes = {str(k): v for k, v in (quotes or {}).items()}
     s, r, o = _norm(claim)
     if not s or not o or r not in RELATIONS:
         return {"ok": False, "verdict": "malformed",
@@ -201,12 +225,34 @@ def check_claim(claim: dict, citations: list) -> dict:
         return {"ok": False, "verdict": "unresolved-citation",
                 "why": "a claim with no citation is an opinion"}
 
-    found = []
+    found, lit_support, prior = [], [], {c["id"]: c for c in claims()}
     for pid in citations:
-        p = paper(pid)
+        ref = str(pid).strip()
+        if L.is_citation(ref):                     # a real paper
+            rec = L.store_get(ref)
+            if rec is None:
+                return {"ok": False, "verdict": "unresolved-citation",
+                        "why": f"{ref} is not in the evidence store — it was never "
+                               f"retrieved, so it cannot be cited"}
+            v = L.supports(claim, rec, quotes.get(ref, ""))
+            if v["verdict"] in ("contradicted", "fabricated-quote", "unquoted",
+                                "not-mentioned", "no-verifiable-text"):
+                return {"ok": False, "verdict": v["verdict"], "why": v["why"]}
+            if v["verdict"] == "supported":
+                lit_support.append((ref, v["quote"]))
+            continue
+        if ref.startswith("claim:"):               # a step the org already verified
+            cid = int(ref.split(":", 1)[1]) if ref.split(":", 1)[1].isdigit() else -1
+            c = prior.get(cid)
+            if c is None:
+                return {"ok": False, "verdict": "unresolved-citation",
+                        "why": f"{ref} is not a verified claim of this organization"}
+            found.append((ref, c["subject"], c["relation"], c["object"]))
+            continue
+        p = paper(ref)                             # the toy corpus
         if p is None:
             return {"ok": False, "verdict": "unresolved-citation",
-                    "why": f"citation {pid} does not resolve to any paper in the corpus"}
+                    "why": f"citation {ref} does not resolve to any paper in the corpus"}
         for f in p["findings"]:
             found.append((p["id"], f["subject"], f["relation"].lower(), f["object"]))
 
@@ -215,6 +261,13 @@ def check_claim(claim: dict, citations: list) -> dict:
         if (fs, fo) == (s, o) and fr in SIGN and r in SIGN and SIGN[fr] != SIGN[r]:
             return {"ok": False, "verdict": "contradicted",
                     "why": f"{pid} reports {fs} {fr} {fo} — the opposite direction"}
+
+    # a real paper that says it, in a sentence the agent quoted and the store confirms
+    if lit_support:
+        return {"ok": True, "verdict": "known", "novel": False,
+                "why": "; ".join(f"{ref} states it: \"{q[:120]}\"" for ref, q in lit_support),
+                "support": [ref for ref, _ in lit_support],
+                "quotes": {ref: q for ref, q in lit_support}}
 
     # a verbatim restatement is verified, but it is not an advance
     for pid, fs, fr, fo in found:
@@ -238,7 +291,7 @@ def check_claim(claim: dict, citations: list) -> dict:
                 return {"ok": True, "verdict": "novel", "novel": True,
                         "why": f"{p1}: {s1} {r1} {o1}; {p2}: {s2} {r2} {o2} "
                                f"⇒ {s} {net} {o}",
-                        "support": [f"paper:{p1}", f"paper:{p2}"]}
+                        "support": [_support_ref(p1), _support_ref(p2)]}
             near = (p1, s1, r1, o1, p2, s2, r2, o2, net)
     if near:
         p1, s1, r1, o1, p2, s2, r2, o2, net = near
@@ -251,10 +304,11 @@ def check_claim(claim: dict, citations: list) -> dict:
             "why": "no cited finding, alone or composed, supports this claim"}
 
 
-def submit_claim(agent: str, claim: dict, citations: list) -> dict:
+def submit_claim(agent: str, claim: dict, citations: list,
+                 quotes: dict | None = None) -> dict:
     """Run the oracle and, if the claim survives, add it to what the org knows.
     Enforces the reproduction gate and prior art; persists nothing that failed."""
-    v = check_claim(claim, citations)
+    v = check_claim(claim, citations, quotes)
     s, r, o = _norm(claim)
     v["claim"] = f"{s} {r} {o}"
     if not v["ok"]:
@@ -272,9 +326,10 @@ def submit_claim(agent: str, claim: dict, citations: list) -> dict:
                     "why": f"{agent} has not reproduced a published result yet — a novel "
                            f"claim from an unvalidated method is not trusted"}
         c.execute("INSERT INTO claims(subject, relation, object, novel, agent, "
-                  "citations, support) VALUES(?,?,?,?,?,?,?)",
+                  "citations, support, quotes) VALUES(?,?,?,?,?,?,?,?)",
                   (s, r, o, 1 if v.get("novel") else 0, agent,
-                   json.dumps(list(citations)), json.dumps(v.get("support", []))))
+                   json.dumps(list(citations)), json.dumps(v.get("support", [])),
+                   json.dumps(v.get("quotes", {}))))
         c.commit()
     finally:
         c.close()
@@ -284,12 +339,13 @@ def submit_claim(agent: str, claim: dict, citations: list) -> dict:
 def claims(novel_only: bool = False) -> list[dict]:
     c = _conn()
     try:
-        q = ("SELECT id, subject, relation, object, novel, agent, citations, support "
-             "FROM claims" + (" WHERE novel=1" if novel_only else "") + " ORDER BY id")
+        q = ("SELECT id, subject, relation, object, novel, agent, citations, support, "
+             "quotes FROM claims" + (" WHERE novel=1" if novel_only else "") + " ORDER BY id")
         return [{"id": i, "claim": f"{s} {r} {o}", "subject": s, "relation": r,
                  "object": o, "novel": bool(n), "agent": a,
-                 "citations": json.loads(ci), "support": json.loads(su)}
-                for i, s, r, o, n, a, ci, su in c.execute(q)]
+                 "citations": json.loads(ci), "support": json.loads(su),
+                 "quotes": json.loads(qu or "{}")}
+                for i, s, r, o, n, a, ci, su, qu in c.execute(q)]
     finally:
         c.close()
 
@@ -459,6 +515,7 @@ def world() -> dict:
     return {"goal": goal()["text"], "target": goal()["target"],
             "claims_verified": len(claims()), "claims_novel": len(claims(novel_only=True)),
             "reproductions": _rep_count(), "papers": len(corpus()),
+            "evidence_records": len(L.store_ids()),
             "candidates": sum(1 for c in candidates() if c["eligible"]),
             "dossiers_pending": len(dossiers("pending")),
             "criteria_met": f"{met}/{len(crit)}",
@@ -514,7 +571,8 @@ def park_dossier(agent: str, compound: str) -> dict:
         "admet_violations": cand["admet"],
         "evidence_chain": [{"claim": c["claim"], "novel": c["novel"],
                             "citations": c["citations"], "support": c["support"],
-                            "by": c["agent"]} for c in chain],
+                            "quotes": c.get("quotes", {}), "by": c["agent"]}
+                           for c in chain],
         "limitations": [
             "every score is predicted in silico; nothing here was measured",
             "no wet-lab validation, no cell assay, no animal or human data",

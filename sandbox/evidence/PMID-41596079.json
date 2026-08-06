@@ -1,0 +1,16 @@
+{
+  "abstract": "LDL can be oxidised in the lysosomes of macrophages. Cysteamine, a thiol antioxidant that accumulates in lysosomes, inhibits the oxidation of LDL by iron at lysosomal pH (pH 4.5) and protects against atherosclerosis in mice. We have investigated the effects of cysteamine and its related thiol cysteine and their disulfides on LDL oxidation by iron or copper at both pH 4.5 and 7.4. The oxidation of LDL by ferrous iron (5 \u00b5M) at pH 4.5 was delayed 12.9-fold by 100 \u00b5M cysteamine and 5.6-fold by 100 \u00b5M cysteine. Cystamine and cystine (the disulfide oxidation products of cyteamine and cysteine, respectively) did not inhibit LDL oxidation by ferrous iron at pH 4.5. LDL oxidation by 5 \u00b5M copper at pH 4.5 was delayed about 2-fold by 100 \u00b5M of the thiols cysteamine and cysteine, but there was little effect of the disulfides cystamine and cystine. Cysteamine and cystine did not inhibit the oxidation of LDL by ferrous iron at pH 7.4 in a MOPS buffer and even accelerated LDL oxidation later in the incubation. Cysteine initially inhibited the oxidation of LDL by ferrous iron at pH 7.4, but increased it later. LDL oxidation by copper at pH 7.4 was delayed 7.8-fold by 100 \u00b5M cysteamine. Cysteine delayed LDL oxidation by copper at pH 7.4 to a similar extent as cysteamine but, unlike cysteamine, continued to decrease the rate of oxidation even after the period of total inhibition had ended. Cystamine had no effect on LDL oxidation by copper at pH 7.4, but cystine partially inhibited LDL oxidation. The effects of thiols and disulfides on LDL oxidation, therefore, depend not only on the metal ion catalysing the oxidation but also on the pH of the environment.",
+  "authors": "Parkes EJ, Cruz AM, Kaur A, Clark GR, Pulford TE, Ness C, Ahmad F, Wen Y, Leake DS.",
+  "doi": "10.3390/antiox15010020",
+  "id": "PMID:41596079",
+  "journal": "Antioxidants (Basel, Switzerland)",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC12837393",
+  "pmid": "41596079",
+  "retrieved_at": "2026-08-06T06:09:10Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/41596079",
+  "title": "Inhibition of Low-Density Lipoprotein Oxidation by Cysteamine, Cystamine, Cysteine and Cystine at Lysosomal pH and pH 7.4.",
+  "year": "2025"
+}

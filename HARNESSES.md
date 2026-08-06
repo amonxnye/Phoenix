@@ -19,7 +19,7 @@ That is the whole selection rule.
 | `main` | The settlement (AoE economy) | game state | advancing the Age | **running live** |
 | `main` | Software (toy) | the test suite | (none — sandbox) | **shipped** (`workspace.py`, `worker.py`, `/work`) |
 | `harness/builder` | Software at real scale | the repo's CI | **the pull request / merge** | design |
-| `harness/research` | Science & discovery | computational assays, benchmark reproduction, citation checks | anything physical or public (reagents, protocols, publishing, IP) | **shipped** (steps 1–2: `research_world.py`, `researcher.py`, `/verify_research`) |
+| `harness/research` | Science & discovery, biology & healthcare | computational assays, benchmark reproduction, and **real citations** — Europe PMC evidence, quoted verbatim and checked | anything physical or public (reagents, protocols, publishing, IP) | **shipped** (steps 1–2 + the real-literature oracle: `research_world.py`, `researcher.py`, `literature.py`) |
 | `harness/security` | Defensive hardening | a PoC that reproduces in a sandboxed replica | any system outside the sandbox; disclosure; prod deploys | design |
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |

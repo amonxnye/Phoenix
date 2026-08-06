@@ -1,0 +1,16 @@
+{
+  "abstract": "Objective To investigate the effects of glutamate on thyroid cancer (TC) cell lines and TC-anlotinib-resistant cell lines and to explore the potential molecular mechanism of glutamate and LPAR1 in promoting anlotinib resistance in TC. Methods Glutamate was used to treat TC cell lines and TC-anlotinib-resistant cell lines, and changes in cell function and effects on the expression of LPAR1 and MAPK pathway-related proteins were assessed. In addition, overexpressed-LPAR1. (OE-LPAR1) cell lines were constructed, and OE-LPAR1 and glutamate were combined with TC cell lines and TC-anlotinib-resistant cell lines to explore the interaction between glutamate and LPAR1. Finally, a xenograft tumor model was established in nude mice, and the protein expression of key nodes was detected for further verification. Results Glutamate promoted the migration, invasion and proliferation of TC cell lines and TC-anlotinib-resistant cell lines, inhibited the expression of LPAR1, and promoted the expression of MAPK pathway-related proteins, whereas OE-LPAR1 had the opposite effect. Furthermore, glutamate promoted the expression of Ki67, inhibited apoptosis, significantly inhibited the expression of LPAR1, and promoted the expression of MAPK pathway-related proteins in a nude mouse xenograft tumor model, whereas OE-LPAR1 significantly inhibited the expression of Ki67 and promoted apoptosis. Conclusion Our study revealed that glutamate promotes the progression of malignant biological behavior in TC cell lines and TC-anlotinib-resistant cell lines. Additionally, glutamate may activate the MAPK pathway by inhibiting the expression of LPAR1, thereby promoting resistance to anlotinib in TC.",
+  "authors": "Liu B, Peng Y, Su Y, Diao C, Cha L, Cheng R.",
+  "doi": "10.1007/s12672-025-02853-0",
+  "id": "PMID:40512336",
+  "journal": "Discover oncology",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC12165934",
+  "pmid": "40512336",
+  "retrieved_at": "2026-08-06T06:09:08Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/40512336",
+  "title": "Glutamate activates the MAPK pathway by inhibiting LPAR1 expression and promotes anlotinib resistance in thyroid cancer.",
+  "year": "2025"
+}

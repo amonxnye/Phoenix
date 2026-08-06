@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 import anchor
 import brain
 import economy
+import literature as L
 import research_world as R
 
 CREDIT_PER_NOVEL_CLAIM = 150     # a verified advance nobody had stated
@@ -49,21 +50,28 @@ def research_cycle(agent: str) -> dict:
     prompt = (
         f"You are {agent}, a research agent in a governed organization.\n"
         f"GOAL: {R.goal()['text']} (target: {R.goal()['target']})\n\n"
-        f"THE LITERATURE (the only evidence that exists; cite by id):\n"
+        f"THE TOY CORPUS (structured findings; cite by id):\n"
         f"{json.dumps(R.corpus_index(), indent=1)}\n\n"
-        f"ALREADY ESTABLISHED (claiming one of these again earns nothing):\n"
-        + ("\n".join(f"- {c['claim']}" for c in known) or "- nothing yet") + "\n\n"
-        f"Propose ONE new claim that the cited papers support but none of them states.\n"
-        f"A claim is a triple. Direct relations ({', '.join(R.DIRECT)}) need a paper\n"
-        f"that reports them first-hand. A claim you infer by composing TWO findings\n"
-        f"through a shared intermediate is an INDIRECT net effect: use 'upregulates'\n"
-        f"or 'downregulates', and get the direction right — inhibiting an activator\n"
-        f"downregulates what it activated.\n\n"
-        f'Reply with ONLY JSON: {{"subject": "...", "relation": "...", '
-        f'"object": "...", "citations": ["P-00x", "P-00y"], "why": "one sentence"}}'
+        f"THE REAL LITERATURE (cite by PMID, and you MUST quote the sentence):\n"
+        f"{json.dumps(_evidence_brief(), indent=1)}\n\n"
+        f"ALREADY ESTABLISHED (claiming one of these again earns nothing, but you may\n"
+        f"cite one as 'claim:<id>' to build an inference on it):\n"
+        + ("\n".join(f"- claim:{c['id']} {c['claim']}" for c in known) or "- nothing yet")
+        + "\n\n"
+        f"Propose ONE new claim. A claim is a triple. Direct relations "
+        f"({', '.join(R.DIRECT)}) need evidence that reports them first-hand. A claim\n"
+        f"you infer by composing TWO steps through a shared intermediate is an INDIRECT\n"
+        f"net effect: use 'upregulates' or 'downregulates', and get the direction right\n"
+        f"— inhibiting an activator downregulates what it activated.\n\n"
+        f"For every PMID you cite, quote the EXACT sentence from that abstract that says\n"
+        f"it. The quote is checked verbatim against the stored text: a sentence that is\n"
+        f"not in the paper is caught, and the claim is rejected as fabricated.\n\n"
+        f'Reply with ONLY JSON: {{"subject": "...", "relation": "...", "object": "...", '
+        f'"citations": ["PMID:123", "claim:4"], "quotes": {{"PMID:123": "the exact '
+        f'sentence"}}, "why": "one sentence"}}'
     )
     try:
-        raw = brain._chat([{"role": "user", "content": prompt}], 500, 0.4, "researcher-hypothesis")
+        raw = brain._chat([{"role": "user", "content": prompt}], 800, 0.4, "researcher-hypothesis")
     except Exception as e:
         anchor.record(-1, "error", f"{agent} could not form a hypothesis: {str(e)[:120]}")
         return {"agent": agent, "did": "error", "reason": str(e)[:200]}
@@ -71,7 +79,19 @@ def research_cycle(agent: str) -> dict:
     if not h:
         anchor.record(-1, "waste", f"{agent} returned an unreadable hypothesis")
         return {"agent": agent, "did": "malformed", "raw": raw[:200]}
-    return submit_and_score(agent, h, h.get("citations", []), h.get("why", ""))
+    return submit_and_score(agent, h, h.get("citations", []), h.get("why", ""),
+                            h.get("quotes", {}))
+
+
+def _evidence_brief(limit: int = 12) -> list[dict]:
+    """What the agent may read of the real literature: the stored text, nothing else.
+    It cannot fetch — retrieval is the human's ingest step, never an agent's cycle."""
+    out = []
+    for cid in L.store_ids()[:limit]:
+        rec = L.store_get(cid)
+        out.append({"id": cid, "year": rec["year"], "title": rec["title"],
+                    "abstract": rec["abstract"] or "(not open access — no text to quote)"})
+    return out
 
 
 def reproduction_cycle(agent: str) -> dict:
@@ -129,10 +149,11 @@ def reproduce_and_score(agent: str, compound: str, target: str, value) -> dict:
             "contribution": CREDIT_PER_REPRODUCTION, "world": R.world()}
 
 
-def submit_and_score(agent: str, claim: dict, citations: list, why: str = "") -> dict:
+def submit_and_score(agent: str, claim: dict, citations: list, why: str = "",
+                     quotes: dict | None = None) -> dict:
     """Submit one hypothesis and take whatever the oracle says. Split out so the whole
     machinery is exercisable without a model — verify injects known claims."""
-    v = R.submit_claim(agent, claim, citations)
+    v = R.submit_claim(agent, claim, citations, quotes)
     text = v.get("claim", "")
     if not v["ok"]:
         anchor.record(-1, "waste", f"{agent} hypothesis rejected ({v['verdict']}): "

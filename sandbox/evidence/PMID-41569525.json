@@ -1,0 +1,16 @@
+{
+  "abstract": "The epidermal growth factor receptor (EGFR) is a receptor tyrosine kinase that has garnered extensive interest since its discovery as an oncogene product in the 1980s. We now understand that the binding of soluble growth factors to EGFR activates it by facilitating receptor-mediated EGFR dimerization. However, how the extracellular ligand-binding and intracellular tyrosine kinase domains communicate across the bilayer remains unclear. This lack of understanding likely originates from a 'divide and conquer' approach that has provided a detailed understanding of the respective domains in isolation but only limited knowledge of how they are co-ordinated during signaling. Attempts to study full-length EGFR in detergents or membrane environments that lack possible key lipid cofactors leave a critical component of intact receptor signaling understudied. Indeed, multiple classes of lipids, such as gangliosides and PtdIns(4,5)P2, have long been known to influence EGFR signaling in cells, and a lack of their inclusion in in vitro studies has hindered mechanistic understanding of the intact receptor. This review highlights recent studies of how lipids regulate EGFR activity, with special attention paid to potentially actionable co-dependent lipid metabolism in glioblastoma multiforme and promising new methods for studying membrane protein-bilayer interactions.",
+  "authors": "Hutchison JM, Lemmon MA.",
+  "doi": "10.1042/bst20253090",
+  "id": "PMID:41569525",
+  "journal": "Biochemical Society transactions",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC12905494",
+  "pmid": "41569525",
+  "retrieved_at": "2026-08-06T06:10:15Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/41569525",
+  "title": "Lipids regulate epidermal growth factor receptor activation by its ligands.",
+  "year": "2026"
+}

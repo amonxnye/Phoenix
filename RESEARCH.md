@@ -1,7 +1,9 @@
 # Phoenix Research — a governed organization that does science
 
 **Status:** build steps 1–2 **shipped** (`gov/research_world.py`, `gov/researcher.py`,
-40 acceptance checks in `gov/verify_research.py`, wired into CI); steps 3–5 design.
+40 acceptance checks in `gov/verify_research.py`), and the oracle is now pointed at the
+**real biomedical literature** (`gov/literature.py`, Europe PMC + UniProt, 36 further
+checks in `gov/verify_literature.py`) — all wired into CI; steps 3–5 design.
 The same machinery that governs a settlement and ships code, pointed at **scientific
 discovery** — hypothesis generation, literature synthesis, computational validation,
 and experiment *design*. The domain is illustrated with drug/therapeutic discovery,
@@ -101,6 +103,9 @@ lineage engine (provenance *is* the scientific method), careers, and the console
   never auto-published, never auto-ordered.
 - Oracle adapters per field (docking, ADMET, materials sim, ML-benchmark) — the toy
   adapter is in `sandbox/corpus/assays.json`; the seam is `research_world.assay`.
+- **[built]** `literature.py` — the real biomedical literature as evidence: Europe PMC
+  retrieval, UniProt aliases, verbatim quote checking and sentence-level support
+  (§8 below).
 
 ### How the oracle actually rules (the part worth stealing)
 
@@ -130,18 +135,99 @@ not a candidate at all. Affinity alone was never the finding.
    lab, no model even — a citation must resolve and support the claim).
 2. **[shipped]** Researcher agent v1 + benchmark-reproduction gate; contribution =
    verified claims; the dossier parks at the human gate.
+2b. **[shipped]** The same oracle on the **real biomedical literature** — Europe PMC
+   retrieval, quoted evidence checked verbatim, UniProt aliases (§8).
 3. Console: a "Lab bench" page — goals, hypotheses, evidence, the dossier gate.
 4. A real computational assay adapter (start with open docking / public datasets).
 5. The eval race: which frontier model runs the best governed research org.
 
 Each ships alone and is testable, exactly like the settlement and the workspace.
 
-## 8. Running it
+## 8. The real literature (biology and healthcare)
+
+The toy corpus proved the machinery. `gov/literature.py` points the same oracle at
+**Europe PMC**, and it exists to kill the one failure mode that makes language models
+dangerous in medicine: a fluent claim attached to a citation that does not exist, does
+not mention the entities, or says the opposite.
+
+Three things are separated on purpose:
+
+**Retrieval is not the oracle.** Searching and fetching happen in a human-run ingest
+CLI, never in an agent's cycle. Records land in `sandbox/evidence/` with their source
+URL, licence and retrieval date (Article VI.2). A researcher agent reads that store and
+**cannot fetch** — it has no more network than the workspace worker has credentials.
+
+**The oracle is offline and deterministic.** Scoring reads only stored text. The
+acceptance suite runs with `urlopen` replaced by something that raises, and passes: no
+network, no key, no model. Same claim, same verdict, forever.
+
+**A citation must be quoted, and the quote must be real.** The agent's sentence is
+checked verbatim against the stored text — an invented sentence is caught by string
+comparison, not by judgement — and then that same sentence must actually assert the
+claim. Two independent checks; both must pass.
+
+### What the text checker accepts, and what it refuses
+
+Five grammatical shapes are recognised, because they are the ones biology writes in:
+
+| shape | example |
+|---|---|
+| active | *metformin delays progression by activating the AMPK/Drp1 pathway* |
+| passive | *EGFR was strongly inhibited by osimertinib* |
+| agent-noun | *the EGFR inhibitor osimertinib* |
+| event-noun | *inhibition of EGFR by osimertinib* |
+| compound-agent | *AMPK-mediated suppression of the NLRP3 inflammasome* |
+
+And the refusals matter more than the acceptances:
+
+- **negation** — *"cystamine … did not inhibit LDL oxidation"* contradicts the claim.
+- **opposite direction** — a paper reporting inhibition kills a claim of activation.
+- **oblique subject** — *"SMK-002 synergized **with** osimertinib and downregulated
+  EGFR"* does not assert that osimertinib downregulates EGFR, however true that is
+  elsewhere. But *"treatment **with** osimertinib inhibited EGFR"* does: a preposition
+  hanging off a noun is agentive, off a verb it is not.
+- **clause boundaries** — *"cystamine had no effect …, **but** cystine inhibited …"*
+  supports nothing about cystamine.
+- **not mentioned** — a paper that never names the entity cannot support a claim about it.
+- **paywalled** — no stored text means `no-verifiable-text`, an honest refusal rather
+  than a guess.
+
+Aliases come from UniProt, so a paper writing *ERBB1* supports a claim about *EGFR* —
+and a short name never matches inside a longer one (*EGFR* is not *ERBB2*).
+
+The checker is deliberately **conservative**. A true claim phrased in a shape it does
+not recognise is rejected, and the agent loses a cycle. A false claim that slips
+through costs the entire point of the system. Those errors are not symmetric, so the
+bias is not either.
+
+### Synthesis, grounded end to end
+
+Novelty over real literature is inference across verified claims, each of which is
+itself pinned to a quoted sentence in a real paper:
+
+```
+claim:1  metformin activates AMPK    [PMID:41884158, quoted]
+claim:2  AMPK inhibits NLRP3         [PMID:42260217, quoted]
+⇒ novel: metformin downregulates NLRP3
+   and the SAME two steps are refused for "metformin inhibits NLRP3" — two hops give a
+   net effect, not a direct interaction
+```
+
+Every verified claim keeps its PMIDs and the exact sentence it stands on, so the
+dossier a human reviews at the gate walks all the way back to the source.
+
+## 9. Running it
 
 ```bash
 python3 gov/verify_research.py    # 40 checks — the whole harness, no model needed
+python3 gov/verify_literature.py  # 36 checks — the real-literature oracle, offline
 python3 gov/research_world.py     # the world state: criteria, candidates, progress
+python3 gov/literature.py --list  # the evidence store: what has been retrieved
 python3 gov/researcher.py --agent res-01 --cycles 3    # needs a configured brain
+
+# widening what the organization can reason about (a human's step, never an agent's)
+python3 gov/literature.py --ingest "AMPK inhibits NLRP3" --limit 3
+python3 gov/literature.py --aliases EGFR
 ```
 
 The verification run redirects the research database to a temp file, so it never
