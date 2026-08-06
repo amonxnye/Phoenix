@@ -7,5 +7,9 @@
 #
 # The Python builder installs git for the build phase and drops it from the runtime
 # image, which is why this file exists. "..." keeps the defaults and appends.
+# Kept alongside the Dockerfile: Railway prefers a Dockerfile when it detects one,
+# but a service pinned to Nixpacks in its settings reads this instead. Both package
+# sets are covered because which one lands in the runtime image varies by version.
 [phases.setup]
 nixPkgs = ["...", "git"]
+aptPkgs = ["...", "git"]

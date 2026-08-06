@@ -563,6 +563,15 @@ PORT = saved_port
 op_srv.shutdown()
 
 check("health answers without a session", http("GET", "/api/health")[1].get("ok") is True)
+# a liveness probe is not a visitor: monitors and crawlers hit it constantly, and a
+# session minted per ping is a row per ping
+before_sessions = guests.active()
+for _ in range(5):
+    http("GET", "/api/health")
+check("and health does not mint a session per ping",
+      guests.active() == before_sessions,
+      f"{guests.active()} active, was {before_sessions}")
+check("but the page still issues one", jar(http("GET", "/api/state")[2]) != "")
 check("an unknown route is a 404, not a stack trace",
       http("GET", "/api/nope")[0] == 404)
 

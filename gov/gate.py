@@ -417,13 +417,19 @@ def make_handler(service: Service):
             pass
 
         # ── session ──────────────────────────────────────────────────────────
-        def _session(self) -> tuple[str, str]:
+        def _session(self, issue: bool = True) -> tuple[str, str]:
             """This request's session, issuing one if it has none. Returns the id and
-            the Set-Cookie header to echo (empty when the guest already had one)."""
+            the Set-Cookie header to echo (empty when the guest already had one).
+
+            `issue=False` for routes that do not need identity. A health check has no
+            business minting a session, and a public URL collects a great many of
+            them — monitors, crawlers, and anything that pings the endpoint."""
             sid = guests.from_cookie_header(self.headers.get("Cookie", ""))
             if sid:
                 guests.touch(sid)
                 return sid, ""
+            if not issue:
+                return "", ""
             sid = guests.issue()
             secure = (self.headers.get("X-Forwarded-Proto", "") == "https")
             return sid, guests.cookie_header(sid, secure=secure)
@@ -477,8 +483,13 @@ def make_handler(service: Service):
 
         # ── routes ───────────────────────────────────────────────────────────
         def do_GET(self):
-            sid, cookie = self._session()
             path = self.path.split("?")[0]
+            if path == "/api/health":
+                # answered without minting anything: it is a liveness probe, not a visit
+                self._session(issue=False)
+                return self._send(200, json.dumps({"ok": True,
+                                                   "guests": guests.active()}))
+            sid, cookie = self._session()
             if path in ("/", "/index.html"):
                 try:
                     with open(PAGE_FILE, "rb") as fh:
@@ -488,9 +499,6 @@ def make_handler(service: Service):
                 return self._send(200, page, "text/html; charset=utf-8", cookie)
             if path == "/api/state":
                 return self._send(200, json.dumps(service.snapshot(sid)),
-                                  "application/json", cookie)
-            if path == "/api/health":
-                return self._send(200, json.dumps({"ok": True, "guests": guests.active()}),
                                   "application/json", cookie)
             self._err(404, "not found")
 
