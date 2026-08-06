@@ -115,7 +115,29 @@ its own replication. So the campaign refused to declare replication, and said ex
 what it needed instead. That refusal is the feature. A system that would rather be
 useful than right would have counted a title.
 
-## 5. Running one
+## 5. The console
+
+```bash
+python3 gov/lab_console.py     # → http://127.0.0.1:8788
+```
+
+`phoenix-command.html` is the page it serves, and it is built around the one thing
+that actually needs a person: **Awaiting your decision** sits at the top, because a
+parked critique or dossier is the only place the system stops. Below it, every paper
+under replication with its verdict; open one and you get the paper's claims *in its own
+words* with the sentence each was quoted from, its arithmetic reported against
+recomputed, the independent evidence graded and labelled with the claim it answers and
+the equivalence that matched it, and what is still open.
+
+Two things you can do besides deciding: **run a campaign** and watch the ladder climb
+round by round, and **check one claim against one paper** — paste the sentence, get the
+verdict. That last one is the oracle with the lid off, and it is the fastest way to see
+what this system will and will not accept as evidence.
+
+Approving in the console *is* the human approval Article IV waits for. With
+`CONSOLE_TOKEN` set, reading stays free and every action needs the token.
+
+## 6. Running one headless
 
 ```bash
 python3 gov/campaign.py --spec sandbox/campaigns/PMID-41964971.json --fresh
@@ -128,7 +150,7 @@ sentence it comes from), which reported statistics are recomputable from its own
 which searches may be tried, and which equivalences the campaign is *allowed* to declare.
 The machine checks. It does not invent claims, and it does not invent equivalences.
 
-## 6. Pointing it at something else
+## 7. Pointing it at something else
 
 The engine is domain-agnostic; a campaign type needs three things:
 

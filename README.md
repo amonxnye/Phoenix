@@ -140,9 +140,13 @@ python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, work
 python3 gov/verify_research.py   # 40 — citation oracle, reproduction gate, dossier gate
 python3 gov/verify_literature.py # 36 — real biomedical evidence, offline and quoted
 python3 gov/verify_replication.py# 37 — recomputed statistics, the campaign ladder, the gate
-python3 gov/console_smoke.py     # headless console API smoke
+python3 gov/lab_console_smoke.py # 20 — the Lab console: gate, claim check, auth
+python3 gov/console_smoke.py     # headless settlement console API smoke
 
-# the live console
+# the console — papers under replication, the evidence, and the human gate
+python3 gov/lab_console.py            # → http://127.0.0.1:8788
+
+# the settlement console (the original testbed)
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
 
 # a whole research session, headless — Vision, evidence, synthesis, the gate
@@ -241,6 +245,7 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
 | `literature.py` | the real biomedical literature as evidence — Europe PMC retrieval, verbatim quote checking, sentence-level support |
 | `lab_run.py` | a headless research session — what `director.py` is for the settlement |
+| `lab_console.py` | the operator's surface — the gate, papers under replication, the claim checker |
 | `campaign.py` | the campaign engine — works a problem until settled, escalated or exhausted; the creativity ladder |
 | `replication.py` | rebuild a paper's conclusion without taking its word for it — fidelity, arithmetic, independence |
 | `statcheck.py` | the recomputation oracle — percentages, odds ratios, CIs, p-values, GRIM, SD bounds, dependency-free |

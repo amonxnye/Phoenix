@@ -1,1 +1,1 @@
-web: python gov/sim_console.py --seed
+web: python gov/lab_console.py

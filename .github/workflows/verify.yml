@@ -26,3 +26,5 @@ jobs:
         run: python3 gov/verify_literature.py
       - name: Run the replication / campaign acceptance checks
         run: python3 gov/verify_replication.py
+      - name: Smoke-test the Lab console (the user-facing surface)
+        run: python3 gov/lab_console_smoke.py
