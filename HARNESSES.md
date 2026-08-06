@@ -51,6 +51,18 @@ anything where the gate would have to be "trust the model". The honest test is s
 sandbox that cannot edit them; a human approval can't be gamed at all. That is why the
 gate is the foundation and not a feature.
 
+## Keeping a fleet on a problem
+
+Every harness above answers "what is the oracle, what is the gate". The *campaign
+engine* ([`CAMPAIGN.md`](CAMPAIGN.md)) answers the next question: what does an
+organization do when the cheap checks have run out and the problem is still open? It
+climbs a ladder — recompute, search what is held, retrieve more, declare an equivalence,
+weaken the claim, escalate — dropping back to the cheap rungs whenever a round produces
+something. Creativity is reached for only when being ordinary stops working, and the
+judgement rungs are fenced so it cannot redefine the problem until it has "solved" it.
+The first campaign type is **replication**: rebuild a paper's conclusion without taking
+its word for it.
+
 ## The shared build order (every harness follows it)
 
 1. **A toy world with a real oracle** — no model required to prove the machinery.

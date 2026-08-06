@@ -133,12 +133,13 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all six on every push)
+# the acceptance suites (CI runs all seven on every push)
 python3 gov/verify.py            # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
 python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
 python3 gov/verify_research.py   # 40 — citation oracle, reproduction gate, dossier gate
 python3 gov/verify_literature.py # 36 — real biomedical evidence, offline and quoted
+python3 gov/verify_replication.py# 37 — recomputed statistics, the campaign ladder, the gate
 python3 gov/console_smoke.py     # headless console API smoke
 
 # the live console
@@ -146,6 +147,9 @@ python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
 
 # a whole research session, headless — Vision, evidence, synthesis, the gate
 python3 gov/lab_run.py --fresh
+
+# work a problem until it has an answer: replicate a real paper
+python3 gov/campaign.py --spec sandbox/campaigns/PMID-41964971.json --fresh
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to
@@ -237,6 +241,9 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
 | `literature.py` | the real biomedical literature as evidence — Europe PMC retrieval, verbatim quote checking, sentence-level support |
 | `lab_run.py` | a headless research session — what `director.py` is for the settlement |
+| `campaign.py` | the campaign engine — works a problem until settled, escalated or exhausted; the creativity ladder |
+| `replication.py` | rebuild a paper's conclusion without taking its word for it — fidelity, arithmetic, independence |
+| `statcheck.py` | the recomputation oracle — percentages, odds ratios, CIs, p-values, GRIM, SD bounds, dependency-free |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -264,6 +271,9 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Oracle adapter #3 — the **real biomedical literature** (`literature.py`): Europe
       PMC evidence, quotes checked verbatim against the stored paper, negation and
       opposite-direction citations refused by name — offline and deterministic
+- [x] The **campaign engine** — a fleet kept on a problem until it is settled, escalated
+      or out of budget, with a creativity ladder that cannot destroy verified work
+      ([`CAMPAIGN.md`](CAMPAIGN.md))
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
@@ -291,7 +301,8 @@ not try to make agents smarter. It tries to make an organization of them account
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
 [`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`RESEARCH.md`](RESEARCH.md) ·
 [`LINEAGE.md`](LINEAGE.md) ·
-[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
+[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) ·
+[`CAMPAIGN.md`](CAMPAIGN.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 
 ## License

@@ -1,0 +1,16 @@
+{
+  "abstract": "Background Two recent studies demonstrated that bariatric surgery induced remission of type 2 diabetes very soon after surgery and far too early to be attributed to weight loss. In this study, we sought to explore the mechanism/s of this phenomenon by testing the effects of proteins from the duodenum-jejunum conditioned-medium (CM) of db/db or Swiss mice on glucose uptake in vivo in Swiss mice and in vitro in both Swiss mice soleus and L6 cells. We studied the effect of sera and CM proteins from insulin resistant (IR) and insulin-sensitive subjects on insulin signaling in human myoblasts. Methodology/principal findings db/db proteins induced massive IR either in vivo or in vitro, while Swiss proteins did not. In L6 cells, only db/db proteins produced a noticeable increase in basal (473)Ser-Akt phosphorylation, lack of GSK3\u03b2 inhibition and a reduced basal (389)Thr-p70-S6K1 phosphorylation. Human IR serum markedly increased basal (473)Ser-Akt phosphorylation in a dose-dependent manner. Human CM IR proteins increased by about twofold both basal and insulin-stimulated (473)Ser-Akt. Basal (9)Ser-GSK3\u03b2 phosphorylation was increased by IR subjects serum with a smaller potentiating effect of insulin. Conclusions These findings show that jejunal proteins either from db/db mice or from insulin resistant subjects impair muscle insulin signaling, thus inducing insulin resistance.",
+  "authors": "Salinari S, Debard C, Bertuzzi A, Durand C, Zimmet P, Vidal H, Mingrone G.",
+  "doi": "10.1371/journal.pone.0056258",
+  "id": "PMID:23437106",
+  "journal": "PloS one",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC3577828",
+  "pmid": "23437106",
+  "retrieved_at": "2026-08-06T07:44:24Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/23437106",
+  "title": "Jejunal proteins secreted by db/db mice or insulin-resistant humans impair the insulin signaling and determine insulin resistance.",
+  "year": "2013"
+}

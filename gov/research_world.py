@@ -175,7 +175,10 @@ def compounds() -> list[str]:
 # two hops of evidence cannot establish that A binds C. Claiming otherwise is the
 # commonest way a plausible-sounding hypothesis is actually wrong, so the oracle
 # checks the direction and rejects the sign error by name.
-SIGN = {"inhibits": -1, "downregulates": -1, "activates": +1, "upregulates": +1}
+# 'induces' and 'reduces' are the outcome-level relations clinical work is written in
+# ("the diet induced remission"); they carry a sign and compose like the rest.
+SIGN = {"inhibits": -1, "downregulates": -1, "reduces": -1,
+        "activates": +1, "upregulates": +1, "induces": +1}
 DIRECT = ("inhibits", "activates", "binds")        # require first-hand evidence
 INDIRECT = {+1: "upregulates", -1: "downregulates"}
 RELATIONS = tuple(sorted(set(SIGN) | set(DIRECT)))

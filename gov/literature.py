@@ -219,12 +219,15 @@ VERBS = {
                 r"antagoni[sz](?:e|es|ed|ing)|abrogat(?:e|es|ed|ing)|"
                 r"attenuat(?:e|es|ed|ing)|down-?regulat(?:e|es|ed|ing)|"
                 r"reduc(?:e|es|ed|ing)|decreas(?:e|es|ed|ing)|impair(?:s|ed|ing)?|"
-                r"repress(?:es|ed|ing)?|deplet(?:e|es|ed|ing)",
+                r"repress(?:es|ed|ing)?|deplet(?:e|es|ed|ing)|prevent(?:s|ed|ing)?",
+    # 'achieved remission' is how clinical outcomes are written; without it the checker
+    # can read molecular biology but not a trial result, which is half of healthcare
     "activates": r"activat(?:e|es|ed|ing)|stimulat(?:e|es|ed|ing)|induc(?:e|es|ed|ing)|"
                  r"up-?regulat(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|"
                  r"enhanc(?:e|es|ed|ing)|promot(?:e|es|ed|ing)|"
                  r"potentiat(?:e|es|ed|ing)|agoni[sz](?:e|es|ed|ing)|"
-                 r"driv(?:e|es|ing)|driven",
+                 r"driv(?:e|es|ing)|driven|achiev(?:e|es|ed|ing)|attain(?:s|ed|ing)?|"
+                 r"led\s+to|leads?\s+to|result(?:s|ed)\s+in",
     "binds": r"bind(?:s|ing)?|bound|interact(?:s|ed|ing)?|engag(?:e|es|ed|ing)|"
              r"associat(?:e|es|ed|ing)",
 }
@@ -233,13 +236,19 @@ NOUN_AGENT = {                                     # "the EGFR inhibitor osimert
     "activates": r"activators?|agonists?|inducers?|stimulators?",
     "binds": r"ligands?|binders?|binding\s+partners?",
 }
+PARTICIPLE = {                                     # "nutrition-induced remission"
+    "inhibits": r"suppressed|inhibited|blocked|attenuated|reduced|impaired|depleted",
+    "activates": r"induced|driven|triggered|stimulated|evoked|promoted|activated",
+    "binds": r"bound|engaged",
+}
 NOUN_EVENT = {                                     # "inhibition of EGFR by osimertinib"
     "inhibits": r"inhibition|blockade|suppression|antagonism|down-?regulation",
     "activates": r"activation|stimulation|induction|up-?regulation",
     "binds": r"binding|interaction|engagement",
 }
-FAMILY = {"inhibits": "inhibits", "downregulates": "inhibits",
-          "activates": "activates", "upregulates": "activates", "binds": "binds"}
+FAMILY = {"inhibits": "inhibits", "downregulates": "inhibits", "reduces": "inhibits",
+          "activates": "activates", "upregulates": "activates", "induces": "activates",
+          "binds": "binds"}
 OPPOSITE = {"inhibits": "activates", "activates": "inhibits"}
 
 NEGATION = re.compile(
@@ -248,6 +257,17 @@ NEGATION = re.compile(
     r"was\s+not|were\s+not|is\s+not|are\s+not)\b", re.I)
 
 _ABBREV = re.compile(r"\b(?:et al|e\.g|i\.e|vs|Fig|approx|ca|cf|Dr|no)\.$", re.I)
+
+# A paper raising a possibility is not a paper reporting a result. 'a future study
+# looking at the feasibility of a low-energy diet to induce remission' has exactly the
+# grammar of an assertion and none of the content, and counting it as corroboration is
+# how a replication talks itself into an answer.
+_HEDGE = re.compile(
+    r"\b(?:may|might|could|can|would|should|potential(?:ly)?|possibl[ye]|"
+    r"appears?\s+to|seem(?:s|ed)?\s+to|suggest(?:s|ed|ing)?|hypothesi[sz]\w*|"
+    r"aim(?:s|ed)?\s+to|seek(?:s|ing)?\s+to|feasibility|whether|promis\w+|"
+    r"to\s+(?:determine|assess|evaluate|investigate|examine|test|explore)|"
+    r"future\s+stud\w+|warrant\w*|remains?\s+unclear|further\s+research)\b", re.I)
 
 # 'X synergized WITH osimertinib ... downregulated EGFR' does not assert that
 # osimertinib downregulates EGFR — after a preposition the entity is oblique, not the
@@ -288,8 +308,19 @@ def _ent_pattern(entity: str) -> str:
 
 
 def mentions(entity: str, text: str) -> bool:
-    return re.search(r"(?<![\w-])" + _ent_pattern(entity) + r"(?![\w-])",
-                     text or "", re.I) is not None
+    return matched_alias(entity, text) is not None
+
+
+def matched_alias(entity: str, text: str) -> str | None:
+    """WHICH name for the thing this text actually used. A corroboration that rests on
+    treating 'very low calorie diets' as 'calorie restriction' must say so — the
+    equivalence is a judgement, and a judgement has to be visible to be challenged."""
+    m = re.search(r"(?<![\w-])" + _ent_pattern(entity) + r"(?![\w-]|-(?:induced|mediated|"
+                  r"driven|triggered|dependent))", text or "", re.I)
+    if m:
+        return m.group(0)
+    m = re.search(r"(?<![\w-])" + _ent_pattern(entity) + r"(?=-)", text or "", re.I)
+    return m.group(0) if m else None
 
 
 def verify_quote(quote: str, rec: dict) -> bool:
@@ -306,7 +337,16 @@ def _negated(sentence: str, upto: int) -> bool:
     return bool(NEGATION.search(window))
 
 
-def _direction_hit(sentence: str, subj: str, obj: str, family: str) -> tuple[bool, bool]:
+def _hedged(sentence: str, upto: int) -> bool:
+    """Is the assertion under a hedge, or is it a purpose rather than a finding? A bare
+    infinitive ('...to induce remission') states an intention; only a tensed verb
+    reports one."""
+    if re.search(r"\bto\s+$", sentence[max(0, upto - 4):upto]):
+        return True
+    return bool(_HEDGE.search(sentence[max(0, upto - 90):upto]))
+
+
+def _direction_hit(sentence: str, subj: str, obj: str, family: str) -> tuple[bool, bool, bool]:
     """Does this sentence assert subject --family--> object? Returns (hit, negated).
 
     Five grammatical shapes are recognised, and no others:
@@ -328,7 +368,9 @@ def _direction_hit(sentence: str, subj: str, obj: str, family: str) -> tuple[boo
                      rf"in\s+contrast|conversely)\b).){{0,{n}}}?")
     patterns = [
         ("active", rf"{b}{S}{e}{gap(120)}{b}(?:{verb}){e}(?!\s+by\b){gap(90)}{b}{O}{e}"),
-        ("passive", rf"{b}{O}{e}{gap(90)}{b}(?:{verb}){e}\s+by\s+{gap(50)}{b}{S}{e}"),
+        # 'remission … can be achieved through targeted nutritional interventions'
+        ("passive", rf"{b}{O}{e}{gap(90)}{b}(?:{verb}){e}\s+(?:by|through|via)\s+"
+                    rf"{gap(50)}{b}{S}{e}"),
         ("agent-noun", rf"{b}{O}{e}[\s-]+(?:{agent}){e}[\s,]+(?:[\w-]+\s+){{0,2}}?{b}{S}{e}"),
         ("agent-of", rf"{b}{S}{e}.{{0,40}}?{b}(?:{agent}){e}\s+of\s+(?:the\s+)?{b}{O}{e}"),
         ("event-noun",
@@ -341,6 +383,10 @@ def _direction_hit(sentence: str, subj: str, obj: str, family: str) -> tuple[boo
         ("compound-agent",
          rf"{b}{S}-(?:mediated|induced|driven|dependent|triggered|evoked)\s+"
          rf"(?:{event})\s+of\s+(?:the\s+)?{b}{O}{e}"),
+        # 'nutrition-induced T2DM remission' — the participle carries the direction, so
+        # only participles of THIS family qualify (neutral '-mediated' does not)
+        ("compound-active",
+         rf"{b}{S}-(?:{PARTICIPLE[family]})\s+(?:the\s+)?{b}{O}{e}"),
     ]
     for kind, pat in patterns:
         for m in re.finditer(pat, sentence, re.I):
@@ -349,8 +395,9 @@ def _direction_hit(sentence: str, subj: str, obj: str, family: str) -> tuple[boo
                 if _OBLIQUE.search(head) and not _AGENTIVE.search(head):
                     continue                       # the entity is oblique, not the actor
             cm = re.search(rf"{b}{cue}{e}", m.group(0), re.I)
-            return True, _negated(sentence, m.start() + (cm.start() if cm else 0))
-    return False, False
+            at = m.start() + (cm.start() if cm else 0)
+            return True, _negated(sentence, at), _hedged(sentence, at)
+    return False, False, False
 
 
 def supports(claim: dict, rec: dict, quote: str = "") -> dict:
@@ -381,7 +428,11 @@ def supports(claim: dict, rec: dict, quote: str = "") -> dict:
         return {"verdict": "not-mentioned",
                 "why": f"{rec['id']} never mentions {', '.join(missing)}"}
 
-    hit, neg = _direction_hit(_norm_ws(quote), s, o, fam)
+    hit, neg, hedge = _direction_hit(_norm_ws(quote), s, o, fam)
+    if hit and not neg and hedge:
+        return {"verdict": "hedged", "quote": _norm_ws(quote),
+                "why": f"{rec['id']} raises it as a possibility or a purpose, and does "
+                       f"not report it: \"{_norm_ws(quote)[:160]}\""}
     if hit and not neg:
         return {"verdict": "supported", "quote": _norm_ws(quote),
                 "why": f"{rec['id']} states it: \"{_norm_ws(quote)[:160]}\""}
@@ -390,14 +441,47 @@ def supports(claim: dict, rec: dict, quote: str = "") -> dict:
                 "why": f"{rec['id']} negates it: \"{_norm_ws(quote)[:160]}\""}
     opp = OPPOSITE.get(fam)
     if opp:
-        ohit, oneg = _direction_hit(_norm_ws(quote), s, o, opp)
-        if ohit and not oneg:
+        ohit, oneg, ohedge = _direction_hit(_norm_ws(quote), s, o, opp)
+        if ohit and not oneg and not ohedge:
             return {"verdict": "contradicted", "quote": _norm_ws(quote),
                     "why": f"{rec['id']} reports the opposite direction: "
                            f"\"{_norm_ws(quote)[:160]}\""}
     return {"verdict": "unsupported", "quote": _norm_ws(quote),
             "why": f"the quoted sentence mentions both, but does not assert "
                    f"'{s} {r} {o}': \"{_norm_ws(quote)[:160]}\""}
+
+
+_SECTION = re.compile(
+    r"\b(Background|Introduction|Aims?|Objectives?|Purpose|Materials and methods|"
+    r"Methods?|Results?|Findings|Conclusions?|Interpretation|Discussion|Summary)\b")
+_SECTION_KIND = {"result": "result", "results": "result", "findings": "result",
+                 "conclusion": "conclusion", "conclusions": "conclusion",
+                 "interpretation": "conclusion", "discussion": "conclusion",
+                 "summary": "conclusion", "method": "methods", "methods": "methods",
+                 "materials and methods": "methods"}
+
+
+def section_of(rec: dict, sentence: str) -> str:
+    """Where in the paper a sentence sits: title | background | methods | result |
+    conclusion | unsectioned.
+
+    This is the difference between evidence and topic. A title says what a study was
+    about; an introduction repeats what other people found — often citing the very work
+    under test. Only a paper's own results and conclusions are its contribution, so a
+    replication that rests on anything else has to say so out loud."""
+    q = _norm_ws(sentence).lower()
+    title = _norm_ws(rec.get("title", "")).lower()
+    if q and q in title:
+        return "title"
+    body = _norm_ws(rec.get("abstract") or "")
+    at = body.lower().find(q)
+    if at < 0:
+        return "unsectioned"
+    heads = [m for m in _SECTION.finditer(body[:at])]
+    if not heads:
+        return "background" if at < len(body) * 0.34 else "unsectioned"
+    kind = heads[-1].group(1).lower()
+    return _SECTION_KIND.get(kind, "background")
 
 
 def find_support(claim: dict, rec: dict) -> str:
@@ -409,8 +493,9 @@ def find_support(claim: dict, rec: dict) -> str:
     if not fam:
         return ""
     for sent in sentences(record_text(rec)):
-        hit, neg = _direction_hit(sent, claim.get("subject", ""), claim.get("object", ""), fam)
-        if hit and not neg:
+        hit, neg, hedge = _direction_hit(sent, claim.get("subject", ""),
+                                         claim.get("object", ""), fam)
+        if hit and not neg and not hedge:
             return sent
     return ""
 

@@ -11,6 +11,9 @@ gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
 gov/research.sqlite
+gov/replication.sqlite
+gov/replication.sqlite-wal
+gov/replication.sqlite-shm
 gov/research.sqlite-wal
 gov/research.sqlite-shm
 

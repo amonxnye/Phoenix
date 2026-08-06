@@ -1,0 +1,16 @@
+{
+  "abstract": "Background and aim Although artificial intelligence (AI) technologies show promise in diabetes management, real-world evidence supporting AI-driven personalized care remains limited. We developed an AI-powered platform that generates dynamic self-management plans (DSMPs) and enables continuous, whole-process patient monitoring. This study aimed to evaluate its effectiveness in patients with type 2 diabetes mellitus (T2DM). Design This was a 12-month, multicenter, prospective, open-label, quasi-experimental cohort study. A total of 1,452 eligible patients with T2DM were enrolled between April 2022 and April 2023 and assigned by an AI-driven platform, based on enrollment sequence, to either the intervention group ( n = 726) or the control group ( n = 726). All participants received integrated diabetes management via the AI-driven platform. The intervention group was provided with DSMPs, whereas the control group received routine care. Findings Among the 1,343 patients who completed the study (655 in the intervention group and 688 in the control group), the intervention group demonstrated significantly better glycemic control at 3 months. Reductions in glycated hemoglobin (HbA1c) (1.92% vs. 1.31%) and fasting plasma glucose (FPG) (3.23 vs. 2.31 mmol/L) were significantly greater in the intervention group, and significantly more patients achieved treatment targets for both HbA1c (57% vs. 26%) and FPG (68% vs. 39%). Furthermore, the intervention led to significant improvements (all p < 0.05) in Self-Monitoring of Blood Glucose (SMBG) frequency, hypoglycemia incidence, Body Mass Index (BMI), Urine Albumin-to-Creatinine Ratio (UACR), and most blood lipids compared to the control group and baseline, though Total Cholesterol (TC) remained unchanged ( p = 0.53). Notably, the co-primary outcome was achieved by 18.2% (119/655) of patients in the intervention group, which was significantly higher than the 5.5% (38/688) observed in the control group ( p Conclusions AI-driven personalized management was feasible and effective for the management of T2DM and was associated with an increased rate of diabetes remission. However, further evidence is required to justify its integration into routine clinical practice, and improvements in cholesterol management remain necessary.",
+  "authors": "Amuti R, Kadier A, Jiang M, Maihemuti A, Yang B.",
+  "doi": "10.3389/fdgth.2026.1778918",
+  "id": "PMID:42179823",
+  "journal": "Frontiers in digital health",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13189919",
+  "pmid": "42179823",
+  "retrieved_at": "2026-08-06T07:44:28Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42179823",
+  "title": "AI-driven personalised management platform enhances glycaemic control and remission rates in type 2 diabetes: a quasi-experimental prospective cohort study.",
+  "year": "2026"
+}

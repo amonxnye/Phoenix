@@ -1,0 +1,16 @@
+{
+  "abstract": "Objective We are aimed at evaluating the effects of a calorie-restricted low-carbohydrate diet (CR-LCD) on diabetes remission, weight control, and metabolic parameters in overweight patients with early-stage Type 2 diabetes mellitus (T2DM). Research design and methods This 6-month randomized intervention trial with a 12-month follow-up randomly assigned 68 adults with early-stage T2DM to receive either a CR-LCD or a control diet. Of the original cohort, data from 66 participants (two dropouts in the CR-LCD group) were analyzed. The primary outcome was diabetes remission, defined as achieving a glycated hemoglobin (HbA1c) level < 6.5% without glucose-lowering medications; secondary outcomes included anthropometric, glycemic, and lipid parameters. Results The CR-LCD group had a significantly higher 6-month diabetes remission rate than the control group (62.50% vs. 35.29%, \u03c7 2 = 4.885, p = 0.027). After multivariate adjustment, the intervention was associated with higher remission rates (odds ratio [OR] = 4.592, 95% confidence interval [CI]: 1.276-16.524; p = 0.020). At 12 months, between-group comparisons following false discovery rate (FDR) correction revealed significant differences in body mass index (FDR - adjusted p = 0.006, \u03b7 2 p = 0.150), waist circumference (FDR - adjusted p = 0.040, \u03b7 2 p = 0.085), fasting blood glucose (FDR - adjusted p < 0.001, r = 0.613), 2-h postprandial blood glucose (FDR - adjusted p = 0.040, \u03b7 2 p = 0.088), and high-density lipoprotein cholesterol (FDR - adjusted p = 0.040, \u03b7 2 p = 0.095). No severe adverse events were reported. Conclusions A CR-LCD was effective in inducing diabetes remission in early-stage T2DM, suggesting that it may offer a viable nonpharmacological management strategy for this condition. Trial registration Chinese Clinical Trial Registry: ChiCTR2600118189.",
+  "authors": "Wang H, Wang Q, Chen J, Chen Y, Tang Y.",
+  "doi": "10.1155/jdr/7230214",
+  "id": "PMID:42210610",
+  "journal": "Journal of diabetes research",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13240505",
+  "pmid": "42210610",
+  "retrieved_at": "2026-08-06T07:44:26Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42210610",
+  "title": "Achieving Diabetes Remission Through Dietary Intervention: A 12-Month Randomized Controlled Trial of Caloric-Carbohydrate Restriction in Overweight Patients With Early-Stage Type 2 Diabetes Mellitus.",
+  "year": "2026"
+}
