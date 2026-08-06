@@ -50,6 +50,7 @@ sys.path.insert(0, HERE)
 import anchor
 import builder as B
 import economy
+import metrics as M
 import solver as S
 import workspace as W
 import worktree as WT
@@ -70,7 +71,7 @@ def _safe_log(log, message: str) -> None:
 
 # ── staffing: the organization outlives its agents ────────────────────────────
 
-def staff(count: int) -> list[str]:
+def staff(count: int, prefix: str = "dev") -> list[str]:
     """Field a fleet of `count` agents with budget to spend.
 
     Living agents that still have budget are re-used; the rest of the roster is made
@@ -78,15 +79,20 @@ def staff(count: int) -> list[str]:
     than as an obstacle: an agent that spent itself is retired for good and the
     organization enlists a successor, so a campaign is never silently staffed by
     corpses. Ids are persisted-monotonic — a name is never reused, because the career
-    behind it is permanent."""
+    behind it is permanent.
+
+    `prefix` namespaces the roster. Budgets are keyed by agent name, so when several
+    people are running fleets against their own workspaces at once, a shared `dev-01`
+    would mean one visitor spending another's budget. The prefix is what keeps two
+    guests from reaching into the same purse."""
     roster = economy.roster(alive_only=True)
     taken = {r["agent"] for r in economy.roster(alive_only=False)}
     fleet = [r["agent"] for r in roster
-             if r["agent"].startswith("dev-") and r["budget"] > 0][:count]
+             if r["agent"].startswith(f"{prefix}-") and r["budget"] > 0][:count]
     while len(fleet) < count:
         name = ""
         while not name or name in taken:
-            name = f"dev-{anchor.counter_add('builder_agent_seq', 1):02d}"
+            name = f"{prefix}-{anchor.counter_add('builder_agent_seq', 1):02d}"
         economy.enlist(name)                        # a genuinely new id: fresh budget
         anchor.career_add(name, -1, "born", "enlisted for a campaign")
         taken.add(name)
@@ -110,7 +116,8 @@ def reap_spent(fleet: list[str]) -> list[str]:
 # ── one agent, one strategy, one round ────────────────────────────────────────
 
 def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
-            campaign: dict, solve, cfg: dict, round_no: int, log) -> dict:
+            campaign: dict, solve, cfg: dict, round_no: int, log,
+            run_id: str = "") -> dict:
     """One agent's attempt, in its own worktree, branched from the champion.
 
     Returns what the ORACLE said, never what the agent claims. A sortie that does
@@ -118,6 +125,7 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
     out = {"agent": agent, "strategy": strategy["key"], "improved": False,
            "sha": "", "passed": champion["passed"], "files": [], "note": "",
            "round": round_no, "cost": 0}
+    started_at = time.time()
     if economy.budget_left(agent) <= 0:
         out["note"] = "out of budget"
         return out
@@ -129,6 +137,9 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
         return out
 
     keep_branch = False
+    # Only a sortie that actually reached the executor is written to the ledger; a
+    # round that never flew (no budget, git refused) is not a failed attempt.
+    flown = {"yes": False, "before": None, "after": None, "files": 0}
     try:
         # thread-local: this agent's world is its worktree, nobody else's
         W.configure(repo=wt["path"], test_cmd=cfg["test_cmd_str"],
@@ -168,6 +179,7 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
                "strategy_brief": strategy["brief"], "temperature": strategy["temp"],
                "tried": list(campaign["tried"]), "lessons": campaign["lessons"],
                "champion_note": campaign.get("champion_note", "")}
+        flown["yes"], flown["before"] = True, before
         try:
             result = solve(req)
         except Exception as e:
@@ -178,7 +190,9 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
         out["cost"] = int(result.get("tokens") or COST_PER_SORTIE)
         economy.charge(agent, out["cost"])
 
-        kept, note, after = B.try_patch(agent, result.get("files") or {}, before)
+        patch = result.get("files") or {}
+        kept, note, after = B.try_patch(agent, patch, before)
+        flown["after"], flown["files"] = after, len(patch)
         out["note"] = note
         if not kept or after["passed"] <= champion["passed"]:
             # Not strictly better than what the campaign already holds. The whole
@@ -201,6 +215,18 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
         W.release()
         WT.remove(repo, wt["path"], branch="" if keep_branch else wt["branch"])
         out["branch"] = wt["branch"] if keep_branch else ""
+        if flown["yes"]:
+            base = flown["before"] or {}
+            after = flown["after"] or base
+            M.sortie(run_id or f"adhoc-{int(time.time())}", kind="campaign", repo=repo,
+                     agent=agent, strategy=strategy["key"], round_no=round_no,
+                     outcome=M.classify(out["improved"], out["note"], out["improved"]),
+                     tests_before=base.get("passed", 0),
+                     tests_after=after.get("passed", base.get("passed", 0)),
+                     tests_total=base.get("total", 0), files=flown["files"],
+                     cost=out["cost"],
+                     duration_ms=int((time.time() - started_at) * 1000),
+                     detail=out["note"])
 
 
 # ── the campaign ──────────────────────────────────────────────────────────────
@@ -208,10 +234,11 @@ def _sortie(repo: str, agent: str, strategy: dict, champion: dict, goal: list,
 def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
         rounds: int = DEFAULT_ROUNDS, dry_limit: int = DEFAULT_DRY_LIMIT,
         budget: int = 0, goal: list | None = None, title: str = "",
-        solve=None, log=print) -> dict:
+        solve=None, log=print, actor: str = "", agent_prefix: str = "dev") -> dict:
     """Fight one problem with a fleet until it is solved, dry, or out of budget."""
     anchor.init()
     economy.init()
+    M.init()
     B.init()
     solve = solve or S.native_solver
     cfg = W.configure(repo=repo, test_cmd=test_cmd)
@@ -244,7 +271,7 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
                 "suite": f"{base['passed']}/{base['total']}"}
 
     size = max(1, agents)
-    fleet = staff(size)
+    fleet = staff(size, agent_prefix)
     # The campaign's own ceiling (Article III), distinct from any one agent's budget
     # (Article II). Agents are reaped and replaced; THIS is what ends the campaign.
     budget = budget if budget > 0 else size * rounds * COST_PER_SORTIE * 2
@@ -257,6 +284,10 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
                             f"goal: {title}; {len(goal)} test(s); fleet of {len(fleet)}",
                             derived_from=[f"commit:{base_sha[:12]}"],
                             authorized_by="policy")
+
+    run_id = f"camp-{int(time.time() * 1000):x}"
+    M.run_start(run_id, "campaign", repo, actor=actor, agents=len(fleet),
+                before=base["passed"], total=base["total"])
 
     dry, history, all_branches, spent, fought = 0, [], [], 0, 0
     for round_no in range(1, max(1, rounds) + 1):
@@ -271,7 +302,7 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
         gone = reap_spent(fleet)                   # Article II, then hire successors
         if gone:
             log(f"   reaped {', '.join(gone)} — budget spent; enlisting successors")
-            fleet = staff(size)
+            fleet = staff(size, agent_prefix)
         fought += 1              # a round only counts once agents actually fly
         slate = S.strategies_for(round_no, len(fleet))
         log(f"round {round_no}  [{', '.join(s['key'] for s in slate)}]  "
@@ -279,7 +310,7 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
 
         with futures.ThreadPoolExecutor(max_workers=len(fleet)) as pool:
             jobs = [pool.submit(_sortie, repo, agent, strategy, champion, goal,
-                                campaign, solve, cfg, round_no, log)
+                                campaign, solve, cfg, round_no, log, run_id)
                     for agent, strategy in zip(fleet, slate)]
             sorties = []
             for j in jobs:
@@ -341,7 +372,10 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
               "base": f"{base['passed']}/{base['total']}",
               "champion": f"{champion['passed']}/{champion['total']}",
               "gained": gained, "branch": camp_branch if gained > 0 else "",
-              "gate_id": 0}
+              "gate_id": 0, "run_id": run_id}
+    M.run_end(run_id, after=champion["passed"], total=champion["total"],
+              rounds=fought, solved=solved,
+              note=f"{len(campaign['tried'])} approach(es) rejected by the oracle")
 
     if gained <= 0:
         # Article IX: nothing to show is a result that must name its own cause.
@@ -352,6 +386,7 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
         anchor.record(-1, "stall", f"campaign produced nothing: {constraint}")
         anchor.decision_close(did, outcome="no progress; campaign abandoned")
         WT._git(repo, "branch", "-D", camp_branch, check=False)
+        report["lessons"] = B.retrospective(run_id, repo)
         log(f"\nSTALLED — {constraint}")
         return report
 
@@ -366,11 +401,17 @@ def run(repo: str = "", test_cmd: str = "", *, agents: int = DEFAULT_AGENTS,
                "total": champion["total"], "newly": newly},
         attempts=fought, decision_id=did)
     report["gate_id"] = gate_id
+    M.run_end(run_id, after=champion["passed"], total=champion["total"],
+              rounds=fought, solved=solved, gate_ids=[gate_id],
+              note=f"{len(campaign['tried'])} approach(es) rejected by the oracle")
 
     lesson = (f"campaign '{title}': {'solved' if solved else 'partial'} in "
               f"{fought} round(s); what worked last was "
               f"{champion['by']} at round {champion['round']}")
     anchor.skill_add(-1, lesson, source=camp_branch, trigger=title)
+    report["lessons"] = [lesson] + B.retrospective(run_id, repo)
+    report["performance"] = {"by_strategy": M.by_strategy(repo=repo),
+                             "by_agent": M.by_agent(repo=repo)}
     ev = anchor.record(-1, "work", f"campaign {campaign['slug']} — "
                                    f"{base['passed']}→{champion['passed']}/"
                                    f"{champion['total']}, {fought} round(s), "

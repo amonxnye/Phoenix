@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Phoenix Builder — a fleet of coding agents you can leave running</title>
-<meta name="description" content="Governed autonomous software development: the test suite is the oracle, the merge is the gate, and the score can never go backwards.">
+<meta name="description" content="Governed autonomous software development: the test suite is the oracle, the merge is the gate, and this page is the console you review it from.">
 <style>
   :root {
     color-scheme: light;
@@ -23,6 +23,7 @@
     --term-ink: #d6dae1;
     --term-dim: #7b8494;
     --term-pass:#4fbf74;
+    --term-del: #e0685e;
 
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -48,6 +49,7 @@
       --term-ink: #d6dae1;
       --term-dim: #737c8b;
       --term-pass:#4fbf74;
+      --term-del: #e0685e;
     }
   }
   :root[data-theme="dark"] {
@@ -67,6 +69,7 @@
     --term-ink: #d6dae1;
     --term-dim: #737c8b;
     --term-pass:#4fbf74;
+    --term-del: #e0685e;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -85,6 +88,7 @@
     --term-ink: #d6dae1;
     --term-dim: #7b8494;
     --term-pass:#4fbf74;
+    --term-del: #e0685e;
   }
 
   * { box-sizing: border-box; }
@@ -100,7 +104,7 @@
   .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem; }
 
   a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  a:focus-visible, button:focus-visible {
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px;
   }
   p { margin: 0; max-width: var(--measure); }
@@ -131,7 +135,7 @@
   .masthead nav a:hover { color: var(--accent); text-decoration: underline; }
 
   /* ── hero ─────────────────────────────────────────────────── */
-  .hero .wrap { padding-top: 3.5rem; padding-bottom: 2.5rem; }
+  .hero .wrap { padding-top: 3.2rem; padding-bottom: 2.2rem; }
   h1 {
     font-family: var(--mono);
     font-size: clamp(1.9rem, 4.6vw, 3.05rem);
@@ -147,9 +151,8 @@
     margin-top: 1.1rem; font-size: 1.075rem; color: var(--ink-2);
     max-width: 54ch;
   }
-
   .laws {
-    margin-top: 2rem; display: grid; gap: 0.55rem;
+    margin-top: 1.8rem; display: grid; gap: 0.55rem;
     border-left: 2px solid var(--accent); padding-left: 1.1rem;
   }
   .laws b {
@@ -157,52 +160,22 @@
     letter-spacing: -0.01em; display: block;
   }
 
-  /* ── terminal ─────────────────────────────────────────────── */
-  .term {
-    background: var(--term-bg); color: var(--term-ink);
-    border: 1px solid var(--rule-2); border-radius: 6px;
-    font-family: var(--mono); font-size: 0.79rem; line-height: 1.62;
-    overflow-x: auto; margin: 2.4rem 0 0;
+  /* live figures — only rendered when a real instance answers */
+  .stats {
+    margin-top: 2rem; display: grid; gap: 1px; background: var(--rule);
+    border: 1px solid var(--rule); border-radius: 6px; overflow: hidden;
+    grid-template-columns: repeat(2, 1fr);
   }
-  .term-bar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 1rem; padding: 0.5rem 0.85rem;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-    font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--term-dim);
+  @media (min-width: 46rem) { .stats { grid-template-columns: repeat(4, 1fr); } }
+  .stats div { background: var(--surface); padding: 0.8rem 0.95rem; min-width: 0; }
+  .stats b {
+    display: block; font-family: var(--mono); font-size: 1.35rem; font-weight: 700;
+    letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
   }
-  .term-body { padding: 0.85rem; white-space: pre; min-height: 21rem; }
-  .term .dim  { color: var(--term-dim); }
-  .term .win  { color: var(--term-pass); }
-  .term .champ{ color: #e0a94f; font-weight: 600; }
-  .term .lose { color: var(--term-dim); }
-  .cursor {
-    display: inline-block; width: 0.55em; height: 1.05em; background: #e0a94f;
-    vertical-align: text-bottom; animation: blink 1.05s steps(2, start) infinite;
+  .stats span {
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--muted);
   }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  .scoreboard {
-    display: flex; align-items: center; gap: 0.6rem;
-    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.06em;
-    color: var(--term-dim); white-space: nowrap;
-  }
-  .track {
-    width: 4.5rem; height: 4px; border-radius: 2px;
-    background: rgba(255,255,255,0.13); overflow: hidden;
-  }
-  .track i {
-    display: block; height: 100%; width: 17%; background: var(--term-pass);
-    transition: width 320ms ease;
-  }
-  .score { color: var(--term-ink); font-variant-numeric: tabular-nums; }
-
-  .readout {
-    margin-top: 0.9rem; font-family: var(--mono); font-size: 0.76rem;
-    color: var(--muted); display: flex; gap: 1.4rem; flex-wrap: wrap;
-    max-width: none;
-  }
-  .readout b { color: var(--ink); font-weight: 600; }
 
   /* ── sections ─────────────────────────────────────────────── */
   section { border-top: 1px solid var(--rule); }
@@ -234,12 +207,9 @@
     border-top: 1px solid var(--rule); padding-top: 0.5rem; margin-top: auto;
   }
 
-  /* ── numbered run ─────────────────────────────────────────── */
+  /* ── commands ─────────────────────────────────────────────── */
   .run { counter-reset: step; margin-top: 2rem; display: grid; gap: 1.6rem; }
-  .step {
-    display: grid; gap: 0.9rem;
-    grid-template-columns: 2.4rem 1fr; align-items: start;
-  }
+  .step { display: grid; gap: 0.9rem; grid-template-columns: 2.4rem 1fr; align-items: start; }
   .step::before {
     counter-increment: step; content: counter(step);
     font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
@@ -249,8 +219,7 @@
   }
   .step-body { display: grid; gap: 0.6rem; min-width: 0; }
   .step-body h3 {
-    font-family: var(--sans); font-size: 1rem; font-weight: 650; margin: 0;
-    line-height: 1.35;
+    font-family: var(--sans); font-size: 1rem; font-weight: 650; margin: 0; line-height: 1.35;
   }
   .step-body p { font-size: 0.93rem; color: var(--ink-2); }
 
@@ -282,7 +251,6 @@
     border-left: 2px solid var(--rule-2); padding-left: 0.85rem;
   }
 
-  /* ── which command ────────────────────────────────────────── */
   .pick { margin-top: 1.9rem; display: grid; gap: var(--gap); }
   @media (min-width: 46rem) { .pick { grid-template-columns: 1fr 1fr; } }
   .pick article {
@@ -290,25 +258,182 @@
     display: flex; flex-direction: column; gap: 0.7rem; padding: 1.15rem;
   }
   .pick h3 { font-family: var(--mono); font-size: 0.95rem; margin: 0; }
-  .pick .when {
-    font-size: 0.82rem; color: var(--accent); font-family: var(--mono);
-    letter-spacing: -0.005em;
-  }
+  .pick .when { font-size: 0.82rem; color: var(--accent); font-family: var(--mono); }
   .pick p { font-size: 0.92rem; color: var(--ink-2); }
   .pick .cmd { margin-top: auto; }
 
-  /* ── gate ─────────────────────────────────────────────────── */
-  .gate-out {
-    margin-top: 1.7rem; background: var(--sunken); border: 1px solid var(--rule);
-    border-radius: 5px; padding: 0.95rem 1rem; overflow-x: auto;
-    font-family: var(--mono); font-size: 0.78rem; line-height: 1.7;
-    white-space: pre; color: var(--ink-2);
+  /* ── the console ──────────────────────────────────────────── */
+  .console {
+    margin-top: 1.9rem; border: 1px solid var(--rule-2); border-radius: 6px;
+    background: var(--surface); overflow: hidden;
   }
-  .gate-out b { color: var(--ink); font-weight: 600; }
-  .gate-out .add { color: var(--pass); }
-  .gate-out .del { color: var(--fail); }
-  .gate-out .flag { color: var(--accent); font-weight: 600; }
-  .gate-out .prompt { color: var(--muted); }
+  .console-bar {
+    display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+    padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--rule);
+    background: var(--sunken); font-family: var(--mono); font-size: 0.72rem;
+    letter-spacing: 0.03em; color: var(--muted);
+  }
+  .console-bar .dot {
+    width: 0.5rem; height: 0.5rem; border-radius: 50%; flex: none; background: var(--muted);
+  }
+  .console[data-live="1"] .console-bar .dot { background: var(--pass); }
+  .console-bar .mode { color: var(--ink-2); }
+  .console-bar .spacer { margin-left: auto; }
+
+  .panel { padding: 1.15rem; display: grid; gap: 1rem; align-content: start; }
+  .panel > * { min-width: 0; }
+  .panel h3 { margin: 0; font-size: 1.02rem; font-weight: 650; line-height: 1.35; }
+  .panel p { font-size: 0.93rem; color: var(--ink-2); }
+
+  .starters { display: grid; gap: 0.7rem; }
+  @media (min-width: 46rem) { .starters { grid-template-columns: repeat(3, 1fr); } }
+  .starter {
+    text-align: left; font: inherit; color: var(--ink); cursor: pointer;
+    background: var(--sunken); border: 1px solid var(--rule); border-radius: 5px;
+    padding: 0.8rem 0.9rem; display: grid; gap: 0.3rem; min-width: 0;
+  }
+  .starter:hover { border-color: var(--accent); }
+  .starter b { font-family: var(--mono); font-size: 0.86rem; }
+  .starter span { font-size: 0.83rem; color: var(--ink-2); }
+  .starter i {
+    font-style: normal; font-family: var(--mono); font-size: 0.68rem;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent);
+  }
+
+  .suite {
+    display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 0.78rem; color: var(--muted);
+  }
+  .suite b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .bar { flex: 1 1 8rem; height: 5px; border-radius: 3px; background: var(--rule-2); overflow: hidden; min-width: 5rem; }
+  .bar i { display: block; height: 100%; background: var(--pass); transition: width 300ms ease; }
+
+  .controls { display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
+  .btn {
+    font-family: var(--mono); font-size: 0.78rem; padding: 0.45rem 0.9rem;
+    border-radius: 4px; border: 1px solid var(--rule-2); background: var(--surface);
+    color: var(--ink); cursor: pointer;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--ink-2); }
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
+  .btn.ok { border-color: var(--pass); color: var(--pass); }
+  .btn.ok[data-arm="1"] { background: var(--pass); color: var(--surface); }
+  .btn.no { border-color: var(--fail); color: var(--fail); }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  select, .reason {
+    font-family: var(--mono); font-size: 0.78rem; padding: 0.42rem 0.55rem;
+    border-radius: 4px; border: 1px solid var(--rule-2);
+    background: var(--sunken); color: var(--ink);
+  }
+  .reason { flex: 1 1 12rem; min-width: 0; }
+
+  .said { font-family: var(--mono); font-size: 0.76rem; color: var(--ink-2); }
+  .said.bad { color: var(--fail); }
+  .said.good { color: var(--pass); }
+
+  .term {
+    background: var(--term-bg); color: var(--term-ink); border: 1px solid var(--rule-2);
+    border-radius: 5px; font-family: var(--mono); font-size: 0.755rem; line-height: 1.6;
+    padding: 0.8rem 0.9rem; overflow: auto; white-space: pre-wrap;
+    max-height: 16rem; word-break: break-word;
+  }
+  .term .win { color: var(--term-pass); }
+  .term .dim { color: var(--term-dim); }
+  .spin {
+    display: inline-block; width: 0.5em; height: 0.5em; border-radius: 50%;
+    background: var(--accent); animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+  .console-body { display: grid; }
+  @media (min-width: 54rem) { .console-body { grid-template-columns: 17.5rem 1fr; } }
+  .console-body > * { min-width: 0; }
+  .queue { border-bottom: 1px solid var(--rule); }
+  @media (min-width: 54rem) { .queue { border-bottom: 0; border-right: 1px solid var(--rule); } }
+  .q-head {
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.11em;
+    text-transform: uppercase; color: var(--muted); padding: 0.7rem 0.9rem 0.5rem;
+  }
+  .q-item {
+    display: grid; gap: 0.28rem; width: 100%; text-align: left; font: inherit;
+    color: var(--ink); background: none; cursor: pointer; border: 0;
+    border-top: 1px solid var(--rule); padding: 0.7rem 0.9rem;
+    border-left: 2px solid transparent;
+  }
+  .q-item:hover { background: var(--sunken); }
+  .q-item[aria-current="true"] { background: var(--sunken); border-left-color: var(--accent); }
+  .q-item .id {
+    font-family: var(--mono); font-size: 0.72rem; color: var(--muted);
+    display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+  }
+  .q-item .what { font-size: 0.88rem; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-empty { padding: 0.9rem; color: var(--muted); font-size: 0.87rem; }
+
+  .risk {
+    font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.09em;
+    text-transform: uppercase; padding: 0.05rem 0.35rem; border-radius: 3px;
+    border: 1px solid var(--rule-2); color: var(--muted);
+  }
+  .risk.high { color: var(--accent); border-color: var(--accent); }
+
+  .dmeter {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-family: var(--mono); font-size: 0.72rem; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .dmeter i {
+    display: block; width: 3.4rem; height: 4px; border-radius: 2px;
+    background: var(--rule-2); overflow: hidden; flex: none;
+  }
+  .dmeter i b { display: block; height: 100%; background: var(--pass); }
+
+  .dossier { padding: 1.1rem; display: grid; gap: 0.9rem; align-content: start; }
+  .dossier > * { min-width: 0; }
+  .dossier h3 { font-size: 1.02rem; margin: 0; line-height: 1.35; font-weight: 650; }
+  .dossier .facts {
+    display: flex; gap: 0.5rem 1.1rem; flex-wrap: wrap; align-items: center;
+    font-family: var(--mono); font-size: 0.74rem; color: var(--muted);
+  }
+  .dossier .facts b { color: var(--ink-2); font-weight: 600; }
+  .dossier .why {
+    font-size: 0.87rem; color: var(--accent); font-family: var(--mono);
+    border-left: 2px solid var(--accent); padding-left: 0.7rem;
+  }
+  .diff {
+    margin: 0; background: var(--term-bg); border: 1px solid var(--rule-2);
+    border-radius: 5px; padding: 0.8rem 0.9rem; overflow-x: auto;
+    font-family: var(--mono); font-size: 0.755rem; line-height: 1.6;
+    white-space: pre; color: var(--term-ink); max-height: 24rem;
+  }
+  .diff .a { color: var(--term-pass); }
+  .diff .d { color: var(--term-del); }
+  .diff .h { color: var(--term-dim); }
+
+  .actions { display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; padding-top: 0.2rem; }
+
+  /* ── tables ───────────────────────────────────────────────── */
+  .sheet { margin-top: 1.4rem; overflow-x: auto; }
+  .sheet table { border-collapse: collapse; width: 100%; font-size: 0.86rem; min-width: 30rem; }
+  .sheet caption {
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.11em;
+    text-transform: uppercase; color: var(--muted); text-align: left; padding-bottom: 0.5rem;
+  }
+  .sheet th {
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--muted); text-align: right;
+    font-weight: 600; padding: 0.35rem 0.7rem 0.35rem 0; white-space: nowrap;
+  }
+  .sheet th:first-child, .sheet td:first-child { text-align: left; }
+  .sheet td {
+    border-top: 1px solid var(--rule); padding: 0.42rem 0.7rem 0.42rem 0;
+    color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .sheet td.name { font-family: var(--mono); font-size: 0.8rem; color: var(--ink); }
+  .sheet td.st { font-family: var(--mono); font-size: 0.74rem; }
+  .sheet td.st.merged { color: var(--pass); }
+  .sheet td.st.rejected { color: var(--muted); }
+  .sheet td.wide { white-space: normal; text-align: left; }
 
   /* ── limits ───────────────────────────────────────────────── */
   .limits { margin: 1.8rem 0 0; padding: 0; list-style: none; display: grid; gap: 0.85rem; }
@@ -342,9 +467,9 @@
   <div class="wrap">
     <p class="wordmark">phoenix<span>/</span>builder</p>
     <nav>
+      <a href="#console">Console</a>
       <a href="#guarantees">Guarantees</a>
       <a href="#start">Run it</a>
-      <a href="#gate">The gate</a>
       <a href="#limits">Limits</a>
       <a href="https://github.com/amonxnye/Phoenix">Source</a>
     </nav>
@@ -367,26 +492,35 @@
       <b>The score can never go backwards.</b>
     </div>
 
-    <div class="term" role="img" aria-label="A campaign transcript: four agents raise a failing test suite from 1 of 6 passing to 6 of 6 across six rounds, with most individual attempts rejected.">
-      <div class="term-bar">
-        <span>campaign · transcript</span>
-        <span class="scoreboard">
-          <span>suite</span>
-          <span class="track"><i id="bar"></i></span>
-          <span class="score" id="score">1/6</span>
-        </span>
-      </div>
-      <div class="term-body" id="out"></div>
-    </div>
-
-    <p class="readout">
-      <span><b>24</b> sorties</span>
-      <span><b>19</b> rejected by the oracle</span>
-      <span><b>2</b> dry rounds survived</span>
-      <span><b>0</b> lines merged without a human</span>
-    </p>
+    <!-- Populated only from a live instance. No instance, no figures. -->
+    <div class="stats" id="stats" hidden></div>
   </div>
 </div>
+
+<section id="console">
+  <div class="wrap">
+    <p class="eyebrow">The console</p>
+    <h2>Review the work, and decide.</h2>
+    <p class="lede">
+      This page is the operator surface. Served by a running instance it shows that
+      instance's real workspace, real fleet and real dossiers; every button below goes
+      through the same <code>approve</code>/<code>reject</code> the command line calls.
+    </p>
+
+    <div class="console" id="console-box">
+      <div class="console-bar">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="mode" id="modeLabel">looking for an instance…</span>
+        <span class="spacer" id="metaLabel"></span>
+      </div>
+      <div id="consoleMain">
+        <div class="panel"><p class="said">Connecting…</p></div>
+      </div>
+    </div>
+
+    <div id="perf"></div>
+  </div>
+</section>
 
 <section id="guarantees">
   <div class="wrap">
@@ -439,9 +573,8 @@
     <p class="eyebrow">Getting started</p>
     <h2>Python 3.11 and git. No install step.</h2>
     <p class="lede">
-      The builder is standard library only. <code>pip install openai</code> is needed
-      just for OpenAI-compatible endpoints — the Anthropic path runs on
-      <code>urllib</code>.
+      Standard library only. <code>pip install openai</code> is needed just for
+      OpenAI-compatible endpoints — the Anthropic path runs on <code>urllib</code>.
     </p>
 
     <div class="run">
@@ -449,8 +582,7 @@
         <div class="step-body">
           <h3>Get the code</h3>
           <div class="cmd">
-<pre>git clone https://github.com/amonxnye/Phoenix.git &amp;&amp; cd Phoenix
-git checkout claude/software-development-agent-5bv0iw</pre>
+<pre>git clone https://github.com/amonxnye/Phoenix.git &amp;&amp; cd Phoenix</pre>
             <button class="copy" type="button">Copy</button>
           </div>
         </div>
@@ -460,13 +592,14 @@ git checkout claude/software-development-agent-5bv0iw</pre>
         <div class="step-body">
           <h3>Prove the machinery before you trust it — no API key needed</h3>
           <p>
-            Both suites build throwaway repositories with real defects and run the
-            whole system against them using scripted agents. If they pass on your
-            machine, only the model is untested.
+            The suites build throwaway repositories with real defects and run the whole
+            system against them with scripted agents. The smoke test drives it end to
+            end and prints what the fleet cost.
           </p>
           <div class="cmd">
-<pre>python3 gov/verify_builder.py   <span class="c"># 51/51</span>
-python3 gov/verify_campaign.py  <span class="c"># 37/37</span></pre>
+<pre>python3 gov/verify_builder.py    <span class="c"># the autonomous loop</span>
+python3 gov/verify_gate.py       <span class="c"># the service, over real HTTP</span>
+python3 gov/smoke.py             <span class="c"># end to end, with numbers</span></pre>
             <button class="copy" type="button">Copy</button>
           </div>
         </div>
@@ -486,14 +619,13 @@ export BRAIN_API_KEY=sk-ant-...
 
       <div class="step">
         <div class="step-body">
-          <h3>Point it at a repository</h3>
+          <h3>Open the console on your own repository</h3>
           <p>
-            Start with <code>--limit 1</code>. Nothing can be lost either way, but you
-            want to read its judgement before you trust its volume.
+            Pinned to one repository, bound to loopback. This same page, served from
+            your machine, with your dossiers in it.
           </p>
           <div class="cmd">
-<pre>python3 gov/builder.py run --repo ~/yourrepo \
-    --test-cmd "python -m pytest -q" --limit 1</pre>
+<pre>python3 gov/gate.py --repo ~/yourrepo</pre>
             <button class="copy" type="button">Copy</button>
           </div>
         </div>
@@ -501,17 +633,21 @@ export BRAIN_API_KEY=sk-ant-...
 
       <div class="step">
         <div class="step-body">
-          <h3>Read the diff, then decide</h3>
+          <h3>Or run it as a service</h3>
+          <p>
+            Every visitor is issued a guest session and gets their own starter
+            repository. No accounts. A guest can only ever see and merge their own
+            workspace.
+          </p>
           <div class="cmd">
-<pre>python3 gov/builder.py gate                <span class="c"># what is waiting, and why</span>
-python3 gov/builder.py show    --id 1      <span class="c"># the full diff + test delta</span>
-python3 gov/builder.py approve --id 1      <span class="c"># merge into the base branch</span>
-python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
+<pre>python3 gov/gate.py --serve --host 0.0.0.0 --port 8788</pre>
             <button class="copy" type="button">Copy</button>
           </div>
           <p class="note">
-            Rejecting deletes the branch, leaves your base commit exactly where it
-            was, and files your reason as a lesson the next run is handed.
+            Approving merges code, so put a public deployment behind TLS and something
+            that limits who can reach it. Set <code>GATE_SECRET</code> so sessions
+            survive a restart, and <code>GOV_DATA_DIR</code> to a volume so the ledger
+            does too.
           </p>
         </div>
       </div>
@@ -556,41 +692,8 @@ python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
         </div>
       </article>
     </div>
-  </div>
-</section>
 
-<section id="gate">
-  <div class="wrap">
-    <p class="eyebrow">The gate</p>
-    <h2>Work arrives as a diff and a measurement.</h2>
-    <p class="lede">
-      Whether one agent or twenty-four sorties produced it, the dossier is the same
-      shape — because what a reviewer needs is the same.
-    </p>
-
-    <div class="gate-out"><span class="prompt">$ python3 gov/builder.py gate</span>
-
-1 branch(es) awaiting a human:
-
-  <b>#1  phoenix/campaign/campaign-1786002513</b>
-      make 5 failing test(s) pass  (campaign/4 agents, 6 attempt(s))
-      suite <b>1/6 -&gt; 6/6</b>; green: test_discount_code, test_eta, test_eta_express,
-             test_shipping_express_surcharge, test_shipping_scales_with_weight
-      files: src/orders.py
-      <span class="flag">HIGH RISK — money</span>
-
-<span class="prompt">$ python3 gov/builder.py show --id 1</span>
-
- def shipping(weight_kg, express=False):
-<span class="del">-    return 5.0</span>
-<span class="add">+    base = weight_kg * 1.5</span>
-<span class="add">+    return base * 2 if express else base</span>
-
- def eta_days(distance_km, express=False):
-<span class="del">-    return 99</span>
-<span class="add">+    return 1 if express else max(1, round(distance_km / 167))</span></div>
-
-    <p class="note" style="margin-top:1.4rem">
+    <p class="note" style="margin-top:1.6rem">
       Risk is matched by path, never judged by a model — anything touching auth,
       secrets, migrations, infrastructure, CI or payments is flagged HIGH, and no
       amount of silence approves it.
@@ -627,9 +730,10 @@ python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
         and it never pushes unless you set <code>BUILDER_ALLOW_PUSH=1</code>.</span>
       </li>
       <li>
-        <dfn>Command line</dfn>
-        <span>The gate and campaigns are CLI-only. The web console still shows the
-        older single-agent workboard.</span>
+        <dfn>Guests, not accounts</dfn>
+        <span>A session is a signed cookie. Lose it and you lose the workspace;
+        anyone holding it is you. Right for disposable sandboxes, wrong for anything
+        you would miss.</span>
       </li>
     </ul>
   </div>
@@ -643,83 +747,6 @@ python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
 </footer>
 
 <script>
-(function () {
-  "use strict";
-
-  var TRANSCRIPT = [
-    { t: "CAMPAIGN make 5 failing test(s) pass" },
-    { t: "  repo orders · oracle `python -m pytest -q` · base 1/6 · fleet dev-01…dev-04", c: "dim" },
-    { t: "" },
-    { t: "round 1  [direct, read-the-test, widen, rewrite]  from champion 1/6", c: "dim" },
-    { t: "   ** dev-01  direct         kept — 1 newly green, suite 2/6", c: "win" },
-    { t: "   ** dev-02  read-the-test  kept — 1 newly green, suite 2/6", c: "win" },
-    { t: "      dev-03  widen          reverted — broke test_subtotal", c: "lose" },
-    { t: "   ** dev-04  rewrite        kept — 2 newly green, suite 3/6", c: "win" },
-    { t: "   -> CHAMPION 3/6 (dev-04, rewrite)", c: "champ", score: 3 },
-    { t: "" },
-    { t: "round 2  [read-the-test, widen, rewrite, contrarian]  from champion 3/6", c: "dim" },
-    { t: "   ** dev-01  read-the-test  kept — 1 newly green, suite 4/6", c: "win" },
-    { t: "      dev-02  widen          no change the oracle can see", c: "lose" },
-    { t: "   -> CHAMPION 4/6 (dev-01, read-the-test)", c: "champ", score: 4 },
-    { t: "" },
-    { t: "round 3  [widen, rewrite, contrarian, decompose]  from champion 4/6", c: "dim" },
-    { t: "      all four sorties rejected", c: "lose" },
-    { t: "   -> no improvement (1/2 dry rounds) — champion holds at 4/6", c: "dim" },
-    { t: "" },
-    { t: "round 4  [rewrite, contrarian, decompose, direct]  from champion 4/6", c: "dim" },
-    { t: "   ** dev-04  direct         kept — 1 newly green, suite 5/6", c: "win" },
-    { t: "   -> CHAMPION 5/6 (dev-04, direct)", c: "champ", score: 5 },
-    { t: "" },
-    { t: "round 6  [decompose, direct, read-the-test, widen]  from champion 5/6", c: "dim" },
-    { t: "   ** dev-04  widen          kept — 1 newly green, suite 6/6", c: "win" },
-    { t: "   -> CHAMPION 6/6 (dev-04, widen)", c: "champ", score: 6 },
-    { t: "" },
-    { t: "SOLVED — 1/6 -> 6/6 in 6 round(s)", c: "champ" },
-    { t: "branch phoenix/campaign/… waiting at the gate as #1", c: "dim" },
-    { t: "review with:  python3 gov/builder.py show --id 1", c: "dim" }
-  ];
-
-  var out = document.getElementById("out");
-  var bar = document.getElementById("bar");
-  var score = document.getElementById("score");
-  if (!out || !bar || !score) { return; }
-
-  function setScore(n) {
-    score.textContent = n + "/6";
-    bar.style.width = Math.round((n / 6) * 100) + "%";
-  }
-
-  function line(item) {
-    var el = document.createElement("div");
-    if (item.c) { el.className = item.c; }
-    el.textContent = item.t || " ";
-    return el;
-  }
-
-  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  if (reduced) {
-    TRANSCRIPT.forEach(function (item) { out.appendChild(line(item)); });
-    setScore(6);
-    return;
-  }
-
-  var caret = document.createElement("span");
-  caret.className = "cursor";
-  out.appendChild(caret);
-
-  var i = 0;
-  function step() {
-    if (i >= TRANSCRIPT.length) { caret.remove(); return; }
-    var item = TRANSCRIPT[i++];
-    out.insertBefore(line(item), caret);
-    if (item.score) { setScore(item.score); }
-    // a new champion lands with a beat; blank lines pass quickly
-    setTimeout(step, item.score ? 500 : (item.t === "" ? 90 : 160));
-  }
-  setTimeout(step, 350);
-})();
-
 (function () {
   "use strict";
 
@@ -760,6 +787,440 @@ python3 gov/builder.py reject  --id 1 --reason "wrong approach"</pre>
       }
     });
   });
+})();
+
+/* ── the console ─────────────────────────────────────────────────────────────
+   Every figure below comes from /api/state on a running instance. There is no
+   sample data and no canned transcript: with no instance answering, the console
+   says so and tells you how to start one. A page that invented a queue would be
+   lying about the one thing this system asks you to trust.                     */
+(function () {
+  "use strict";
+
+  var el = {
+    box: document.getElementById("console-box"),
+    mode: document.getElementById("modeLabel"),
+    meta: document.getElementById("metaLabel"),
+    main: document.getElementById("consoleMain"),
+    stats: document.getElementById("stats"),
+    perf: document.getElementById("perf")
+  };
+  if (!el.box || !el.main) { return; }
+
+  var S = { live: false, data: null, sel: null, armed: false, busy: false,
+            said: null, timer: null };
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function num(n) { return Number(n || 0).toLocaleString(); }
+  function pct(n) { return Math.round(Number(n || 0) * 100) + "%"; }
+
+  function api(path, body) {
+    var opts = { headers: { "Accept": "application/json" } };
+    if (body !== undefined) {
+      opts.method = "POST";
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (res) {
+      return res.json().then(function (b) { return { ok: res.ok, body: b }; },
+                             function () { return { ok: false, body: {} }; });
+    });
+  }
+
+  // Messages are scoped to the area that produced them: a run's "started" belongs
+  // above the log, a merge result belongs under the diff, and neither should appear
+  // in both places.
+  function say(kind, text, where) { S.said = { kind: kind, text: text, where: where || "run" }; }
+  function said(where) {
+    return (S.said && S.said.where === where)
+      ? '<p class="said ' + esc(S.said.kind) + '">' + esc(S.said.text) + "</p>" : "";
+  }
+
+  function pending() { return (S.data && S.data.pending) || []; }
+  function current() {
+    var list = pending();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === S.sel) { return list[i]; }
+    }
+    return list[0] || null;
+  }
+
+  // ── rendering ────────────────────────────────────────────────────────────
+  function render() {
+    if (!S.live) { return renderOffline(); }
+    var d = S.data;
+    el.box.dataset.live = "1";
+    var w = d.workspace || {};
+    el.mode.textContent = d.mode === "operator"
+      ? "live · " + (w.repo || "one repository")
+      : "live · " + (d.session.label || "guest");
+    el.meta.textContent = w.oracle ? "oracle: " + w.oracle : "";
+
+    var html = "";
+    if (!w.ready) {
+      html = renderNoWorkspace();
+    } else {
+      html = renderWorkspace(w) + renderQueue();
+    }
+    el.main.innerHTML = html;
+    renderStats();
+    renderPerf();
+  }
+
+  function renderOffline() {
+    el.box.dataset.live = "0";
+    el.mode.textContent = "no instance answering";
+    el.meta.textContent = "";
+    el.stats.hidden = true;
+    el.perf.innerHTML = "";
+    el.main.innerHTML =
+      '<div class="panel">' +
+        "<h3>This page is the console. Nothing is running behind it right now.</h3>" +
+        "<p>Served by an instance it fills with that instance's workspace, fleet and " +
+        "dossiers. Rather than show you an invented queue, it shows you nothing — " +
+        "start one and reload.</p>" +
+        '<div class="cmd">' +
+          "<pre>git clone https://github.com/amonxnye/Phoenix.git &amp;&amp; cd Phoenix\n" +
+          "python3 gov/gate.py --repo ~/yourrepo   <span class=\"c\"># your code</span>\n" +
+          "python3 gov/gate.py --serve             <span class=\"c\"># a starter workspace per guest</span></pre>" +
+        "</div>" +
+        '<p class="said">Then open <code>http://127.0.0.1:8788</code>.</p>' +
+      "</div>";
+    wireCopy();
+  }
+
+  function renderNoWorkspace() {
+    var d = S.data;
+    var cat = d.catalogue || [];
+    return '<div class="panel">' +
+      "<h3>Pick something for the fleet to fix.</h3>" +
+      "<p>Each one builds a real git repository with a real test suite that really " +
+      "fails. The agents get no more information than you would give a colleague: " +
+      "the source, the runner's output, and the tests they are not allowed to edit.</p>" +
+      '<div class="starters">' +
+        cat.map(function (c) {
+          return '<button class="starter" type="button" data-starter="' + esc(c.name) + '">' +
+            "<b>" + esc(c.title) + "</b>" +
+            "<span>" + esc(c.blurb) + "</span>" +
+            "<i>" + esc(c.red) + " failing tests</i>" +
+          "</button>";
+        }).join("") +
+      "</div>" +
+      (S.busy ? '<p class="said"><span class="spin"></span> building a repository…</p>'
+              : said("run")) +
+    "</div>";
+  }
+
+  function renderWorkspace(w) {
+    var d = S.data;
+    var run = d.run || {};
+    var model = d.model || {};
+    var pctPassing = w.total ? Math.round((w.passed / w.total) * 100) : 0;
+    var sess = d.session || {};
+    var quota = sess.runs_allowed
+      ? sess.runs_used + " of " + sess.runs_allowed + " runs used"
+      : "";
+
+    var log = (run.log || []);
+    var logHTML = log.length
+      ? '<pre class="term" id="runlog">' + log.map(function (line) {
+          var cls = /(\*\*|kept|SOLVED|newly green|waiting at the gate)/.test(line) ? "win"
+                  : /(reverted|refused|STALLED|no change)/.test(line) ? "dim" : "";
+          return cls ? '<span class="' + cls + '">' + esc(line) + "</span>" : esc(line);
+        }).join("\n") + "</pre>"
+      : "";
+
+    return '<div class="panel" style="border-bottom:1px solid var(--rule)">' +
+      "<h3>" + esc(w.repo || "workspace") + "</h3>" +
+      '<div class="suite">' +
+        "<span>suite</span>" +
+        '<b>' + esc(w.passed) + "/" + esc(w.total) + "</b>" +
+        '<span class="bar"><i style="width:' + pctPassing + '%"></i></span>' +
+        (w.failing && w.failing.length
+          ? "<span>failing: " + esc(w.failing.slice(0, 3).map(function (t) {
+              return t.split(".").pop();
+            }).join(", ")) + (w.failing.length > 3 ? " +" + (w.failing.length - 3) : "") + "</span>"
+          : "<span>green</span>") +
+      "</div>" +
+      '<div class="controls">' +
+        '<button class="btn primary" type="button" data-act="run" data-kind="builder"' +
+          (run.active || S.busy || !model.available || !w.failing.length ? " disabled" : "") +
+          ">Run one agent</button>" +
+        '<button class="btn" type="button" data-act="run" data-kind="campaign"' +
+          (run.active || S.busy || !model.available || !w.failing.length ? " disabled" : "") +
+          ">Send a fleet</button>" +
+        (d.mode === "guest"
+          ? '<button class="btn" type="button" data-act="reset"' +
+            (run.active || S.busy ? " disabled" : "") + ">New workspace</button>"
+          : "") +
+        (quota ? '<span class="said">' + esc(quota) + "</span>" : "") +
+      "</div>" +
+      (!model.available
+        ? '<p class="said bad">' + esc(model.why) + "</p>"
+        : (!w.failing.length
+            ? '<p class="said good">Nothing failing — the fleet has nothing to do. ' +
+              "Write a failing test, or start a new workspace.</p>" : "")) +
+      (run.active ? '<p class="said"><span class="spin"></span> ' +
+        esc(run.kind === "campaign" ? "a fleet is working" : "an agent is working") +
+        "…</p>" : "") +
+      (S.busy ? "" : said("run")) +
+      logHTML +
+    "</div>";
+  }
+
+  function renderQueue() {
+    var list = pending();
+    var sel = current();
+    var queue = '<div class="queue">' +
+      '<p class="q-head">Waiting' + (list.length ? " · " + list.length : "") + "</p>" +
+      (list.length
+        ? list.map(function (g) {
+            var d = g.delta || {};
+            var w = d.total ? Math.round((d.after / d.total) * 100) : 0;
+            return '<button class="q-item" type="button" data-id="' + esc(g.id) + '"' +
+              ' aria-current="' + (sel && g.id === sel.id) + '">' +
+              '<span class="id">#' + esc(g.id) +
+                '<span class="risk ' + esc(g.risk) + '">' + esc(g.risk) + "</span></span>" +
+              '<span class="what">' + esc(g.title) + "</span>" +
+              '<span class="dmeter"><i><b style="width:' + w + '%"></b></i>' +
+                esc(d.before) + "/" + esc(d.total) + " → " + esc(d.after) + "/" + esc(d.total) +
+              "</span></button>";
+          }).join("")
+        : '<p class="q-empty">Nothing waiting. Work parks here when the oracle keeps it.</p>') +
+    "</div>";
+
+    return '<div class="console-body">' + queue + '<div class="dossier">' +
+      renderDossier(sel) + "</div></div>";
+  }
+
+  function renderDossier(g) {
+    if (!g) {
+      // the result of the decision that just emptied this pane still belongs here
+      return (said("gate") || '<p class="q-empty">Select a dossier to read its diff.</p>')
+             + renderDecided();
+    }
+    var d = g.delta || {};
+    var w = d.total ? Math.round((d.after / d.total) * 100) : 0;
+    return "<h3>" + esc(g.title) + "</h3>" +
+      '<p class="facts">' +
+        "<span><b>#" + esc(g.id) + "</b> " + esc(g.branch) + "</span>" +
+        "<span>into <b>" + esc(g.base_branch) + "</b></span>" +
+        "<span>" + esc(g.agent) + ", " + esc(g.attempts) + " attempt(s)</span>" +
+      "</p>" +
+      '<p class="facts">' +
+        '<span class="dmeter"><i><b style="width:' + w + '%"></b></i>' +
+          esc(d.before) + "/" + esc(d.total) + " → " + esc(d.after) + "/" + esc(d.total) + "</span>" +
+        "<span>green: <b>" + esc((d.newly || []).map(function (t) {
+          return t.split(".").pop();
+        }).join(", ")) + "</b></span>" +
+        "<span>files: <b>" + esc((g.files || []).join(", ")) + "</b></span>" +
+      "</p>" +
+      (g.risk === "high"
+        ? '<p class="why">HIGH RISK — ' + esc(g.risk_why) + ". Read this one before you merge it.</p>"
+        : "") +
+      '<pre class="diff">' + diffHTML(g.diff) + "</pre>" +
+      '<div class="actions">' +
+        '<button class="btn ok" type="button" data-act="approve"' +
+          (S.armed ? ' data-arm="1"' : "") + (S.busy ? " disabled" : "") + ">" +
+          (S.armed ? "Confirm merge into " + esc(g.base_branch) : "Approve") + "</button>" +
+        '<input class="reason" id="reason" placeholder="reason — filed as a lesson for the next run"' +
+          (S.busy ? " disabled" : "") + ">" +
+        '<button class="btn no" type="button" data-act="reject"' +
+          (S.busy ? " disabled" : "") + ">Reject</button>" +
+      "</div>" +
+      (S.said && S.said.where === "gate"
+        ? said("gate")
+        : '<p class="said">' + (S.armed
+            ? "Merging is the one irreversible act here. Click again to take it."
+            : "Rejecting deletes the branch and leaves your base commit exactly where it is.") +
+          "</p>") +
+      renderDecided();
+  }
+
+  function renderDecided() {
+    var rows = (S.data && S.data.decided) || [];
+    if (!rows.length) { return ""; }
+    return '<div class="sheet"><table><caption>Already answered</caption><tbody>' +
+      rows.map(function (r) {
+        return "<tr>" +
+          '<td class="st ' + esc(r.status) + '">' + esc(r.status) + "</td>" +
+          '<td class="wide">#' + esc(r.id) + " " + esc(r.title) +
+            "<br><small>" + esc(r.outcome) + "</small></td>" +
+        "</tr>";
+      }).join("") + "</tbody></table></div>";
+  }
+
+  function diffHTML(text) {
+    return String(text || "").split("\n").map(function (line) {
+      var cls = "";
+      if (/^(diff |index |new file|deleted file|similarity|rename |@@|--- |\+\+\+ )/.test(line)) {
+        cls = "h";
+      } else if (line.charAt(0) === "+") { cls = "a"; }
+      else if (line.charAt(0) === "-") { cls = "d"; }
+      return cls ? '<span class="' + cls + '">' + esc(line) + "</span>" : esc(line);
+    }).join("\n");
+  }
+
+  function renderStats() {
+    var p = (S.data && S.data.performance && S.data.performance.summary) || null;
+    if (!p || !p.sorties) { el.stats.hidden = true; return; }
+    el.stats.hidden = false;
+    el.stats.innerHTML =
+      "<div><b>" + num(p.sorties) + "</b><span>sorties flown</span></div>" +
+      "<div><b>" + pct(p.reject_rate) + "</b><span>rejected by the oracle</span></div>" +
+      "<div><b>" + num(p.tests_gained) + "</b><span>tests turned green</span></div>" +
+      "<div><b>" + num(p.runs_solved) + "/" + num(p.runs) + "</b><span>runs that shipped</span></div>";
+  }
+
+  function renderPerf() {
+    var perf = (S.data && S.data.performance) || {};
+    var agents = perf.by_agent || [];
+    var attempts = perf.by_attempt || [];
+    var strategies = perf.by_strategy || [];
+    var runs = perf.recent || [];
+    if (!agents.length && !runs.length) { el.perf.innerHTML = ""; return; }
+
+    function sheet(caption, key, label, rows) {
+      if (!rows.length) { return ""; }
+      return '<div class="sheet"><table><caption>' + esc(caption) + "</caption>" +
+        "<thead><tr><th>" + esc(label) + "</th><th>sorties</th><th>keep rate</th>" +
+        "<th>tests +</th><th>cost</th><th>cost / test</th></tr></thead><tbody>" +
+        rows.map(function (r) {
+          return "<tr>" +
+            '<td class="name">' + esc(r[key]) + "</td>" +
+            "<td>" + num(r.sorties) + "</td>" +
+            "<td>" + pct(r.keep_rate) + "</td>" +
+            "<td>" + num(r.tests_gained) + "</td>" +
+            "<td>" + num(r.cost) + "</td>" +
+            "<td>" + (r.cost_per_test == null ? "—" : num(r.cost_per_test)) + "</td>" +
+          "</tr>";
+        }).join("") + "</tbody></table></div>";
+    }
+
+    el.perf.innerHTML =
+      '<p class="eyebrow" style="margin-top:2.4rem">What the agents actually did</p>' +
+      '<p class="note" style="margin-top:0.7rem">Every attempt is recorded, kept or ' +
+      "not. A ledger that only counted successes would make any fleet look brilliant.</p>" +
+      sheet("By agent", "agent", "agent", agents) +
+      sheet("By attempt number", "attempt", "attempt", attempts) +
+      sheet("By strategy (campaigns only)", "strategy", "strategy", strategies) +
+      (runs.length
+        ? '<div class="sheet"><table><caption>Recent runs</caption>' +
+          "<thead><tr><th>run</th><th>suite</th><th>rounds</th><th>seconds</th>" +
+          "<th>result</th></tr></thead><tbody>" +
+          runs.map(function (r) {
+            return "<tr>" +
+              '<td class="name">' + esc(r.kind) + "</td>" +
+              "<td>" + esc(r.before) + "/" + esc(r.total) + " → " + esc(r.after) + "/" + esc(r.total) + "</td>" +
+              "<td>" + esc(r.rounds || "—") + "</td>" +
+              "<td>" + (r.seconds == null ? "—" : esc(r.seconds)) + "</td>" +
+              '<td class="st ' + (r.solved ? "merged" : "rejected") + '">' +
+                (r.solved ? "parked work" : "nothing to park") + "</td>" +
+            "</tr>";
+          }).join("") + "</tbody></table></div>"
+        : "");
+  }
+
+  function wireCopy() {
+    el.main.querySelectorAll(".copy").forEach(function (b) { b.remove(); });
+  }
+
+  // ── actions ──────────────────────────────────────────────────────────────
+  function apply(r, where) {
+    S.busy = false;
+    if (r.body && r.body.state) { S.data = r.body.state; }
+    say(r.ok ? "good" : "bad",
+        (r.body && (r.body.message || r.body.error)) || "no answer from the instance",
+        where);
+    render();
+  }
+
+  function provision(name) {
+    S.busy = true; S.said = null; render();
+    api("/api/workspace", { starter: name }).then(function (r) { apply(r, "run"); }, function () {
+      S.busy = false; say("bad", "the instance stopped answering"); render();
+    });
+  }
+
+  function startRun(kind) {
+    S.busy = true; S.said = null; render();
+    api("/api/run", { kind: kind, agents: kind === "campaign" ? 3 : 1, rounds: 4 })
+      .then(function (r) { apply(r, "run"); schedule(); }, function () {
+        S.busy = false; say("bad", "the instance stopped answering"); render();
+      });
+  }
+
+  function decide(act) {
+    var g = current();
+    if (!g || S.busy) { return; }
+    var input = document.getElementById("reason");
+    var reason = input ? input.value.trim() : "";
+
+    if (act === "reject" && !reason) {
+      say("bad", "A reason is required — it is filed as a lesson the next run is handed.", "gate");
+      render();
+      var again = document.getElementById("reason");
+      if (again) { again.focus(); }
+      return;
+    }
+    if (act === "approve" && !S.armed) {
+      S.armed = true; S.said = null; render(); return;
+    }
+    S.armed = false; S.busy = true; S.said = null; S.sel = null; render();
+    api("/api/gate/" + act, { id: g.id, reason: reason })
+      .then(function (r) { apply(r, "gate"); }, function () {
+      S.busy = false; say("bad", "the instance stopped answering", "gate"); render();
+    });
+  }
+
+  el.main.addEventListener("click", function (ev) {
+    var starter = ev.target.closest("[data-starter]");
+    if (starter) { return provision(starter.dataset.starter); }
+    var item = ev.target.closest(".q-item");
+    if (item) {
+      S.sel = Number(item.dataset.id); S.armed = false; S.said = null;
+      return render();
+    }
+    var btn = ev.target.closest("[data-act]");
+    if (!btn) { return; }
+    if (btn.dataset.act === "run") { return startRun(btn.dataset.kind); }
+    if (btn.dataset.act === "reset") { return provision(""); }
+    decide(btn.dataset.act);
+  });
+
+  el.main.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target.id === "reason") {
+      ev.preventDefault();
+      decide("reject");
+    }
+  });
+
+  // ── polling ──────────────────────────────────────────────────────────────
+  function refresh() {
+    return api("/api/state").then(function (r) {
+      if (!r.ok || !r.body || r.body.connected !== true) { throw new Error("no instance"); }
+      S.live = true;
+      // never redraw underneath someone mid-decision
+      if (!S.busy && !S.armed) { S.data = r.body; render(); }
+      return r.body;
+    });
+  }
+
+  function schedule() {
+    clearTimeout(S.timer);
+    var active = S.data && S.data.run && S.data.run.active;
+    S.timer = setTimeout(tick, active ? 1200 : 8000);
+  }
+
+  function tick() {
+    refresh().then(schedule, function () { S.live = false; render(); });
+  }
+
+  refresh().then(schedule, function () { S.live = false; render(); });
 })();
 </script>
 </body>

@@ -153,14 +153,28 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
-python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
+# the acceptance suites (CI runs every one of them on each push)
+python3 gov/verify.py           #  16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py       #  36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py      #  39 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_builder.py   #  51 — the autonomous loop, isolation, the merge gate
+python3 gov/verify_campaign.py  #  37 — the fleet, strategies, the champion, dry rounds
+python3 gov/verify_guests.py    #  48 — guest identity: forged, edited, replayed cookies
+python3 gov/verify_metrics.py   #  65 — the ledger, its arithmetic, starter workspaces
+python3 gov/verify_gate.py      #  67 — the service over real HTTP, two guests, isolation
+python3 gov/console_smoke.py    #       headless console API smoke
 
-# the live console
-python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+# end to end, with the numbers — provisions repos, runs fleets, merges, reports
+python3 gov/smoke.py
+
+# the merge gate, as a page: your repository, bound to loopback
+python3 gov/gate.py --repo ~/yourrepo      # → http://127.0.0.1:8788
+
+# or as a service: a guest session and a starter workspace per visitor
+python3 gov/gate.py --serve --port 8788
+
+# the settlement console
+python3 gov/sim_console.py --seed
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to
@@ -173,6 +187,8 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
+| `GATE_SECRET` | signs guest sessions — set it so a restart does not sign everyone out |
+| `GATE_MAX_RUNS` / `GATE_MAX_CONCURRENT` | what one anonymous visitor, and the instance, may spend |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |
 
 Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console reads
@@ -250,7 +266,11 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `worker.py` | the coding agent — patch, test, get paid for green |
 | `worktree.py` | isolation — a git branch and checkout per task; your tree is never touched |
 | `solver.py` | the executor seam — a task in, files out; plus the strategy ladder |
-| `builder.py` | autonomous development — the unattended run, and the human merge gate |
+| `builder.py` | autonomous development — the unattended run, the human merge gate, the retrospective |
+| `gate.py` | the gate as a page — the review surface, single-operator or multi-guest |
+| `guests.py` | identity without accounts — signed sessions, one workspace each |
+| `starter.py` | real repositories with real defects, built on demand for a guest |
+| `metrics.py` | the ledger — every sortie, kept or not; keep rates, cost per test |
 | `campaign.py` | the fleet — many agents, many strategies, one problem, a champion that only ever advances |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |

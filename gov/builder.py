@@ -45,6 +45,7 @@ sys.path.insert(0, HERE)
 
 import anchor
 import economy
+import metrics as M
 import solver as S
 import workspace as W
 import worktree as WT
@@ -141,7 +142,8 @@ def park(*, repo: str, branch: str, base_branch: str, base_sha: str, agent: str,
 # ── one task, start to finish ─────────────────────────────────────────────────
 
 def solve_task(agent: str, task: dict, repo: str, *, solve=None,
-               max_attempts: int = DEFAULT_ATTEMPTS, log=print) -> dict:
+               max_attempts: int = DEFAULT_ATTEMPTS, log=print,
+               run_id: str = "", kind: str = "builder") -> dict:
     """Work one task to a merge-ready branch, or give up and say why.
 
     Runs entirely inside a fresh worktree. The caller's checkout is never written to,
@@ -176,17 +178,35 @@ def solve_task(agent: str, task: dict, repo: str, *, solve=None,
                 break
             req = _request(agent, task, repo_cfg, before, target, test_file,
                            attempt, last_outcome)
+            started = time.time()
+
+            def _record(outcome, after_state, cost, files_touched=0, detail=""):
+                """Every attempt is written down, kept or not. A ledger that only
+                recorded successes would make any fleet look brilliant."""
+                M.sortie(run_id or f"adhoc-{int(started)}", kind=kind, repo=repo,
+                         agent=agent, outcome=outcome, attempt=attempt,
+                         tests_before=before["passed"],
+                         tests_after=after_state.get("passed", before["passed"]),
+                         tests_total=before["total"], files=files_touched, cost=cost,
+                         duration_ms=int((time.time() - started) * 1000), detail=detail)
+
             try:
                 result = solve(req)
             except Exception as e:                 # a dead executor is a failed turn
                 last_outcome = f"the executor failed: {str(e)[:200]}"
                 history.append(f"attempt {attempt}: executor error")
                 economy.charge(agent, COST_PER_ATTEMPT)
+                _record(M.ERROR, before, COST_PER_ATTEMPT, detail=str(e)[:120])
                 log(f"  {agent}: attempt {attempt} — executor error: {str(e)[:80]}")
                 continue
-            economy.charge(agent, int(result.get("tokens") or COST_PER_ATTEMPT))
-            kept, last_outcome, after = try_patch(agent, result.get("files") or {}, before)
+            cost = int(result.get("tokens") or COST_PER_ATTEMPT)
+            economy.charge(agent, cost)
+            patch = result.get("files") or {}
+            kept, last_outcome, after = try_patch(agent, patch, before)
             history.append(f"attempt {attempt}: {last_outcome}")
+            _record(M.classify(kept, last_outcome,
+                               kept and task["test"] not in after["failures"]),
+                    after, cost, files_touched=len(patch), detail=last_outcome)
             log(f"  {agent}: attempt {attempt} — {last_outcome}")
             if kept and task["test"] not in after["failures"]:
                 return _park_at_gate(agent, task, wt, repo, before, after,
@@ -221,7 +241,12 @@ def _request(agent, task, repo_cfg, before, target, test_file, attempt, last_out
             "failure_report": W.failure_report(task["test"], before),
             "files": files, "test_sources": test_sources,
             "writable": W.list_sources(80), "attempt": attempt,
-            "last_outcome": last_outcome}
+            "last_outcome": last_outcome,
+            # The settlement's rule, applied here: wisdom flows into every decision
+            # that reads the situation. A lone agent was the one path that never saw
+            # what the organization had already paid to learn — including the reasons
+            # humans gave when they rejected work at the gate.
+            "lessons": [s["lesson"] for s in anchor.skills_top(8)]}
 
 
 def try_patch(agent: str, files: dict, before: dict) -> tuple[bool, str, dict]:
@@ -334,12 +359,77 @@ def _abandon(agent, task, wt, repo, reason, history, attempts) -> dict:
 
 # ── the run ───────────────────────────────────────────────────────────────────
 
+def retrospective(run_id: str, repo: str) -> list[str]:
+    """Turn one run into lessons the next run is handed.
+
+    The settlement distils a retrospective when a vision completes and files it in the
+    skills store, where it steers every later decision. The Builder needs the same
+    loop or it repeats its most expensive mistake forever — and the material is
+    already there, because every sortie was written down whether it was kept or not.
+
+    Derived from the ledger rather than from a model: these have to be true, and a
+    deployment with no API key still has to learn. Duplicates are dropped by
+    ``anchor.skill_add``, so a repeated finding does not crowd out the rest."""
+    rows = M.run_sorties(run_id)
+    if not rows:
+        return []
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+    n = len(rows)
+    paying = sum(counts.get(o, 0) for o in M.PAYING)
+    lessons = []
+
+    worst = max((o for o in counts if o not in M.PAYING),
+                key=lambda o: counts[o], default="")
+    if worst and counts[worst] >= max(2, n // 3):
+        share = round(100 * counts[worst] / n)
+        lessons.append({
+            M.NO_CHANGE: f"{share}% of attempts changed nothing the oracle could see — "
+                         "state the contract the test asserts before editing, and verify "
+                         "the edit reaches the code path under test.",
+            M.REGRESSION: f"{share}% of attempts were reverted for breaking a passing "
+                          "test — read the neighbouring behaviour before widening a change.",
+            M.REFUSED: f"{share}% of attempts were refused for writing to a protected "
+                       "path — the tests and their configuration are read-only; fix the "
+                       "source instead.",
+            M.NO_VERDICT: f"{share}% of attempts stopped the suite reporting at all — "
+                          "an import-time error costs the whole attempt, so keep the "
+                          "module importable.",
+            M.ERROR: f"{share}% of attempts failed inside the executor rather than at "
+                     "the oracle — shrink the reply before adding more context.",
+        }.get(worst, ""))
+
+    by_attempt: dict[int, list] = {}
+    for r in rows:
+        by_attempt.setdefault(r["attempt"], []).append(r)
+    dead = [a for a, rs in sorted(by_attempt.items())
+            if a > 1 and not any(x["outcome"] in M.PAYING for x in rs)]
+    if dead and len(by_attempt) > 1:
+        lessons.append(f"Retries at attempt {min(dead)} and beyond paid nothing on this "
+                       f"repository ({sum(len(by_attempt[a]) for a in dead)} sorties spent) — "
+                       "change the approach on retry, not just the wording.")
+
+    if paying == 0:
+        lessons.append("A whole run produced no patch the oracle would keep — the next "
+                       "run should target a different test or widen the file it is "
+                       "allowed to edit.")
+
+    filed = []
+    for lesson in [l for l in lessons if l]:
+        if anchor.skill_add(-1, lesson, source=f"builder-retrospective:{run_id}",
+                            trigger=os.path.basename(repo or "")):
+            filed.append(lesson)
+    return filed
+
+
 def run(repo: str = "", test_cmd: str = "", agents: int = 1,
         max_attempts: int = DEFAULT_ATTEMPTS, limit: int = 0,
-        solve=None, log=print) -> dict:
+        solve=None, log=print, actor: str = "", agent_prefix: str = "dev") -> dict:
     """Work the backlog unattended. Returns a report; parks every success at the gate."""
     anchor.init()
     economy.init()
+    M.init()
     init()
     cfg = W.configure(repo=repo, test_cmd=test_cmd)
     repo = cfg["repo"]
@@ -366,10 +456,16 @@ def run(repo: str = "", test_cmd: str = "", agents: int = 1,
         return {"ok": True, "results": [], "parked": 0, "tasks": 0,
                 "suite": f"{baseline['passed']}/{baseline['total']}"}
 
-    fleet = [f"dev-{i + 1:02d}" for i in range(max(1, agents))]
+    # Budgets are keyed by agent name, so a service running fleets for several people
+    # at once must not hand them all the same `dev-01` — see campaign.staff.
+    fleet = [f"{agent_prefix}-{i + 1:02d}" for i in range(max(1, agents))]
     for a in fleet:
         economy.ensure(a)
     log(f"{len(open_tasks)} open task(s), fleet {', '.join(fleet)}")
+
+    run_id = f"build-{int(time.time() * 1000):x}"
+    M.run_start(run_id, "builder", repo, actor=actor, agents=len(fleet),
+                before=baseline["passed"], total=baseline["total"])
 
     results = []
     covered = {}                 # test -> branch that already fixes it, pending merge
@@ -391,7 +487,7 @@ def run(repo: str = "", test_cmd: str = "", agents: int = 1,
         log(f"task {task['id']}: {task['title']}  ->  {agent}")
         try:
             r = solve_task(agent, task, repo, solve=solve,
-                           max_attempts=max_attempts, log=log)
+                           max_attempts=max_attempts, log=log, run_id=run_id)
             results.append(r)
             for test in r.get("newly_passing", []):
                 covered.setdefault(test, r.get("branch", ""))
@@ -403,10 +499,18 @@ def run(repo: str = "", test_cmd: str = "", agents: int = 1,
     parked = [r for r in results if r.get("did") == "parked"]
     final = W.oracle()
     report = {"ok": True, "tasks": len(open_tasks), "parked": len(parked),
-              "results": results, "repo": repo,
+              "results": results, "repo": repo, "run_id": run_id,
               "suite_at_base": f"{baseline['passed']}/{baseline['total']}",
               "suite_now": f"{final['passed']}/{final['total']}",
               "gate": [r["gate_id"] for r in parked]}
+    M.run_end(run_id, after=final["passed"] if final["ok"] else baseline["passed"],
+              total=final["total"] if final["ok"] else baseline["total"],
+              solved=bool(parked), gate_ids=[r["gate_id"] for r in parked],
+              note=f"{len(parked)} parked of {len(open_tasks)} task(s)")
+    report["lessons"] = retrospective(run_id, repo)
+    report["performance"] = M.summary(repo=repo)
+    if report["lessons"]:
+        log("\nlearned: " + "; ".join(report["lessons"]))
     if not parked and results:
         # Article IX: a run that achieved nothing must say why, not exit quietly.
         constraint = results[0].get("reason", "no attempt satisfied the oracle")
@@ -437,6 +541,27 @@ def gate_pending(repo: str = "") -> list[dict]:
                  "risk": rk, "risk_why": rw, "attempts": at, "created": cr}
                 for i, r, b, bb, a, t, ti, f, d, rk, rw, at, cr
                 in c.execute(q + " ORDER BY id", args)]
+    finally:
+        c.close()
+
+
+def gate_decided(repo: str = "", limit: int = 20) -> list[dict]:
+    """What has already been answered, newest first. A reviewer needs the ledger as
+    much as the queue — a gate you cannot audit afterwards is not a gate."""
+    init()
+    c = _conn()
+    try:
+        q = ("SELECT id, repo, branch, agent, title, risk, status, decided_by, outcome, "
+             "created FROM gate WHERE status!='pending'")
+        args: list = []
+        if repo:
+            q += " AND repo=?"
+            args.append(os.path.realpath(repo))
+        args.append(int(limit))
+        return [{"id": i, "repo": r, "branch": b, "agent": a, "title": ti, "risk": rk,
+                 "status": st, "decided_by": by, "outcome": oc, "created": cr}
+                for i, r, b, a, ti, rk, st, by, oc, cr
+                in c.execute(q + " ORDER BY id DESC LIMIT ?", args)]
     finally:
         c.close()
 

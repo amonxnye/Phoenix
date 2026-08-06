@@ -11,7 +11,14 @@ gov/aoe-anchor.sqlite-shm
 gov/aoe-events.jsonl
 gov/workspace.sqlite
 gov/builder.sqlite
+gov/guests.sqlite
+gov/metrics.sqlite
 gov/scorecard.json
+
+# The key that signs guest sessions, and the sandboxes it hands out. Never commit
+# either: the secret would let anyone forge a session, and a workspace is disposable.
+gov/gate-secret
+gov/workspaces/
 scorecard.json
 
 # Python
