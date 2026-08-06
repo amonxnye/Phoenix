@@ -177,6 +177,19 @@ class Service:
         d = B.gate_get(gate_id)
         return bool(d) and os.path.realpath(d["repo"]) == os.path.realpath(repo)
 
+    def can_build(self) -> tuple[bool, str]:
+        """Whether this machine can isolate work at all.
+
+        Checked and reported rather than discovered on click: without git there is no
+        worktree, no branch, and therefore no undo — the service has nothing to offer
+        beyond a page, and it should say so in the bar instead of throwing a 500 at
+        the first person who tries."""
+        if starter.git_available():
+            return True, ""
+        return False, ("this instance has no git installed — the agents cannot work, "
+                       "because every attempt runs in a git worktree and the branch is "
+                       "the only undo")
+
     def can_solve(self) -> tuple[bool, str]:
         if self.solve is not None:
             return True, ""
@@ -194,6 +207,9 @@ class Service:
         with abandoned worktrees."""
         if self.operator_repo:
             raise PermissionError("this console is pinned to one repository")
+        ok, why = self.can_build()
+        if not ok:
+            raise RuntimeError(why)
         if ip and self.serve_guests and not self.builds_per_ip.check(ip):
             raise PermissionError("this address has built too many workspaces in the "
                                   "last hour — try again later")
@@ -223,6 +239,9 @@ class Service:
         repo = self.repo_for(sid)
         if not repo:
             return False, "no workspace yet"
+        ok, why = self.can_build()
+        if not ok:
+            return False, why
         ok, why = self.can_solve()
         if not ok:
             return False, why
@@ -296,6 +315,7 @@ class Service:
         repo = self.repo_for(sid)
         g = guests.get(sid) or {}
         can, why = self.can_solve()
+        git_ok, git_why = self.can_build()
         pending = []
         for row in B.gate_pending(repo) if repo else []:
             full = B.gate_get(row["id"]) or {}
@@ -311,6 +331,7 @@ class Service:
             },
             "workspace": self.workspace_view(repo),
             "model": {"available": can, "why": why},
+            "git": {"available": git_ok, "why": git_why},
             "catalogue": starter.catalogue() if self.serve_guests else [],
             "pending": pending,
             "decided": B.gate_decided(repo, limit=15) if repo else [],
@@ -490,6 +511,9 @@ def make_handler(service: Service):
                                            ip=self._client_ip())
                 except PermissionError as e:
                     return self._err(429, str(e))
+                except RuntimeError as e:
+                    # the environment is at fault, not the request
+                    return self._err(503, str(e)[:200])
                 except Exception as e:
                     return self._err(500, f"could not build a workspace: {str(e)[:200]}")
                 return self._send(200, json.dumps({"ok": True, "workspace": ws,
@@ -564,7 +588,10 @@ def main(argv=None) -> int:
                          host=a.host, port=a.port)
     service.start_sweeper()
     ok, why = service.can_solve()
+    git_ok, git_why = service.can_build()
     print(f"phoenix gate → http://{a.host}:{a.port}")
+    if not git_ok:
+        print(f"  WARNING: {git_why}")
     print(f"  mode: {'one repository — ' + service.operator_repo if service.operator_repo else 'guests, one workspace each'}")
     print(f"  model: {'ready' if ok else why}")
     if service.serve_guests:

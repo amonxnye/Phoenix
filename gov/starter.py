@@ -20,6 +20,7 @@ model's taste instead.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -237,9 +238,24 @@ def pick(seed: str = "") -> str:
     return ORDER[sum(seed.encode()) % len(ORDER)]
 
 
+def git_available() -> bool:
+    """Whether this machine has git at all.
+
+    Worth asking before anything else: the Builder's undo *is* a branch, so an
+    environment without git has no isolation to offer, and finding that out when a
+    visitor clicks a button is finding out too late."""
+    return shutil.which("git") is not None
+
+
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(("git", "-C", repo) + args, capture_output=True,
-                          text=True, timeout=60)
+    try:
+        return subprocess.run(("git", "-C", repo) + args, capture_output=True,
+                              text=True, timeout=60)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "git is not installed on this machine. The Builder cannot work without "
+            "it — every attempt runs in a git worktree and rejecting a patch means "
+            "deleting a branch.") from None
 
 
 def provision(dest: str, name: str = "") -> dict:
@@ -249,6 +265,11 @@ def provision(dest: str, name: str = "") -> dict:
     RuntimeError if git is unavailable or the suite does not fail as claimed —
     handing out a workspace with nothing wrong in it would waste a guest's run and
     quietly break the one measurement the whole system rests on."""
+    if not git_available():
+        raise RuntimeError(
+            "git is not installed on this machine. The Builder cannot work without "
+            "it — every attempt runs in a git worktree and rejecting a patch means "
+            "deleting a branch.")
     name = name if name in STARTERS else ORDER[0]
     spec = STARTERS[name]
     os.makedirs(dest, exist_ok=True)

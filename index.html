@@ -896,6 +896,16 @@ export BRAIN_API_KEY=sk-ant-...
   function renderNoWorkspace() {
     var d = S.data;
     var cat = d.catalogue || [];
+    var git = d.git || { available: true };
+    if (!git.available) {
+      // An environment fault, not a user error. Saying so beats a button that 500s.
+      return '<div class="panel">' +
+        "<h3>This instance cannot run agents.</h3>" +
+        '<p class="said bad">' + esc(git.why) + "</p>" +
+        "<p>The page and the API are fine — what is missing is the isolation the " +
+        "whole design rests on. Install git where this is running and reload.</p>" +
+      "</div>";
+    }
     return '<div class="panel">' +
       "<h3>Pick something for the fleet to fix.</h3>" +
       "<p>Each one builds a real git repository with a real test suite that really " +

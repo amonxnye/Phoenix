@@ -440,6 +440,49 @@ check("and the tests it must satisfy, read-only",
       req_seen and req_seen[0].get("test_sources"))
 
 # ─────────────────────────────────────────────────────────────────────────────
+section("A hostile environment")
+
+# This is here because a real deployment failed exactly this way: the image had no
+# git, the page served perfectly, and the first visitor to click a starter got a 500
+# with a stack trace behind it. An environment fault has to be detected, reported and
+# answered with the right status code — not discovered by a stranger.
+check("git availability is something the service can answer",
+      starter.git_available() is True)
+check("and the service reports it", service.can_build()[0] is True)
+
+# gate.starter IS starter — the same module object — so the original has to be held
+# before it is replaced, or the restore puts the stub back on top of itself.
+real_git_available = starter.git_available
+try:
+    starter.git_available = lambda: False
+    ok, why = service.can_build()
+    check("with no git the service says so plainly", not ok and "git" in why, why[:60])
+
+    _, _, blind_raw = http("GET", "/api/state")
+    blind = jar(blind_raw)
+    _, blind_state, _ = http("GET", "/api/state", cookie=blind)
+    check("the state payload carries the reason for the page to show",
+          blind_state.get("git", {}).get("available") is False
+          and blind_state["git"]["why"])
+
+    status, refused, _ = http("POST", "/api/workspace", {"starter": "orders"},
+                              cookie=blind)
+    check("provisioning answers 503, not 500 — the request was not at fault",
+          status == 503, refused.get("error", "")[:60])
+
+    raised = ""
+    try:
+        starter.provision(tempfile.mkdtemp(prefix="nogit-"), "orders")
+    except RuntimeError as e:
+        raised = str(e)
+    check("and provisioning refuses before touching the disk", "git" in raised.lower(),
+          raised[:60])
+finally:
+    starter.git_available = real_git_available
+
+check("the service recovers once git is back", service.can_build()[0] is True)
+
+# ─────────────────────────────────────────────────────────────────────────────
 section("Ceilings — what bounds an anonymous stranger")
 
 c = gate.Ceiling(limit=2, window=3600)
