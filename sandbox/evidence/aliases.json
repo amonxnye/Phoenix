@@ -1,0 +1,31 @@
+{
+  "EGFR": [
+    "EGFR",
+    "ERBB",
+    "ERBB1",
+    "HER1",
+    "Epidermal growth factor receptor"
+  ],
+  "KRAS": [
+    "KRAS",
+    "KRAS2",
+    "RASK2",
+    "GTPase KRas"
+  ],
+  "MTOR": [
+    "MTOR",
+    "FRAP",
+    "FRAP1",
+    "FRAP2",
+    "RAFT1",
+    "RAPT1",
+    "Serine/threonine-protein kinase mTOR"
+  ],
+  "PRKAA1": [
+    "PRKAA1",
+    "AMPK1",
+    "5'-AMP-activated protein kinase catalytic subunit alpha-1",
+    "AMPK",
+    "AMP-activated protein kinase"
+  ]
+}

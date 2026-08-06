@@ -1,0 +1,16 @@
+{
+  "abstract": "Hematologic malignancies are driven by dysregulated growth and survival signaling pathways that promote proliferation, treatment resistance, and disease progression. Naturally derived compounds targeting multiple oncogenic pathways with low toxicity have gained interest. Apigenin, a dietary flavonoid, shows anticancer activity in solid tumors, but its molecular effects in hematologic malignancies remain unclear. The antineoplastic effects of apigenin were evaluated in K562 (chronic myeloid leukemia) and DOHH2 (B-cell lymphoma) cell lines. Cell viability was assessed using the CCK-8 assay. L929 (mouse fibroblast) cells were included to evaluate selectivity. EGFR, MAPK, PI3K, NF-\u03baB, caspase-3, and caspase-7 levels were measured by ELISA. Apoptosis and cell cycle distribution were analyzed by flow cytometry. Apigenin reduced cell viability in a dose-dependent manner, with IC 50 values of 84.14 \u03bcM (K562) and 70.11 \u03bcM (DOHH2). It suppressed EGFR, MAPK, PI3K, and NF-\u03baB signaling and increased the caspase-3 and caspase-7 levels ( p < 0.001). Flow cytometry showed S-phase arrest and increased apoptosis. L929 cells showed limited reduction in viability at higher concentrations. Apigenin exerts antiproliferative and pro-apoptotic effects via inhibition of the EGFR/MAPK and PI3K/Akt pathways and activation of caspase-mediated apoptosis. Lower sensitivity in L929 cells suggests relative selectivity, supporting further in vivo and clinical studies.",
+  "authors": "Terzi H, Ta\u015ftemur \u015e, \u00d6zt\u00fcrk A, Ba\u015fg\u00f6z Karagu\u015f N, Konta\u015f ME, Mahmuto\u011flu O, G\u00fcng\u00f6r A, \u015eencan M.",
+  "doi": "10.3390/ijms27114657",
+  "id": "PMID:42278191",
+  "journal": "International journal of molecular sciences",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13256365",
+  "pmid": "42278191",
+  "retrieved_at": "2026-08-06T06:09:09Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42278191",
+  "title": "Apigenin as a Multitarget Anticancer Agent: Coordinated Inhibition of EGFR/MAPK and PI3K/Akt Signaling in Hematologic Malignancies.",
+  "year": "2026"
+}

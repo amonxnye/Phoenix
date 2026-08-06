@@ -1,0 +1,58 @@
+{
+  "_note": "A replication campaign. A human states what the paper claims (each with the sentence it comes from), which reported statistics are recomputable from the paper's own counts, which searches may be tried if the evidence in hand is not enough, and which equivalences the campaign is ALLOWED to declare. The machine checks; it does not invent claims or equivalences.",
+  "target": "PMID:41964971",
+  "claims": [
+    {
+      "subject": "calorie-carbohydrate restriction",
+      "relation": "induces",
+      "object": "diabetes remission",
+      "quote": "Conclusions Both calorie-carbohydrate restriction alone and in combination with intermittent fasting significantly improved glycemic control and induced diabetes remission compared with the control group."
+    }
+  ],
+  "recomputations": [
+    {"label": "CCR remission rate 9/40", "kind": "percentage",
+     "args": {"count": 9, "total": 40, "dp": 1}, "reported": 22.5},
+    {"label": "IFCCR remission rate 12/40", "kind": "percentage",
+     "args": {"count": 12, "total": 40, "dp": 1}, "reported": 30.0},
+    {"label": "control remission rate 1/40", "kind": "percentage",
+     "args": {"count": 1, "total": 40, "dp": 1}, "reported": 2.5},
+    {"label": "OR CCR vs control", "kind": "two_by_two",
+     "args": {"a": 9, "b": 31, "c": 1, "d": 39}, "reported": 11.7},
+    {"label": "OR IFCCR vs control", "kind": "two_by_two",
+     "args": {"a": 12, "b": 28, "c": 1, "d": 39}, "reported": 18.1},
+    {"label": "OR IFCCR vs CCR", "kind": "two_by_two",
+     "args": {"a": 12, "b": 28, "c": 9, "d": 31}, "reported": 1.5},
+    {"label": "CI shape, CCR vs control", "kind": "ci_symmetry",
+     "args": {"lo": 1.4, "hi": 98.3}, "reported": 11.7},
+    {"label": "CI shape, IFCCR vs control", "kind": "ci_symmetry",
+     "args": {"lo": 2.2, "hi": 151.0}, "reported": 18.1},
+    {"label": "CI shape, IFCCR vs CCR", "kind": "ci_symmetry",
+     "args": {"lo": 0.6, "hi": 4.3}, "reported": 1.5}
+  ],
+  "queries": [
+    "\"led to remission of type 2 diabetes\"",
+    "\"induced remission of type 2 diabetes\"",
+    "(remission AND \"type 2 diabetes\" AND (\"energy restriction\" OR \"calorie restriction\" OR \"low-energy diet\")) AND (randomised OR randomized OR trial)",
+    "\"total diet replacement\" AND remission AND \"type 2 diabetes\"",
+    "\"diabetes remission\" AND \"weight management\" AND primary care",
+    "\"intermittent fasting\" AND \"type 2 diabetes\" AND remission AND randomised"
+  ],
+  "per_query": 10,
+  "equivalences": [
+    {
+      "entity": "calorie restriction",
+      "names": ["calorie-carbohydrate restriction", "caloric restriction",
+                "very low calorie diet", "very low calorie diets", "low-calorie diet",
+                "low-energy diet", "low-energy dietary intervention", "energy restriction",
+                "intermittent energy restriction", "intermittent calorie restriction",
+                "total diet replacement", "dietary intervention"],
+      "_justification": "all are dietary energy-restriction interventions; a reviewer who thinks total diet replacement is not the same as calorie-carbohydrate restriction should reject any finding that relies on it"
+    },
+    {
+      "entity": "diabetes remission",
+      "names": ["remission of type 2 diabetes", "type 2 diabetes remission",
+                "T2DM remission", "T2D remission", "remission in type 2 diabetes"],
+      "_justification": "naming variants of the same outcome; remission definitions still differ between trials, which is listed as a limitation on the dossier"
+    }
+  ]
+}

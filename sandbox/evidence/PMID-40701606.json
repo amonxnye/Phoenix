@@ -1,0 +1,16 @@
+{
+  "abstract": "Introduction If a person is in diabetes remission, even if only for a short time, this reduces the risk of later diabetes complications and lowers healthcare costs. A recent study shows that long-term remission of type 2 diabetes can be achieved through calorie restriction using total diet replacement. However, this intervention involves support through face-to-face meetings every 2 to 4 weeks over a 2-year period, which is not feasible in routine care with limited resources. Therefore, we have developed an eHealth programme to help patients achieve diabetes remission through calorie restriction in a cost-effective manner. Our primary hypothesis is that an eHealth programme will be non-inferior to face-to-face meetings in helping patients with type 2 diabetes achieve remission through caloric restriction. Our second hypothesis is that eHealth support will be more cost-effective than face-to-face support. Methods and analysis The eHealth DIabetes remission Trial is a multicentre, two-arm, non-inferiority, open-label, randomised controlled parallel group trial with blinded endpoint assessment conducted at two centres in Sweden. The study duration is 2 years. People with type 2 diabetes (\u22646 years duration) use total diet replacement (approximately 900 kcal/day) with the aim of losing 15 kg and achieving diabetes remission. Participants are randomly assigned to either the eHealth support group or the face-to-face support group. The treatment programme to achieve and maintain weight loss is the same in both groups, but the method of support differs between the groups. The primary outcome is haemoglobin A1c (HbA1c) after 1 year. The secondary outcome is HbA1c at 6 months and 2 years. Other important secondary outcomes are diabetes remission rate, body weight and cost-effectiveness. The latter is assessed using the incremental cost per quality-adjusted life-years gained. Ethics and dissemination The study was approved by the Swedish Ethical Review Authority (Dnr 2022-02242-01, 2023-03707-02). The results will be published in peer-reviewed scientific journals and discussed at national and international conferences and with patient organisations. Trial registration number ClinicalTrials.gov (NCT05491005).",
+  "authors": "Otten J, Tellstr\u00f6m A, Schien C, Chninou Y, Lindholm L, Winkvist A, Liv P, Stomby A.",
+  "doi": "10.1136/bmjopen-2024-095100",
+  "id": "PMID:40701606",
+  "journal": "BMJ open",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC12306309",
+  "pmid": "40701606",
+  "retrieved_at": "2026-08-06T07:44:26Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/40701606",
+  "title": "eHealth versus face-to-face support for remission of type 2 diabetes by calorie restriction (eHealth DIabetes remission Trial): study protocol for a non-inferiority parallel group randomised controlled trial.",
+  "year": "2025"
+}

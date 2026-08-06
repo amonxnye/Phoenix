@@ -1,0 +1,16 @@
+{
+  "abstract": "Background Osteoarthritis (OA) is a chronic degenerative disease primarily characterized by articular cartilage degradation and chondrocyte dysfunction. Mitochondrial impairment and oxidative stress in chondrocytes are pivotal contributors to OA pathogenesis. Emerging evidence suggests that metformin, beyond its role in glucose regulation, exhibits antioxidative and anti-inflammatory properties via activation of AMP-activated protein kinase (AMPK). Nonetheless, how metformin regulates mitochondrial dynamics and autophagy in OA remains to be fully elucidated. Methods A mouse anterior cruciate ligament transection (ACLT) model and an IL-1\u03b2-induced oxidative stress model in human chondrocytes were established. Following metformin administration, a comprehensive assessment was conducted using histological staining, immunohistochemistry, Western blotting, flow cytometry, confocal microscopy, and AMPK siRNA transfection to evaluate the effects of metformin on mitochondrial function, autophagic activity, and oxidative stress in chondrocytes. Results Metformin markedly improved articular cartilage architecture in ACLT mice and enhanced the stability of the cartilage matrix. It activated AMPK signaling in chondrocytes while suppressing Dynamin-related protein 1 (Drp1) phosphorylation at Ser637, thereby promoting mitochondrial fission and mitophagy. By reducing reactive oxygen species accumulation, restoring mitochondrial membrane potential, and inhibiting NOD-like receptor thermal protein domain associated protein 3 inflammasome activation, metformin effectively mitigated oxidative stress in chondrocytes. AMPK siRNA experiments further demonstrated that the AMPK/Drp1 axis is pivotal for metformin-induced mitochondrial protection and promotion of chondrocyte proliferation. Conclusion This study demonstrates that metformin delays osteoarthritis progression by activating the AMPK/Drp1 pathway to modulate mitochondrial fission and mitophagy, attenuate oxidative stress, and restore chondrocyte function. These findings provide novel mechanistic insight into the therapeutic potential of metformin in osteoarthritis and highlight mitochondrial dynamics as a promising target for future OA interventions.",
+  "authors": "Yang Y, Zhou H, Yang J, Li F, Hu Q, Jia Y, Huang W, Qin L, Zhou Y.",
+  "doi": "10.2147/jir.s540176",
+  "id": "PMID:41884158",
+  "journal": "Journal of inflammation research",
+  "license": "cc by-nc",
+  "open_access": true,
+  "pmcid": "PMC13012564",
+  "pmid": "41884158",
+  "retrieved_at": "2026-08-06T06:09:06Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/41884158",
+  "title": "Metformin Attenuates Osteoarthritis Progression by Modulating Mitochondrial Dynamics via Activation of the AMPK/Drp1 Pathway.",
+  "year": "2026"
+}

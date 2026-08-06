@@ -74,6 +74,20 @@ def enlist(agent: str, tier: int = 0) -> None:
         c.close()
 
 
+def ensure(agent: str) -> None:
+    """Enlist an agent only if it is not already on the ledger. `enlist` deliberately
+    RESETS a reused id to a fresh villager, so a long-lived agent that calls it every
+    cycle silently loses its cumulative contribution — and never earns promotion
+    (Article II.2). Anything that credits the same agent repeatedly uses this."""
+    c = _conn()
+    try:
+        if c.execute("SELECT 1 FROM ledger WHERE agent=?", (agent,)).fetchone():
+            return
+    finally:
+        c.close()
+    enlist(agent)
+
+
 def credit(agent: str, amount: int) -> None:
     """Record measured contribution (value produced) for this agent."""
     c = _conn()

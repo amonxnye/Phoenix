@@ -1,0 +1,16 @@
+{
+  "abstract": "Background Type 2 diabetes mellitus (T2DM) is increasing worldwide, largely due to obesity and unhealthy lifestyle behaviors. Weight-loss-induced diabetes remission offers a promising approach to reducing complications and improving quality of life. Addressing this effectively requires a comprehensive approach that targets behavioral and environmental determinants and is guided by the Intervention Mapping (IM) protocol. Objective This paper describes the protocol for a randomized controlled trial comparing two low-calorie dietary approaches for achieving diabetes remission in adults with T2DM, using an IM-based intervention framework. Methods This is a two-phase, multi-center, parallel-group randomized controlled trial conducted in primary medical centers in Northern Lebanon. A total of 50 adults aged 18-65 years, with a maximum diabetes duration of 6 years and treated with oral antidiabetic medications, are enrolled. Participants are randomly assigned to follow either a low-calorie Mediterranean-style diet or a low-calorie, low-carbohydrate diet. The study consists of a 6-month weight loss phase developed using the six steps of the (IM) protocol, followed by a 6-month maintenance phase supported by a mobile health application, resulting in a total follow-up duration of 12 months. The primary outcome is diabetes remission at 6 months (HbA 1c < 6.5% with or without discontinuation of medication). Secondary outcomes include sustained remission at 12 months, changes in weight and body composition, glycemic control, lipid profile, sleep quality, physical activity, psychological stress, and inflammatory markers. Secondary outcomes will be assessed at baseline and every 3 months and analyzed exploratorily. Discussion Sustained weight loss is essential for achieving diabetes remission and reducing metabolic complications; however, long-term success depends on realistic and maintainable behavioral changes. This protocol applies the IM framework to systematically develop a culturally relevant, theory-based intervention tailored to individuals with T2DM in Lebanon. By combining dietary strategies with behavioral support and mobile health technology, the study addresses barriers to long-term adherence. The findings are expected to inform the design of scalable, context-specific interventions for diabetes management in similar low- and middle-income settings. Clinical trial registration https://www.isrctn.com/ISRCTN99204002, Identifier ISRCTN99204002.",
+  "authors": "Ayoub JJ, Haidar SA, Blaak EE, De Ruijter D.",
+  "doi": "10.3389/fpubh.2026.1787980",
+  "id": "PMID:42027922",
+  "journal": "Frontiers in public health",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13100829",
+  "pmid": "42027922",
+  "retrieved_at": "2026-08-06T07:44:28Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42027922",
+  "title": "A randomized controlled trial protocol comparing low-calorie Mediterranean and low-carbohydrate diets for diabetes remission in individuals with type 2 diabetes in northern Lebanon: an intervention mapping-based approach.",
+  "year": "2026"
+}

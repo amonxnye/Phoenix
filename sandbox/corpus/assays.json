@@ -1,0 +1,14 @@
+{
+  "_note": "Public descriptor table + target pharmacophores. This is the toy stand-in for a real computational assay adapter (docking, ADMET, materials sim). Deterministic given inputs: the same compound/target pair always returns the same score, which is what makes it an oracle rather than an opinion.",
+  "compounds": {
+    "CMP-101": {"mw": 412.5, "logp": 3.2, "hbd": 2, "hba": 6, "tpsa": 88.4, "arom": 3, "rotb": 5},
+    "CMP-202": {"mw": 486.9, "logp": 4.1, "hbd": 1, "hba": 7, "tpsa": 102.1, "arom": 4, "rotb": 7},
+    "CMP-303": {"mw": 351.4, "logp": 2.4, "hbd": 3, "hba": 5, "tpsa": 76.2, "arom": 2, "rotb": 4},
+    "CMP-404": {"mw": 640.2, "logp": 6.3, "hbd": 6, "hba": 12, "tpsa": 168.0, "arom": 5, "rotb": 13}
+  },
+  "targets": {
+    "KIN-X": {"mw": 3.10, "logp": 0.55, "hbd": 0.30, "hba": 0.22, "tpsa": 1.15, "arom": 0.62},
+    "ADAPTOR-Y": {"mw": 2.40, "logp": 0.80, "hbd": 0.45, "hba": 0.18, "tpsa": 0.90, "arom": 0.50}
+  },
+  "admet_limits": {"mw": 500, "logp": 5.0, "hbd": 5, "hba": 10, "tpsa": 140.0, "rotb": 10}
+}

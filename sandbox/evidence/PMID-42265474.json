@@ -1,0 +1,16 @@
+{
+  "abstract": "Background In recent years, metabolic therapies originally developed to treat systemic metabolic disorders have been investigated as potential therapeutic strategies for Metabolic dysfunction-associated steatohepatitis (MASH). Objective This study aimed to critically evaluate recent clinical evidence on emerging metabolic therapies, particularly sodium-glucose cotransporter-2 (SGLT2) inhibitors and incretin-based agents, examining their effects on hepatic and metabolic outcomes and, when available, histological endpoints, as well as safety in patients with MASH. Methods A systematic review of clinical studies evaluating metabolic therapies in patients with MASH or metabolically associated fatty liver disease was conducted. Randomized clinical trials and other relevant clinical studies investigating SGLT2 inhibitors, incretin-based therapies, and other emerging metabolic agents were included. Outcomes of interest comprised metabolic parameters, hepatic outcomes related to steatosis and disease activity, and histological endpoints when available. Results Twelve clinical studies were included. In trials with histological endpoints, semaglutide achieved steatohepatitis resolution without worsening of fibrosis in 62.9% versus 34.3% with placebo in a phase 3 trial (p < 0.001), while a phase 2 trial reported NASH resolution in 59% versus 17% with placebo (p < 0.001), without significant fibrosis improvement (43% versus 33%; p = 0.48). Tirzepatide achieved MASH resolution without worsening of fibrosis in 44-62% of patients versus 10% with placebo (p < 0.001 for all doses), and fibrosis improvement in 51-55% versus 30%. Among SGLT2 inhibitors, dapagliflozin achieved MASH improvement without worsening of fibrosis in 53% versus 30% (p = 0.006), MASH resolution in 23% versus 8% (p = 0.01), and fibrosis improvement in 45% versus 20% (p = 0.001). Overall, metabolic therapies improved body weight, hepatic steatosis, glycemic parameters, and disease activity, but evidence for durable fibrosis regression and long-term liver-related outcomes remains heterogeneous. Conclusion Emerging metabolic therapies show promising effects on metabolic and hepatic outcomes in patients with MASH. Incretin-based therapies appear to exert particularly robust effects on body weight reduction and steatohepatitis resolution, whereas SGLT2 inhibitors may provide complementary metabolic, cardiometabolic, and hepatic benefits. Nevertheless, fibrosis-related effects remain less consistent across studies, and future trials with paired histological endpoints, longer follow-up, and clinically meaningful liver-related outcomes are needed.",
+  "authors": "Cruz AM, Lima BCV, de Ferreira JESM, Teles RB.",
+  "doi": "10.1007/s00228-026-04095-7",
+  "id": "PMID:42265474",
+  "journal": "European journal of clinical pharmacology",
+  "license": "cc by",
+  "open_access": true,
+  "pmcid": "PMC13249686",
+  "pmid": "42265474",
+  "retrieved_at": "2026-08-06T07:44:26Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42265474",
+  "title": "SGLT2 inhibitors and incretin-based therapies for metabolic dysfunction-associated steatohepatitis: a systematic review.",
+  "year": "2026"
+}

@@ -19,7 +19,7 @@ That is the whole selection rule.
 | `main` | The settlement (AoE economy) | game state | advancing the Age | **running live** |
 | `main` | Software (toy) | the test suite | (none — sandbox) | **shipped** (`workspace.py`, `worker.py`, `/work`) |
 | `harness/builder` | Software at real scale | the repo's CI | **the pull request / merge** | design |
-| `harness/research` | Science & discovery | computational assays, benchmark reproduction, citation checks | anything physical or public (reagents, protocols, publishing, IP) | design |
+| `harness/research` | Science & discovery, biology & healthcare | computational assays, benchmark reproduction, and **real citations** — Europe PMC evidence, quoted verbatim and checked | anything physical or public (reagents, protocols, publishing, IP) | **shipped** (steps 1–2 + the real-literature oracle: `research_world.py`, `researcher.py`, `literature.py`) |
 | `harness/security` | Defensive hardening | a PoC that reproduces in a sandboxed replica | any system outside the sandbox; disclosure; prod deploys | design |
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |
@@ -50,6 +50,18 @@ anything where the gate would have to be "trust the model". The honest test is s
 **if the oracle can be gamed, the agents will game it.** Tests can't be gamed from a
 sandbox that cannot edit them; a human approval can't be gamed at all. That is why the
 gate is the foundation and not a feature.
+
+## Keeping a fleet on a problem
+
+Every harness above answers "what is the oracle, what is the gate". The *campaign
+engine* ([`CAMPAIGN.md`](CAMPAIGN.md)) answers the next question: what does an
+organization do when the cheap checks have run out and the problem is still open? It
+climbs a ladder — recompute, search what is held, retrieve more, declare an equivalence,
+weaken the claim, escalate — dropping back to the cheap rungs whenever a round produces
+something. Creativity is reached for only when being ordinary stops working, and the
+judgement rungs are fenced so it cannot redefine the problem until it has "solved" it.
+The first campaign type is **replication**: rebuild a paper's conclusion without taking
+its word for it.
 
 ## The shared build order (every harness follows it)
 

@@ -109,8 +109,8 @@ the specification, and every article names its enforcing module.
 | **II** | Agents are born by quorum, promoted on merit, retired *before* the overshooting spend. No immortals, no zombies, never reaped to empty. | `economy.py`, `sim_console.py` |
 | **III** | Limits are read before acting. The cap has one writer; a blocked action escalates **once**, naming the value, then mutes until it changes. | `governor.py`, `sim_console._breaker` |
 | **IV** | Irreversible actions stop at the gate. The wait is priced, re-routed if unanswered, and bounded by timeout. Reversible work never pauses. | `sim.py` interrupt, `sim_console.py` |
-| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them. | `workspace.py` |
-| **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. | `anchor.py` |
+| **V** | Remove the capability, don't police it. Workers run with no credentials, no network — and cannot edit the tests that judge them; researchers hold no procurement credential, no lab actuator, and cannot write the literature they cite. | `workspace.py`, `research_world.py` |
+| **VI** | Knowledge grows, carries sources, dedups, **expires**, and revives on re-confirmation. Lessons pay net of waste. External evidence enters only through a human-run ingest, stamped with its source, licence and date. | `anchor.py`, `literature.py` |
 | **VII** | Nothing runs unseen. Every decision carries its why, inputs, authorizer, and measured outcome, traceable both ways. | `anchor.py` (decisions, `caused_by`) |
 | **VIII** | Runaway powers go to a Board with **disjoint evidence per seat** and a duty to escalate what it blocks. The Governor is scored on vision points per compute — zero movement caps at 3/10. | `board.py`, `sim_console._governor_report` |
 | **IX** | Inaction is an action, and it is gated too. Ten dead turns or a frozen score is a stall that names its binding constraint and escalates. | `sim_console.py` liveness |
@@ -133,14 +133,34 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
-python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
-python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
+# the acceptance suites (CI runs all nine on every push)
+python3 gov/verify.py            # 16 — runtime, gate, governor, durability
+python3 gov/verify_sim.py        # 36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_work.py       # 12 — real-work oracle, sandbox guards, worker loop
+python3 gov/verify_research.py   # 40 — citation oracle, reproduction gate, dossier gate
+python3 gov/verify_literature.py # 36 — real biomedical evidence, offline and quoted
+python3 gov/verify_replication.py# 37 — recomputed statistics, the campaign ladder, the gate
+python3 gov/lab_console_smoke.py # 34 — the Lab console: gate, claim check, auth, multi-guest isolation
+python3 gov/verify_director.py   # 15 — the settlement play loop: staffing, reclaim, reap
+python3 gov/verify_evalrun.py    # 13 — the headless reproducible-run harness
+python3 gov/console_smoke.py     # headless settlement console API smoke
 
-# the live console
+# real, measured throughput — not estimated (checks brain.available() honestly first)
+python3 gov/perf_report.py
+
+# the console — papers under replication, the evidence, the skills learnt, the human
+# gate. No accounts: every visitor is a guest; evidence/gate/skills are shared, a
+# running campaign's live log is scoped to your own session cookie.
+python3 gov/lab_console.py            # → http://127.0.0.1:8788
+
+# the settlement console (the original testbed)
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
+
+# a whole research session, headless — Vision, evidence, synthesis, the gate
+python3 gov/lab_run.py --fresh
+
+# work a problem until it has an answer: replicate a real paper
+python3 gov/campaign.py --spec sandbox/campaigns/PMID-41964971.json --fresh
 ```
 
 No key needed — a rule-based brain runs everything. To bring the organization to
@@ -228,6 +248,15 @@ Scorecards store permanently and rank at `/leaderboard`. Design: [`EVAL.md`](EVA
 | `sim.py` | the settlement — resources, builds, decay, trade, era pricing, the gate |
 | `workspace.py` | the real-work world — the test-suite oracle, tasks, the closed sandbox |
 | `worker.py` | the coding agent — patch, test, get paid for green |
+| `research_world.py` | the research world — citation oracle, reproduction gate, assay, the dossier gate |
+| `researcher.py` | the research agent — cite, compute, get paid only for verified novelty |
+| `literature.py` | the real biomedical literature as evidence — Europe PMC retrieval, verbatim quote checking, sentence-level support |
+| `lab_run.py` | a headless research session — what `director.py` is for the settlement |
+| `lab_console.py` | the operator's surface — the gate, papers under replication, the claim checker |
+| `campaign.py` | the campaign engine — works a problem until settled, escalated or exhausted; the creativity ladder |
+| `replication.py` | rebuild a paper's conclusion without taking its word for it — fidelity, arithmetic, independence |
+| `statcheck.py` | the recomputation oracle — percentages, odds ratios, CIs, p-values, GRIM, SD bounds, dependency-free |
+| `perf_report.py` | real, measured throughput of the deterministic machinery — never a fabricated number |
 | `anchor.py` | permanent memory — lessons, careers, lineage, telemetry, the event log |
 | `brain.py` | the ONE model seam — any provider, every call cost-logged |
 | `evalrun.py` | headless reproducible runs → scorecards |
@@ -250,6 +279,18 @@ not try to make agents smarter. It tries to make an organization of them account
 - [x] Real board dissent — disjoint evidence, `unknown` votes, degeneracy detection
 - [x] The sandbox — Article V's execution path, first code task shipped
 - [x] Oracle adapter #1 — the test suite (`workspace.py`)
+- [x] Oracle adapter #2 — citations, benchmark reproduction and computational assays
+      (`research_world.py`); the gate is anything physical or public ([`RESEARCH.md`](RESEARCH.md))
+- [x] Oracle adapter #3 — the **real biomedical literature** (`literature.py`): Europe
+      PMC evidence, quotes checked verbatim against the stored paper, negation and
+      opposite-direction citations refused by name — offline and deterministic
+- [x] The **campaign engine** — a fleet kept on a problem until it is settled, escalated
+      or out of budget, with a creativity ladder that cannot destroy verified work; a
+      full audit trail per judgement round and durable skills learnt, both ported from
+      the settlement's own governance ([`CAMPAIGN.md`](CAMPAIGN.md))
+- [x] The **Lab console** as a shared, account-free service — every visitor a guest,
+      evidence/gate/skills collective, a running campaign's log scoped to a session
+      cookie so concurrent guests never cross wires (`lab_console.py`)
 - [ ] **The merge gate** — heralds carrying git diffs; human-approved merges to main
 - [ ] **The eval race** — two+ frontier models on the leaderboard, constitution probes
 - [ ] **Channel notifications (IV.6, industrialized)** — `GATE_WEBHOOK_URL` pushes gate
@@ -275,8 +316,10 @@ not try to make agents smarter. It tries to make an organization of them account
 ## The documents
 
 [`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
-[`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
-[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
+[`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`RESEARCH.md`](RESEARCH.md) ·
+[`LINEAGE.md`](LINEAGE.md) ·
+[`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) ·
+[`CAMPAIGN.md`](CAMPAIGN.md) · [`DEPLOY.md`](DEPLOY.md) ·
 [`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
 
 ## License

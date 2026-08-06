@@ -20,3 +20,15 @@ jobs:
         run: python3 gov/verify_sim.py
       - name: Run the Workspace (real work) acceptance checks
         run: python3 gov/verify_work.py
+      - name: Run the Research (science) acceptance checks
+        run: python3 gov/verify_research.py
+      - name: Run the real-literature (biomedical evidence) acceptance checks
+        run: python3 gov/verify_literature.py
+      - name: Run the replication / campaign acceptance checks
+        run: python3 gov/verify_replication.py
+      - name: Smoke-test the Lab console (the user-facing surface)
+        run: python3 gov/lab_console_smoke.py
+      - name: Run the director (settlement play loop) acceptance checks
+        run: python3 gov/verify_director.py
+      - name: Run the evalrun (headless reproducible run) acceptance checks
+        run: python3 gov/verify_evalrun.py

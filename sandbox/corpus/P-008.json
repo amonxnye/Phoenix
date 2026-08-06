@@ -1,0 +1,22 @@
+{
+  "id": "P-008",
+  "year": 2016,
+  "title": "CMP-404: a high-affinity but poorly developable KIN-X binder",
+  "venue": "Toy Medicinal Chemistry",
+  "abstract": "CMP-404 binds KIN-X with the tightest predicted affinity in this series and paradoxically activates it. Developability properties are poor across every filter applied.",
+  "findings": [
+    {
+      "subject": "CMP-404",
+      "relation": "activates",
+      "object": "KIN-X",
+      "n": 12
+    }
+  ],
+  "assays": [
+    {
+      "compound": "CMP-404",
+      "target": "KIN-X",
+      "affinity": -16.91
+    }
+  ]
+}

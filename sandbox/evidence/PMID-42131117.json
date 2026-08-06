@@ -1,0 +1,16 @@
+{
+  "abstract": "Purpose Endogenous hydrogen sulfide (H 2 S) mediates several biological processes and is an important gaseous signal transmitter akin to carbon monoxide or nitric oxide (NO). The role of H 2 S on auditory signaling pathway remains unknown. We have determined whether ATP can induce generation of H 2 S in outer hair cells (OHCs) and examined whether H 2 S can affect the ATP-stimulated generation of NO in OHCs. Methods Individual OHCs were isolated enzymatically from the guinea pig cochlea. Using H 2 S- and NO-sensitive dyes, 6-Cd II and 4,5-diaminofluorescein diacetate respectively, we monitored the change in generation of H 2 S and NO in response to extracellular ATP in OHCs. Results We observed a gradual increase in 6-Cd II fluorescence induced by extracellular ATP, providing evidence for H 2 S production in OHCs. This ATP-induced H 2 S production was inhibited by suramin, an antagonist of the P2 receptor. ATP did not induce H 2 S production in a Ca 2+ -free medium. This suggests that ATP-induced H 2 S production was mediating by an influx of Ca 2+ via activation of P2-purinergic receptors. The inhibitor of cystathionine \u03b2-synthase (CBS), amino-oxyacetic acid (AOAA), counteracted this increase in 6-Cd II fluorescence, which however was unaffected by cystathionine \u03b3-lyase inhibitors, \u03b2-cyanoalanine or D-L-propargylglycine. L-N G -nitroarginine methyl ester, a non-selective inhibitor of NO synthase, also failed to inhibit ATP-induced H 2 S production. In contrast, AOAA inhibited generation of NO in the presence of ATP in OHCs. Conclusion The current study suggests that ATP-induced H 2 S production is mediating by an influx of Ca 2+ via activation of P2-purinergic receptors. These findings imply generation of H 2 S by CBS in response to exposure to ATP in OHCs. Regulatory cross-talk among ATP, H 2 S, and NO may also exist in the cellular signaling pathways in OHCs.",
+  "authors": "Harada N, Ito Y, Takashima I, Ojida A, Sekiguchi F, Kawabata A.",
+  "doi": "10.26599/joto.2026.9540056",
+  "id": "PMID:42131117",
+  "journal": "Journal of otology",
+  "license": "cc by-nc-nd",
+  "open_access": true,
+  "pmcid": "PMC13162033",
+  "pmid": "42131117",
+  "retrieved_at": "2026-08-06T06:09:10Z",
+  "source": "Europe PMC",
+  "source_url": "https://europepmc.org/article/MED/42131117",
+  "title": "Involvement of cystathionine \u03b2-synthase in ATP-induced hydrogen sulfide production in cochlear outer hair cells.",
+  "year": "2026"
+}
