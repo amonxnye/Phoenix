@@ -151,3 +151,17 @@ class TestBootState(_env.Base):
         A.record(1, "test", "later event")
         A.init()
         self.assertEqual(A.boot_state(), first)     # a later init must not rewrite it
+
+    def test_a_container_directory_is_not_reported_as_a_volume(self):
+        # the check that would have caught the production case immediately: a path can
+        # be configured, writable and non-empty, and still die on the next redeploy
+        import os
+        self.assertIs(A._on_own_device(os.path.dirname(A.DB)), False)
+
+    def test_an_unreachable_path_answers_none_rather_than_guessing(self):
+        self.assertIsNone(A._on_own_device("/no/such/path/anywhere"))
+
+    def test_boot_state_records_whether_the_path_is_its_own_filesystem(self):
+        A._BOOT.clear()
+        A.init()
+        self.assertIn("on_own_device", A.boot_state())

@@ -53,6 +53,19 @@ def _conn() -> sqlite3.Connection:
 _BOOT: dict = {}
 
 
+def _on_own_device(path: str) -> bool | None:
+    """Is this path on a filesystem of its own — i.e. an actual mount?
+
+    A mounted volume has a different device id from the container's root. This is the
+    difference between "GOV_DATA_DIR is set" (a claim about configuration) and "the
+    record will survive a redeploy" (the thing anyone actually cares about). Returns
+    None where the answer cannot be determined rather than guessing either way."""
+    try:
+        return os.stat(path).st_dev != os.stat("/").st_dev
+    except OSError:
+        return None
+
+
 def boot_state() -> dict:
     """What was actually found on disk when this process started.
 
@@ -69,6 +82,7 @@ def init() -> None:
         existed = os.path.exists(DB)
         _BOOT.update({"db_path": DB, "db_existed": existed, "data_dir": _DATA_DIR,
                       "gov_data_dir_set": bool(os.environ.get("GOV_DATA_DIR", "").strip()),
+                      "on_own_device": _on_own_device(_DATA_DIR),
                       "events_at_boot": 0, "careers_at_boot": 0, "generation_at_boot": 0})
         if existed:
             try:

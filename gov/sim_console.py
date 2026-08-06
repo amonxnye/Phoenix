@@ -1464,6 +1464,11 @@ def _snapshot_build(now: float) -> dict:
         # every counter quietly restarting at one.
         boot = anchor.boot_state()
         memory_lost = persistent and not boot.get("db_existed")
+        # The sharper question is not "did this boot find a record?" but "will the
+        # record this world is writing survive the next redeploy?". A mounted volume
+        # sits on its own filesystem; a directory on the container disk does not, and
+        # a GOV_DATA_DIR pointed at one looks identical in every other respect.
+        not_a_volume = boot.get("gov_data_dir_set") and boot.get("on_own_device") is False
         # The settlement's balance sheet — assets on one side, upkeep and burn on the
         # other. Deferred maintenance and a waiting human gate are LIABILITIES.
         w0 = sim.world()
@@ -1507,16 +1512,21 @@ def _snapshot_build(now: float) -> dict:
             "birth_throttle": (anchor.config_get("birth_throttle", "1")
                                if _S["turn"] < anchor.counter_get("throttle_until") else "1"),
             "errors_recent": errors_recent,
-            "storage": ("volume (persistent) — carried "
+            "storage": ("GOV_DATA_DIR IS NOT A MOUNTED VOLUME — it is a directory on "
+                        "the container disk, so everything this world writes is lost "
+                        "on the next redeploy"
+                        if not_a_volume else
+                        "volume (persistent) — carried "
                         f"{boot.get('events_at_boot', 0):,} event"
                         f"{'' if boot.get('events_at_boot') == 1 else 's'} "
                         "from a previous boot"
                         if persistent and not memory_lost else
-                        "durable path set, but it was EMPTY at boot — nothing carried "
-                        "over. Expected on a first deploy; otherwise the volume is not "
-                        "mounted where GOV_DATA_DIR points"
+                        "volume mounted, but EMPTY at boot — nothing carried over. "
+                        "Expected on a first deploy; otherwise this is not the volume "
+                        "holding the previous record"
                         if memory_lost else "ephemeral (resets on redeploy)"),
             "memory_lost": memory_lost,
+            "not_a_volume": not_a_volume,
             "boot": boot,
             # the anchor (skills, reasoning, chats, knowledge) lives in its own DB and
             # is never deleted — not even by a world reset
@@ -1765,6 +1775,7 @@ class Handler(BaseHTTPRequestHandler):
                     "human_gate": sysd["human_gate"], "brain": s["brain"],
                     "storage": sysd["storage"], "uptime_s": sysd["uptime_s"],
                     "memory_lost": sysd.get("memory_lost", False),
+                    "not_a_volume": sysd.get("not_a_volume", False),
                 },
                 "world": {r: s["world"][r] for r in s["resources"]},
                 "fleet": {
@@ -2490,10 +2501,16 @@ async function load(){
     working past budget — the worst at <b>${F.worst_pct}%</b>. At the fleet floor the
     lifecycle is suspended so the world is never left empty (II.5). Adopt a new Vision,
     or raise the cap so replacements can be born.</div></div>`);
-  if(L.memory_lost) al.push(`<div class="alert bad"><div class=txt>
-    <div class=lbl>the permanent record is missing</div>A durable path is configured but
-    was empty at boot — nothing carried over. Expected on a first deploy; otherwise the
-    volume is not mounted where GOV_DATA_DIR points.</div></div>`);
+  if(L.not_a_volume) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>nothing here will survive a redeploy</div>GOV_DATA_DIR is set, but it
+    points at a directory on the container disk rather than a mounted volume. Everything
+    this settlement has written — <b>${num(d.counts.events)} events</b>,
+    ${num(d.counts.agents_ever)} careers, ${num(d.counts.lessons)} lessons — is lost the
+    next time the service restarts. Mount a volume at that path.</div></div>`);
+  else if(L.memory_lost) al.push(`<div class="alert bad"><div class=txt>
+    <div class=lbl>started with no record</div>The volume was empty at boot — nothing
+    carried over. Expected on a first deploy; otherwise this is not the volume holding
+    the previous record.</div></div>`);
   alerts.innerHTML=al.join('')||(d.gate?'':`<p class=sub style="margin:0 0 12px">Nothing
     is waiting on you. The settlement runs itself until it meets a rule it cannot pass
     alone.</p>`);
