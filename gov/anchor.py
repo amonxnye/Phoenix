@@ -633,6 +633,84 @@ def skills_top(limit: int = 5) -> list[dict]:
         c.close()
 
 
+# ── relevance retrieval: the RIGHT lessons, not the newest ───────────────────
+#
+# Injecting `skills_top(3)` fed decisions whatever was learned most recently — which
+# is how the anchor once kept recommending a resource nobody was gathering. Memory
+# that grows is only useful if the part that surfaces is the part that applies.
+#
+# SQLite's FTS5 gives BM25 relevance ranking with no dependency and no embeddings:
+# the index lives in the same file, is rebuilt from the skills table, and degrades
+# gracefully to recency wherever FTS5 is unavailable.
+
+_FTS_OK: bool | None = None
+
+
+def _fts_ready(c: sqlite3.Connection) -> bool:
+    """Create/refresh the lesson index. Returns False if this SQLite lacks FTS5."""
+    global _FTS_OK
+    if _FTS_OK is False:
+        return False
+    try:
+        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts "
+                  "USING fts5(lesson, sid UNINDEXED)")
+        # keep the index in step with the live (non-stale) lessons — cheap: the live
+        # set is bounded to ~30 by skill_prune
+        live = c.execute("SELECT id, lesson FROM skills WHERE stale=0").fetchall()
+        indexed = {r[0] for r in c.execute("SELECT sid FROM skills_fts").fetchall()}
+        want = {i for i, _ in live}
+        for i, lesson in live:
+            if i not in indexed:
+                c.execute("INSERT INTO skills_fts(lesson, sid) VALUES(?,?)", (lesson, i))
+        for gone in indexed - want:                # stale/pruned lessons stop surfacing
+            c.execute("DELETE FROM skills_fts WHERE sid=?", (gone,))
+        c.commit()
+        _FTS_OK = True
+        return True
+    except sqlite3.OperationalError:
+        _FTS_OK = False
+        return False
+
+
+def _fts_query(text: str) -> str:
+    """Turn a situation sentence into a safe FTS OR-query: alphanumeric words only,
+    deduped, short words dropped (they carry no signal and inflate matches)."""
+    words, seen = [], set()
+    for w in "".join(ch if ch.isalnum() else " " for ch in (text or "")).split():
+        wl = w.lower()
+        if len(wl) > 3 and wl not in seen and not wl.isdigit():
+            seen.add(wl)
+            words.append(wl)
+    return " OR ".join(words[:40])
+
+
+def skills_relevant(situation: str, limit: int = 3) -> list[dict]:
+    """The lessons that actually bear on THIS decision, ranked by BM25 relevance.
+    Falls back to the newest lessons when FTS5 is unavailable or nothing matches —
+    a decision is never left without wisdom, it just may be less targeted."""
+    q = _fts_query(situation)
+    if not q:
+        return skills_top(limit)
+    c = _conn()
+    try:
+        if not _fts_ready(c):
+            return skills_top(limit)
+        try:
+            rows = c.execute(
+                "SELECT s.id, s.turn, s.lesson, s.source, s.trigger, s.ts "
+                "FROM skills_fts f JOIN skills s ON s.id = f.sid "
+                "WHERE skills_fts MATCH ? AND s.stale=0 "
+                "ORDER BY bm25(skills_fts) LIMIT ?", (q, limit)).fetchall()
+        except sqlite3.OperationalError:
+            return skills_top(limit)
+    finally:
+        c.close()
+    if not rows:
+        return skills_top(limit)
+    return [{"id": i, "turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
+            for i, t, l, s, tr, ts in rows]
+
+
 def skill_prune(keep: int = 30) -> int:
     """Expire all but the newest `keep` lessons (VI.4: knowledge expires; contradictory
     old guidance ages out instead of coexisting forever). Returns how many were

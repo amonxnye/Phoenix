@@ -443,9 +443,11 @@ def _situation() -> str:
     base = (f"Vision '{_vision().name}' at {sc['progress']}%. Age {w['age']}, food {w['food']} "
             f"wood {w['wood']} gold {w['gold']}, {len(_S['villagers'])} agents, "
             f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}.")
-    lessons = anchor.skills_top(3)
+    # Relevance, not recency: the lessons that bear on THIS situation (BM25 over the
+    # live lesson set) rather than whatever was learned most recently.
+    lessons = anchor.skills_relevant(base, 3)
     if lessons:                       # wisdom flows into every decision that reads the situation
-        base += " Lessons from past runs: " + " | ".join(x["lesson"] for x in lessons)
+        base += " Lessons that apply here: " + " | ".join(x["lesson"] for x in lessons)
     return base
 
 

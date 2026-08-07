@@ -130,6 +130,11 @@ Everything below is those two laws, applied.
    guidance is marked stale and becomes history, not policy — contradictions age out
    instead of coexisting forever (`anchor.skill_prune`). A lesson is recorded as
    learned only when it is actually new (deduplicated at write time).
+5. **Recall is by relevance, not recency.** The lessons injected into a decision are
+   the ones that bear on *that* situation, ranked by relevance over the live lesson
+   set — memory that grows is only useful if the part that surfaces is the part that
+   applies (`anchor.skills_relevant`). Retrieval degrades to recency rather than
+   silence: a decision is never left without wisdom.
 > Enforced by `anchor.py`; external ingestion is a roadmap item, bound by this article.
 
 ## Article VII — Nothing runs unseen

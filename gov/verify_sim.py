@@ -260,5 +260,26 @@ check("unverified knowledge is kept on the record but excluded from steering",
       len(_all) > len(_ver) and all(x["verified"] for x in _ver),
       f"{len(_ver)} verified of {len(_all)} recorded")
 
+# ── 11. relevance retrieval: the RIGHT lesson, not the newest ───────────────
+print("\n11. Memory retrieval — relevance beats recency")
+A.skill_add(50, "Gold bottlenecks the Castle advance; mine gold before proposing it.",
+            source="test", trigger="relevance")
+A.skill_add(51, "Housing raises the population cap; build houses when agents are capped.",
+            source="test", trigger="relevance")   # newer, and irrelevant to gold
+sit_gold = "Vision 'Ascend to the Castle Age'. The advance needs gold and we are short."
+rel = [x["lesson"] for x in A.skills_relevant(sit_gold, 2)]
+newest = [x["lesson"] for x in A.skills_top(2)]
+check("a relevant OLD lesson outranks a newer irrelevant one",
+      any("Gold bottlenecks" in l for l in rel), rel[0][:58] + "…" if rel else "none")
+check("recency alone would have surfaced the wrong lesson",
+      not any("Gold bottlenecks" in l for l in newest[:1]),
+      "newest first: " + (newest[0][:48] + "…" if newest else "none"))
+sit_house = "Population is capped at 5 with 5 agents; the fleet cannot grow."
+rel2 = [x["lesson"] for x in A.skills_relevant(sit_house, 2)]
+check("a different situation retrieves a different lesson",
+      any("Housing raises" in l for l in rel2), rel2[0][:58] + "…" if rel2 else "none")
+check("retrieval never leaves a decision without wisdom",
+      len(A.skills_relevant("zzzz qqqq nomatchwords", 3)) > 0)
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
