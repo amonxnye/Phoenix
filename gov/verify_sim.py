@@ -238,8 +238,11 @@ check("pruned lessons remain on the record (never deleted)", A.skills_count() > 
 
 # ── 10. Article VI.2 enforced: a source that isn't checkable doesn't steer ──
 print("\n10. Evidence — citations are CHECKED, not just recorded")
+import atexit
+import shutil
 import tempfile
 _src_dir = tempfile.mkdtemp(dir=os.path.dirname(A.DB))
+atexit.register(shutil.rmtree, _src_dir, True)   # a test never litters the data dir
 _src = os.path.join(os.path.basename(_src_dir), "note.txt")
 with open(os.path.join(_src_dir, "note.txt"), "w") as _f:
     _f.write("Camps raise the yield of their resource by fifty percent in this world.")
