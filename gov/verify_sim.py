@@ -10,6 +10,7 @@ Run:  python3 gov/verify_sim.py
 """
 
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -336,6 +337,23 @@ try:
           any("sent while degraded" in m["body"] for m in A.msg_thread("internal", 20)))
 finally:
     A._EDGE_COLS = _saved_cols
+
+# Telemetry may never refuse the thing it is counting. A full volume made every
+# console page answer 502 while /api/* — which does not count views — stayed up:
+# the least important write in the system sat in the request's critical path.
+_orig_conn = A._conn
+
+
+def _dead_conn(*a, **k):
+    raise sqlite3.OperationalError("database or disk is full")
+
+
+try:
+    A._conn = _dead_conn
+    _bumped = A.metric_bump("pageviews")
+    check("counting a page view cannot refuse to serve it", _bumped is None)
+finally:
+    A._conn = _orig_conn
 
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",

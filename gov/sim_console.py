@@ -1580,8 +1580,14 @@ class Handler(BaseHTTPRequestHandler):
         return h
 
     def _count_view(self):
-        self._visitor()
-        anchor.metric_bump("pageviews")
+        # Belt and braces: nothing about counting a view may stand between a
+        # reader and the page. Telemetry is the least important write here and
+        # must never be the reason a request goes unanswered.
+        try:
+            self._visitor()
+            anchor.metric_bump("pageviews")
+        except Exception:
+            pass
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):

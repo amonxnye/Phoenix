@@ -285,15 +285,25 @@ def visitor_stats() -> dict:
 
 def metric_bump(key: str, n: int = 1) -> None:
     """Platform analytics, permanent, by UTC day: pageviews, unique visitors, chats.
-    Same anchor, same ethos — a counter, not a tracking pixel."""
+    Same anchor, same ethos — a counter, not a tracking pixel.
+
+    Counting a visit must never be able to refuse one: this is telemetry, so a
+    storage fault loses the COUNT, not the page. (A full volume made every
+    console page answer 502 while `/api/*` — which does not count views — stayed
+    up. The least important write in the system was in the critical path.)"""
     day = time.strftime("%Y-%m-%d", time.gmtime())
-    c = _conn()
+    try:
+        c = _conn()
+    except sqlite3.Error:
+        return
     try:
         c.execute("CREATE TABLE IF NOT EXISTS analytics("
                   "day TEXT, key TEXT, value INT DEFAULT 0, PRIMARY KEY(day, key))")
         c.execute("INSERT INTO analytics(day, key, value) VALUES(?,?,?) "
                   "ON CONFLICT(day, key) DO UPDATE SET value=value+?", (day, key, n, n))
         c.commit()
+    except sqlite3.Error:
+        pass                                   # the visit still happened; the tally didn't
     finally:
         c.close()
 
