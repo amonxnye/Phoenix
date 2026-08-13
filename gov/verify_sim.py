@@ -319,6 +319,24 @@ check("a legacy arrow-encoded sender still draws an edge",
 check("the recent feed carries both ends and whether it landed",
       all({"from", "to", "body", "followed"} <= set(m) for m in A.comm_recent(5)))
 
+# A migration that cannot run must cost us the FEATURE, never the world. On a full
+# or read-only volume the ALTER fails; the first version of this code read that as
+# "column already there", queried a column that did not exist, and took the whole
+# deployment down. The graph is allowed to be empty. The settlement is not allowed
+# to stop.
+_saved_cols = A._EDGE_COLS
+try:
+    A._EDGE_COLS = False
+    check("a world without the graph columns still records messages",
+          A.msg_send("internal", f"{_a} → {_b}", "sent while degraded") is None)
+    check("the graph degrades to empty rather than raising",
+          A.comm_edges(10) == [] and A.comm_recent(10) == []
+          and A.msg_follow(_a, _b) is False)
+    check("the human-readable transcript survives losing the graph",
+          any("sent while degraded" in m["body"] for m in A.msg_thread("internal", 20)))
+finally:
+    A._EDGE_COLS = _saved_cols
+
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",
       {"proposed", "carried", "blocked", "measured", "escalated"} <= set(_fs),

@@ -50,6 +50,11 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+_EDGE_COLS = False       # does `messages` carry the graph columns? Set by init().
+                         # False means the migration could not run (full or read-only
+                         # volume) — the graph degrades to empty, the world keeps going.
+
+
 def init() -> None:
     c = _conn()
     try:
@@ -114,16 +119,29 @@ def init() -> None:
         # Communication as a GRAPH, not a transcript. A message addressed to a named
         # agent carries that name in its own column, and `followed` records whether
         # the recipient acted on it — the difference between talking and influence.
-        for col, decl in (("to_agent", "TEXT"), ("followed", "INT DEFAULT 0")):
-            try:
-                c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
-            except sqlite3.OperationalError:
-                pass                               # column already there
-        # Backfill: peer messages predate the column and encode the edge in the
-        # sender as "vil-a -> vil-b". Parse it once so history draws too.
-        c.execute("UPDATE messages SET to_agent = TRIM(SUBSTR(sender, INSTR(sender, ?) + 1)) "
-                  "WHERE to_agent IS NULL AND INSTR(sender, ?) > 0", ("→", "→"))
-        c.execute("CREATE INDEX IF NOT EXISTS idx_msg_edge ON messages(to_agent)")
+        #
+        # A MIGRATION MUST NEVER BE ABLE TO STOP THE WORLD FROM BOOTING. When the
+        # volume is full or read-only these ALTERs fail, and the old code read that
+        # failure as "column already there" and then queried a column that did not
+        # exist — turning a full disk into a dead deployment. Ask the schema what it
+        # actually has, and degrade to a graph with no edges rather than to no world.
+        global _EDGE_COLS
+        try:
+            have = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            for col, decl in (("to_agent", "TEXT"), ("followed", "INT DEFAULT 0")):
+                if col not in have:
+                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+            _EDGE_COLS = {"to_agent", "followed"} <= {
+                r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            if _EDGE_COLS:
+                # Backfill: peer messages predate the column and encode the edge in
+                # the sender as "vil-a -> vil-b". Parse it once so history draws too.
+                c.execute("UPDATE messages SET to_agent = "
+                          "TRIM(SUBSTR(sender, INSTR(sender, ?) + 1)) "
+                          "WHERE to_agent IS NULL AND INSTR(sender, ?) > 0", ("→", "→"))
+                c.execute("CREATE INDEX IF NOT EXISTS idx_msg_edge ON messages(to_agent)")
+        except sqlite3.Error:
+            _EDGE_COLS = False                     # no graph; the settlement runs on
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -836,8 +854,12 @@ def msg_send(thread: str, sender: str, body: str, to: str = "") -> None:
         to = sender.split("→", 1)[1].strip()       # legacy "a -> b" senders still draw
     c = _conn()
     try:
-        c.execute("INSERT INTO messages(thread, sender, body, ts, to_agent) VALUES(?,?,?,?,?)",
-                  (thread, sender, body, time.time(), to or None))
+        if _EDGE_COLS:
+            c.execute("INSERT INTO messages(thread, sender, body, ts, to_agent) "
+                      "VALUES(?,?,?,?,?)", (thread, sender, body, time.time(), to or None))
+        else:                                      # graph unavailable — never lose the message
+            c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
+                      (thread, sender, body, time.time()))
         c.commit()
     finally:
         c.close()
@@ -892,6 +914,8 @@ def _edge_from(sender: str) -> str:
 def msg_follow(sender: str, to: str) -> bool:
     """Mark the most recent unfollowed message on this edge as acted upon.
     Returns True if one was marked — a tip nobody acted on is left cold."""
+    if not _EDGE_COLS:
+        return False
     c = _conn()
     try:
         row = c.execute("SELECT id FROM messages WHERE to_agent=? AND followed=0 "
@@ -909,6 +933,8 @@ def msg_follow(sender: str, to: str) -> bool:
 def comm_edges(limit: int = 4000) -> list[dict]:
     """Aggregated edges over the most recent addressed messages: how many were
     sent along each, and how many of those the recipient acted on."""
+    if not _EDGE_COLS:
+        return []
     c = _conn()
     try:
         rows = c.execute(
@@ -928,6 +954,8 @@ def comm_edges(limit: int = 4000) -> list[dict]:
 
 def comm_recent(limit: int = 40) -> list[dict]:
     """The most recent addressed messages, newest first — what to animate."""
+    if not _EDGE_COLS:
+        return []
     c = _conn()
     try:
         rows = c.execute(
