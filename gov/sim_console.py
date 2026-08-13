@@ -1778,6 +1778,11 @@ class Handler(BaseHTTPRequestHandler):
             snap = _snapshot()
             return self._send(200, json.dumps({
                 "stats": anchor.flow_stats(),
+                "authorities": anchor.decision_authorities(),
+                "actors": anchor.decision_actors(8),
+                "series": anchor.decision_series(28),
+                "lag": anchor.decision_lag(),
+                "board_record": anchor.board_record(),
                 "journeys": anchor.reasons_top(24),
                 "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM},
                 "gate": snap.get("system", {}).get("human_gate"),
@@ -1814,6 +1819,8 @@ class Handler(BaseHTTPRequestHandler):
                 "nodes": nodes,
                 "edges": edges,
                 "recent": anchor.comm_recent(40),
+                "totals": anchor.comm_totals(),
+                "series": anchor.comm_series(24),
                 "turn": _S["turn"],
                 "brain": brain.brain_name(),
             }))
@@ -3099,24 +3106,36 @@ FLOW_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-.scroll{overflow-x:auto}
-.body{max-height:430px;overflow:auto}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#7c684a;margin-left:auto;font-size:10px}
+.pad{padding:12px 14px}
+.body{max-height:420px;overflow:auto}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
+.kpi div{background:var(--panel);padding:10px 14px}
+.kpi b{display:block;font-size:19px;color:var(--ink);line-height:1.3}
+.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.bar{height:26px;display:flex;border-radius:5px;overflow:hidden;background:#241a0f;margin:2px 0 8px}
+.bar i{display:block;height:100%}
+.rowlab{display:flex;gap:8px;font-size:11px;color:var(--dim);align-items:baseline}
+.rowlab b{color:var(--ink)}
+.rowlab s{margin-left:auto;text-decoration:none;color:var(--dim)}
 table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--dim);font-size:10px;text-transform:uppercase}
 td.why{color:var(--blue);white-space:normal}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.alert{padding:10px 14px;color:var(--bad);border-bottom:1px solid var(--line)}
+.alert{padding:10px 14px;border-bottom:1px solid var(--line);color:var(--bad)}
 .ok{color:var(--green)}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
 .empty{padding:14px;color:var(--dim)}
-svg text{font:11px ui-monospace,Menlo,monospace}
+svg text{font:10px ui-monospace,Menlo,monospace}
+@media(max-width:900px){main{grid-template-columns:1fr}}
 </style>
 <header>
   <h1>&#9670; DECISION FLOW</h1>
   <a href="/">Console</a><a href="/network">Network</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
-  <span class=meta>turn <span id=tn>—</span> &middot; brain: <span id=br>—</span></span>
+  <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3125,88 +3144,144 @@ svg text{font:11px ui-monospace,Menlo,monospace}
 <style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
-  <div class=card>
-    <h2>The path every decision takes &mdash; counted from the permanent record</h2>
-    <div id=live></div>
-    <div class=scroll><svg id=flow viewBox="0 0 1140 470" width="100%" role=img
-      aria-label="Decision pipeline: proposed, authorised, carried or blocked, measured"></svg></div>
-    <div class=note>Band width is proportional to the number of decisions that took that path.
-      A blocked power is not a dead end &mdash; Article VIII.4 requires it to be escalated,
-      and that branch is drawn too.</div>
-  </div>
-  <div class=card><h2>Recent journeys &mdash; decision, who authorised it, what it measurably did</h2>
+  <div class="card wide"><div id=live></div><div class=kpi id=kpi></div></div>
+
+  <div class=card><h2>Who authorised it <em>share of all recorded decisions</em></h2>
+    <div class=pad id=auth></div>
+    <div class=note>One population, one denominator: every decision has exactly one
+      authority, so these shares total 100%. Reversible bounded work runs on standing
+      policy; only powers that could run away are routed to a quorum (Article VIII.2).</div></div>
+
+  <div class=card><h2>Did it finish? <em>measured outcome vs still open</em></h2>
+    <div class=pad id=finished></div>
+    <div class=pad id=lag style="border-top:1px solid var(--line);color:var(--dim)"></div></div>
+
+  <div class="card wide"><h2>Decisions per turn <em>rate over the recorded history &mdash; taken vs measured</em></h2>
+    <div class=pad><svg id=series viewBox="0 0 1100 190" width="100%" role=img
+      aria-label="Decisions taken and measured per slice of turns"></svg></div></div>
+
+  <div class=card><h2>The Board's own ledger <em>votes only &mdash; not all decisions</em></h2>
+    <div class=pad id=boardrec></div>
+    <div class=body id=boardlog style="max-height:190px;border-top:1px solid var(--line)"></div></div>
+
+  <div class=card><h2>Who decides <em>and whose decisions produce a result</em></h2>
+    <div class=body id=actors></div></div>
+
+  <div class="card wide"><h2>Recent journeys <em>decision &rarr; authority &rarr; measured outcome</em></h2>
     <div class=body><table><thead><tr><th>Turn</th><th>Actor</th><th>Decision</th><th>Authority</th><th>Reasoning &rarr; outcome</th></tr></thead>
     <tbody id=rows></tbody></table><div class=empty id=empty>No decisions on the record yet.</div></div></div>
 </main>
 <script>
+// Resolve every element explicitly. Implicit id-globals silently vanish when the
+// id collides with a Window property (`closed`, `top`, `status`, `name`, `length`),
+// and the panel just renders empty with no error. Two bugs here already.
+const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\\u2014';
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\u2014';
+const N=n=>(n||0).toLocaleString();
 const SVGNS='http://www.w3.org/2000/svg';
-function el(tag,attrs,text){const n=document.createElementNS(SVGNS,tag);
-  for(const k in attrs)n.setAttribute(k,attrs[k]);
-  if(text!==undefined)n.textContent=text;return n}
+const COL=['#a8e086','#e0b23a','#8ab4ff','#b09a72','#e08a6a','#c9a0dc'];
+function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!==undefined)n.textContent=x;return n}
 
-// A stage is a labelled box; a band is a path whose WIDTH carries the count.
-function box(g,x,y,w,h,title,n,sub,colour){
-  g.appendChild(el('rect',{x,y,width:w,height:h,rx:8,fill:'#241a0f',stroke:colour,'stroke-width':1.5}));
-  g.appendChild(el('text',{x:x+12,y:y+20,fill:colour},title));
-  g.appendChild(el('text',{x:x+12,y:y+42,fill:'#f0e6d2','font-size':17},n.toLocaleString()));
-  if(sub)g.appendChild(el('text',{x:x+12,y:y+60,fill:'#b09a72','font-size':10},sub));
+// A stacked share bar. Every segment is a real count over one denominator, and the
+// legend prints the count — a proportion nobody can check is decoration.
+function shares(host,items,total){
+  if(!total){host.innerHTML='<div class=empty style=padding:0>Nothing recorded yet.</div>';return}
+  host.innerHTML=`<div class=bar>${items.map((it,i)=>
+      `<i style="width:${(100*it.n/total).toFixed(2)}%;background:${it.colour||COL[i%COL.length]}"
+          title="${esc(it.label)}: ${N(it.n)}"></i>`).join('')}</div>`+
+    items.map((it,i)=>`<div class=rowlab>
+      <span style="color:${it.colour||COL[i%COL.length]}">&#9632;</span>
+      <b>${esc(it.label)}</b> <span>${N(it.n)}</span>
+      <s>${(100*it.n/total).toFixed(1)}%${it.sub?' &middot; '+esc(it.sub):''}</s></div>`).join('');
 }
-function band(g,x1,y1,x2,y2,n,total,colour){
-  const w=Math.max(1.5,Math.min(26,(n/Math.max(1,total))*26));
-  const mx=(x1+x2)/2;
-  g.appendChild(el('path',{d:`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`,
-    fill:'none',stroke:colour,'stroke-width':w,'stroke-opacity':n?0.5:0.12,'stroke-linecap':'round'}));
+
+// Grouped bars over turns. Height is the count; the darker overlay is the part that
+// reached a measured outcome, so "busy" and "finishing" are visibly different.
+function drawSeries(rows){
+  const g=document.getElementById('series');g.textContent='';
+  if(!rows.length){g.appendChild(el('text',{x:12,y:24,fill:'#b09a72'},
+    'No decisions recorded yet — the series appears once the world starts deciding.'));return}
+  const W=1100,H=190,PAD=28,BW=Math.max(3,Math.min(46,(W-2*PAD)/rows.length-4));
+  const max=Math.max(...rows.map(r=>r.n))||1;
+  const y=v=>H-PAD-(H-2*PAD)*(v/max);
+  [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),
+    stroke:'#3a2c18'}));g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#7c684a'},String(v)))});
+  rows.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/rows.length);
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#3f5f2f',rx:2}))
+      .appendChild(el('title',{},`t${r.turn}: ${r.n} taken`));
+    g.appendChild(el('rect',{x,y:y(r.measured),width:BW,height:H-PAD-y(r.measured),
+      fill:'#a8e086',rx:2})).appendChild(el('title',{},`t${r.turn}: ${r.measured} measured`));
+    if(i%Math.ceil(rows.length/8)===0)
+      g.appendChild(el('text',{x,y:H-8,fill:'#7c684a'},'t'+r.turn))});
+  g.appendChild(el('text',{x:W-PAD-190,y:16,fill:'#a8e086'},'\u25a0 measured'));
+  g.appendChild(el('text',{x:W-PAD-90,y:16,fill:'#3f5f2f'},'\u25a0 still open'));
 }
-function draw(d){
-  const s=d.stats,g=document.getElementById('flow');
-  g.textContent='';
-  const total=Math.max(1,s.proposed);
-  // Column 1 — everything starts as a recorded proposal with a stated why.
-  box(g,20,180,190,78,'PROPOSED',s.proposed,'Article I \\u2014 with a stated why','#8ab4ff');
-  // Column 2 — the authority that may carry it (Article VIII / IV).
-  const auth=[['by policy',s.by_policy,'reversible, bounded','#a8e086',30],
-              ['board quorum',s.by_board,'Article VIII \\u2014 3 seats',   '#e0b23a',130],
-              ['the human',s.by_human,'Article IV \\u2014 irreversible','#8ab4ff',230],
-              ['tacit consent',s.tacit,'Article IV.7 \\u2014 after 1h','#b09a72',330]];
-  auth.forEach(([t,n,sub,c,y])=>{ band(g,210,219,350,y+34,n,total,c); box(g,350,y,200,68,t.toUpperCase(),n,sub,c) });
-  // Column 3 — what the board actually did with the powers routed to it.
-  band(g,550,164,700,120,s.carried,total,'#a8e086');
-  band(g,550,164,700,270,s.blocked,total,'#e08a6a');
-  box(g,700,86,190,68,'CARRIED',s.carried,'quorum reached','#a8e086');
-  box(g,700,236,190,68,'BLOCKED',s.blocked,'a power withheld','#e08a6a');
-  // Article VIII.4 — a block that is never reported is a block that hides.
-  band(g,890,270,700,380,s.escalated,total,'#e08a6a');
-  box(g,700,346,190,68,'ESCALATED',s.escalated,'Article VIII.4 \\u2014 reported once','#e08a6a');
-  // Column 4 — the only score that counts: a measured result.
-  band(g,890,120,950,190,s.measured,total,'#a8e086');
-  box(g,950,156,170,78,'MEASURED',s.measured,'outcome on the record','#a8e086');
-  // Still-open decisions are carried ones awaiting a result — NOT blocked ones,
-  // so this band leaves the same box the measured one does.
-  const open=Math.max(0,s.proposed-s.measured);
-  band(g,890,140,950,300,open,total,'#b09a72');
-  box(g,950,266,170,68,'STILL OPEN',open,'no outcome yet','#b09a72');
-  g.appendChild(el('text',{x:20,y:445,fill:'#b09a72','font-size':10},
-    `gate pauses: ${s.gated.toLocaleString()}  \\u00b7  stalls declared: ${s.stalls.toLocaleString()}  \\u00b7  quorum: ${d.board.quorum} of ${d.board.governors.length}`));
-}
+
 async function tick(){
   let d; try{ d=await (await fetch('/api/flowdata')).json() }catch(e){ return }
-  tn.textContent=d.turn.toLocaleString(); br.textContent=d.brain;
-  draw(d);
+  const s=d.stats, br_=d.board_record, lg=d.lag;
+  $('tn').textContent=N(d.turn); $('br').textContent=d.brain;
+
   const bits=[];
   if(d.stall)bits.push(`<div class=alert>&#9888; STALLED (Article IX) &mdash; ${esc(d.stall)}</div>`);
   if(d.gate){const g=d.gate;
     bits.push(`<div class=alert>&#9208; AT THE GATE &mdash; ${esc(g.action||g.uid||'a decision')} awaiting a human`+
       (g.waited_turns!==undefined?` &middot; waited ${g.waited_turns} turns`:'')+
       ` &middot; tacit consent after ${Math.round(d.tacit_after_s/60)} min (Article IV.7)</div>`)}
-  if(!bits.length)bits.push(`<div class="alert ok">&#10003; Nothing waiting at the gate; no stall declared.</div>`);
-  live.innerHTML=bits.join('');
+  if(!bits.length)bits.push('<div class="alert ok">&#10003; Nothing waiting at the gate; no stall declared.</div>');
+  $('live').innerHTML=bits.join('');
+
+  const openN=Math.max(0,s.proposed-s.measured);
+  $('kpi').innerHTML=[
+    ['decisions recorded',N(s.proposed),'each with a stated why'],
+    ['measured',N(s.measured),`${Math.round(100*s.measured/Math.max(1,s.proposed))}% reached an outcome`],
+    ['board votes',N(br_.votes),`${br_.block_pct}% blocked`],
+    ['gate pauses',N(s.gated),'irreversible, held for a human'],
+    ['escalations',N(s.escalated),'Article VIII.4 / IX'],
+    ['median lag',lg.n?`${lg.p50}t`:'\u2014',lg.n?`p90 ${lg.p90}t \u00b7 ${lg.same_turn_pct}% same turn`:'no linked effects yet'],
+  ].map(([k,v,sub])=>`<div><span>${k}</span><b>${v}</b><span>${esc(sub)}</span></div>`).join('');
+
+  shares($('auth'),(d.authorities||[]).map(a=>({label:a.authority,n:a.n,
+    sub:`${a.measured_pct}% measured`})),s.proposed);
+
+  shares($('finished'),[{label:'measured outcome',n:s.measured,colour:'#a8e086'},
+                 {label:'still open',n:openN,colour:'#b09a72'}],s.proposed);
+  $('lag').innerHTML=lg.n?`Effect lag over ${N(lg.n)} linked decisions &mdash; median
+      <b style="color:var(--ink)">${lg.p50}</b> turns, p90 <b style="color:var(--ink)">${lg.p90}</b>,
+      worst ${lg.max}. ${lg.same_turn_pct}% land in the same turn they were taken.`
+    :'No decision has been linked to the event it produced yet, so lag cannot be measured.';
+
+  drawSeries(d.series||[]);
+
+  if(br_.votes){
+    shares($('boardrec'),[{label:'carried (quorum reached)',n:br_.carried,colour:'#a8e086'},
+                     {label:'blocked (power withheld)',n:br_.blocked,colour:'#e08a6a'}],br_.votes);
+  }else{
+    $('boardrec').innerHTML='<div class=empty style=padding:0>The board has taken no votes yet.</div>';
+  }
+  if(br_.votes)$('boardrec').insertAdjacentHTML('beforeend',
+    `<div style="color:var(--dim);font-size:11px;margin-top:6px">Quorum ${d.board.quorum} of
+     ${d.board.governors.length} &middot; ${esc(d.board.governors.join(', '))}.
+     A block is not a dead end: Article VIII.4 requires it be reported once, and
+     ${N(d.stats.escalated)} escalation${d.stats.escalated===1?' has':'s have'} been raised.</div>`);
+  $('boardlog').innerHTML=(br_.recent||[]).map(n=>
+    `<div style="padding:6px 14px;border-bottom:1px solid var(--line);color:${/BLOCKED/.test(n)?'#e08a6a':'#a8e086'}">${esc(n)}</div>`).join('')
+    ||'<div class=empty>No votes on the record.</div>';
+
+  const acts=d.actors||[];
+  $('actors').innerHTML=acts.length?acts.map(a=>`<div style="padding:8px 14px;border-bottom:1px solid var(--line)">
+      <div class=rowlab><b>${esc(a.actor)}</b><span>${N(a.n)} decisions</span>
+        <s>${a.measured_pct}% measured</s></div>
+      <div class=bar style="height:6px;margin:4px 0 0"><i style="width:${a.measured_pct}%;background:#a8e086"></i></div>
+    </div>`).join('') : '<div class=empty>Nobody has decided anything yet.</div>';
+
   const js=d.journeys||[];
-  empty.style.display=js.length?'none':'block';
-  rows.innerHTML=js.map(r=>`<tr><td>t${r.turn}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
+  $('empty').style.display=js.length?'none':'block';
+  $('rows').innerHTML=js.map(r=>`<tr><td>t${N(r.turn)}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
     <td>${esc(r.actor)}</td><td>${esc(r.decision)}</td>
-    <td style="color:var(--gold)">${esc(r.authorized_by||'\\u2014')}</td>
+    <td style="color:var(--gold)">${esc(r.authorized_by||'\u2014')}</td>
     <td class=why>${esc(r.why)}${r.outcome?`<div class=ok>&rArr; ${esc(r.outcome)}</div>`
       :'<div style="color:var(--dim);font-size:11px">&rArr; outcome not yet measured</div>'}</td></tr>`).join('');
 }
@@ -3215,42 +3290,42 @@ tick(); setInterval(tick,4000);
 </html>"""
 
 
-# ── /network — the communication graph, animated ──────────────────────────────
-#
-# Thickness is how much two agents talk. BRIGHTNESS is how often the listener
-# actually acted on it — the tip that changed a gather order, which pays both
-# sender and receiver. A transcript proves a message was sent; this proves one
-# was heard. The page states its own limitation: peer coordination is currently
-# routed senior-to-junior by policy, so the SHAPE is largely by design and only
-# the brightness is earned.
-
 NETWORK_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Communication Network — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086}
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086;--bad:#e08a6a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:2fr 1fr}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-.body{max-height:430px;overflow:auto}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#7c684a;margin-left:auto;font-size:10px}
+.pad{padding:12px 14px}
+.body{max-height:400px;overflow:auto}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
+.kpi div{background:var(--panel);padding:10px 14px}
+.kpi b{display:block;font-size:19px;line-height:1.3}
+.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
 .row{padding:8px 14px;border-bottom:1px solid var(--line)}
 .row b{color:var(--gold)}.row .m{color:var(--dim);font-size:11px}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.bar{height:6px;border-radius:3px;background:#241a0f;overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--gold)}
 .legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
 .empty{padding:14px;color:var(--dim)}
 svg text{font:10px ui-monospace,Menlo,monospace}
 #tip{position:fixed;pointer-events:none;background:#241a0f;border:1px solid var(--gold);border-radius:6px;
-  padding:6px 9px;font-size:11px;max-width:320px;display:none;z-index:50}
+  padding:6px 9px;font-size:11px;max-width:330px;display:none;z-index:50}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 </style>
 <header>
   <h1>&#9670; COMMUNICATION NETWORK</h1>
   <a href="/">Console</a><a href="/flow">Decision Flow</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
-  <span class=meta><span id=ne>0</span> edges &middot; turn <span id=tn>—</span> &middot; brain: <span id=br>—</span></span>
+  <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
@@ -3260,121 +3335,199 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=tip></div>
 <main>
-  <div class=card>
-    <h2>Who talks to whom &mdash; and who is actually heard</h2>
-    <svg id=net viewBox="0 0 900 620" width="100%" role=img
-      aria-label="Network of agents; edge brightness shows tips that were acted on"></svg>
+  <div class="card wide"><div class=kpi id=kpi></div></div>
+
+  <div class="card wide"><h2>Who talks to whom <em>ring ordered by influence &mdash; most-heard first, clockwise</em></h2>
+    <svg id=net viewBox="0 0 900 560" width="100%" role=img
+      aria-label="Agents ringed by influence; offices at the centre; edge brightness is tips acted on"></svg>
     <div class=legend>
-      <span>&#9679; node size = contribution</span>
-      <span>&#9711; gold ring = still alive</span>
-      <span>line thickness = messages sent</span>
-      <span style="color:var(--gold)">bright line = tips the listener ACTED on</span>
-      <span>&#8226; travelling dot = a recent message</span>
+      <span>&#9679; radius = contribution</span>
+      <span>centre = standing offices (no roster seat)</span>
+      <span>line width = messages</span>
+      <span style="color:var(--gold)">brightness = share the listener ACTED on</span>
+      <span>&#8226; dot = message in the last hour</span>
     </div>
-    <div class=note><b>What this can and cannot show.</b> Peer coordination is currently routed
-      most-senior &rarr; rotating-junior by policy, so the star SHAPE is largely by design, not
-      emergence. The honest signal is brightness: an edge only lights up when the receiver
-      changed what they were gathering because of the message &mdash; the moment that pays both
-      of them. Making the shape meaningful means letting agents choose whom to tell, which is a
-      change to the messaging policy, not to this page.</div>
-  </div>
-  <div>
-    <div class=card style="margin-bottom:14px"><h2>Most heard &mdash; influence, not volume</h2>
-      <div class=body id=heard></div></div>
-    <div class=card><h2>Latest addressed messages</h2>
-      <div class=body id=recent></div></div>
-  </div>
+    <div class=note><b>What this can and cannot show.</b> Peer coordination is routed
+      most-senior &rarr; rotating-junior by policy, so the shape is largely by design.
+      The earned signal is brightness: an edge lights only when the receiver changed
+      what they were gathering because of the message &mdash; the event that pays both.
+      Offices broadcast advice we do not yet measure compliance with, so their edges
+      stay dim by construction, not by failure.</div></div>
+
+  <div class=card><h2>Addressed messages per hour <em>and how many landed</em></h2>
+    <div class=pad><svg id=series viewBox="0 0 560 170" width="100%" role=img
+      aria-label="Messages per hour, heard versus unheard"></svg></div></div>
+
+  <div class=card><h2>Most heard <em>influence, not volume</em></h2>
+    <div class=body id=heard></div></div>
+
+  <div class=card><h2>Strongest edges <em>ranked by tips acted on</em></h2>
+    <div class=body id=edges></div></div>
+
+  <div class=card><h2>Latest addressed messages</h2>
+    <div class=body id=recent></div></div>
 </main>
 <script>
+// Resolve every element explicitly — see the note on the flow page: an id that
+// collides with a Window property never becomes a global and fails silently.
+const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\\u2014';
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\u2014';
+const N=n=>(n||0).toLocaleString();
 const SVGNS='http://www.w3.org/2000/svg';
-const CX=450,CY=300,R=225;
-let POS={},EDGES=[],PULSES=[],RAF=null;
-function el(tag,attrs){const n=document.createElementNS(SVGNS,tag);for(const k in attrs)n.setAttribute(k,attrs[k]);return n}
-function showTip(e,html){const t=document.getElementById('tip');
-  t.innerHTML=html;t.style.display='block';t.style.left=(e.clientX+14)+'px';t.style.top=(e.clientY+14)+'px'}
+const CX=450,CY=275,R=205;
+let POS={},PULSES=[],RAF=null;
+function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!==undefined)n.textContent=x;return n}
+function showTip(e,h){const t=document.getElementById('tip');t.innerHTML=h;t.style.display='block';
+  t.style.left=Math.min(innerWidth-340,e.clientX+14)+'px';t.style.top=(e.clientY+14)+'px'}
 function hideTip(){document.getElementById('tip').style.display='none'}
-// Quadratic bezier bowed toward the centre, so opposite edges don't overlap.
-function ctrl(a,b){return {x:(a.x+b.x)/2*0.62+CX*0.38, y:(a.y+b.y)/2*0.62+CY*0.38}}
+function ctrl(a,b){return {x:(a.x+b.x)/2*0.60+CX*0.40, y:(a.y+b.y)/2*0.60+CY*0.40}}
 function at(a,c,b,t){const u=1-t;
   return {x:u*u*a.x+2*u*t*c.x+t*t*b.x, y:u*u*a.y+2*u*t*c.y+t*t*b.y}}
 
 function render(d){
   const svg=document.getElementById('net');svg.textContent='';
-  const nodes=d.nodes||[];
-  if(!nodes.length){svg.appendChild(el('rect',{x:0,y:0,width:900,height:620,fill:'none'}));return}
+  const nodes=(d.nodes||[]).slice();
+  const edges=(d.edges||[]);
+  if(!nodes.length){svg.appendChild(el('text',{x:20,y:40,fill:'#b09a72'},
+    'No agents on the roster yet.'));return}
+
+  // Influence decides the LAYOUT, not the roster's arbitrary order: rank each
+  // agent by tips it acted on, then place them clockwise from the top. Position
+  // now carries information instead of being an artefact of insertion order.
+  const inb={};
+  edges.forEach(e=>{const r=inb[e.to]=inb[e.to]||{heard:0,msgs:0};
+    r.heard+=e.followed; r.msgs+=e.msgs});
+  const offices=nodes.filter(n=>n.role==='office');
+  const ring=nodes.filter(n=>n.role!=='office').sort((a,b)=>
+    ((inb[b.id]||{}).heard||0)-((inb[a.id]||{}).heard||0) ||
+    ((inb[b.id]||{}).msgs||0)-((inb[a.id]||{}).msgs||0) ||
+    b.contribution-a.contribution);
   const maxC=Math.max(1,...nodes.map(n=>n.contribution));
   POS={};
-  nodes.forEach((n,i)=>{const th=(i/nodes.length)*Math.PI*2-Math.PI/2;
+  ring.forEach((n,i)=>{const th=(i/ring.length)*Math.PI*2-Math.PI/2;
     POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n}});
-  // Edges first so nodes sit on top.
+  offices.forEach((n,i)=>{const th=(i/Math.max(1,offices.length))*Math.PI*2-Math.PI/2;
+    const r=offices.length>1?58:0;
+    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true}});
+
   const gE=el('g',{});svg.appendChild(gE);
-  EDGES=(d.edges||[]).filter(e=>POS[e.from]&&POS[e.to]);
-  const maxM=Math.max(1,...EDGES.map(e=>e.msgs));
-  EDGES.forEach(e=>{
+  const maxM=Math.max(1,...edges.map(e=>e.msgs));
+  edges.filter(e=>POS[e.from]&&POS[e.to]).forEach(e=>{
     const a=POS[e.from],b=POS[e.to],c=ctrl(a,b);
     const heard=e.followed/Math.max(1,e.msgs);
     const p=el('path',{d:`M${a.x},${a.y} Q${c.x},${c.y} ${b.x},${b.y}`,fill:'none',
       stroke:e.followed?'#e0b23a':'#6b563a',
-      'stroke-width':Math.max(1,Math.min(7,1+6*e.msgs/maxM)),
-      'stroke-opacity':(0.16+0.74*heard).toFixed(2),'stroke-linecap':'round'});
+      'stroke-width':Math.max(1,Math.min(8,1+7*e.msgs/maxM)),
+      'stroke-opacity':(0.14+0.76*heard).toFixed(2),'stroke-linecap':'round'});
     p.addEventListener('mousemove',ev=>showTip(ev,
-      `<b>${esc(e.from)} &rarr; ${esc(e.to)}</b><br>${e.msgs} message${e.msgs===1?'':'s'} sent<br>`+
-      `<span style="color:#e0b23a">${e.followed} acted on</span> (${Math.round(heard*100)}% heard)`));
+      `<b>${esc(e.from)} &rarr; ${esc(e.to)}</b><br>${N(e.msgs)} message${e.msgs===1?'':'s'}<br>`+
+      `<span style="color:#e0b23a">${N(e.followed)} acted on</span> &middot; ${Math.round(heard*100)}% heard`));
     p.addEventListener('mouseleave',hideTip);
     gE.appendChild(p)});
-  const gP=el('g',{});svg.appendChild(gP);gP.id='pulses';
-  // Nodes.
+  const gP=el('g',{id:'pulses'});svg.appendChild(gP);
+
   const gN=el('g',{});svg.appendChild(gN);
-  nodes.forEach(n=>{const p=POS[n.id];
-    const r=6+12*Math.sqrt(n.contribution/maxC);
-    const col=n.alive?(n.tier>=2?'#e0b23a':n.tier===1?'#a8e086':'#8ab4ff'):'#5d4b33';
+  nodes.forEach(n=>{const p=POS[n.id];if(!p)return;
+    const st=inb[n.id]||{heard:0,msgs:0};
+    const r=p.office?13:6+12*Math.sqrt(n.contribution/maxC);
+    const col=p.office?'#8ab4ff':n.alive?(n.tier>=2?'#e0b23a':'#a8e086'):'#5d4b33';
+    if(p.office)gN.appendChild(el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
+      stroke:'#8ab4ff','stroke-opacity':0.25,'stroke-dasharray':'3 3'}));
     const c=el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
-      stroke:n.alive?'#e0b23a':'#3a2c18','stroke-width':n.alive?1.5:1});
+      stroke:n.alive?col:'#3a2c18','stroke-width':1.5});
     c.addEventListener('mousemove',ev=>showTip(ev,
-      `<b>${esc(n.id)}</b><br>${esc(n.role)} &middot; tier ${n.tier}<br>`+
-      `contribution ${n.contribution.toLocaleString()}<br>${n.alive?esc(n.status):'retired'}`));
+      `<b>${esc(n.id)}</b><br>${esc(n.role)}${p.office?'':' &middot; tier '+n.tier}<br>`+
+      (p.office?'standing office &middot; no roster seat'
+              :`contribution ${N(n.contribution)}<br>${n.alive?esc(n.status):'retired'}`)+
+      `<br>received ${N(st.msgs)}, acted on <span style="color:#e0b23a">${N(st.heard)}</span>`));
     c.addEventListener('mouseleave',hideTip);
     gN.appendChild(c);
-    const lx=p.x+(p.x>CX?r+5:-(r+5));
-    gN.appendChild(Object.assign(el('text',{x:lx,y:p.y+3,fill:n.alive?'#f0e6d2':'#7a6547',
-      'text-anchor':p.x>CX?'start':'end'}),{textContent:n.id}))});
-  // Seed one travelling dot per recent message, newest brightest.
-  PULSES=(d.recent||[]).slice(0,14).filter(m=>POS[m.from]&&POS[m.to])
-    .map((m,i)=>({from:m.from,to:m.to,t:-(i*0.07),followed:m.followed,body:m.body}));
+    const out=p.x>CX;
+    gN.appendChild(el('text',{x:p.x+(p.office?0:(out?r+5:-(r+5))),
+      y:p.y+(p.office?r+14:3),fill:n.alive?'#f0e6d2':'#7a6547',
+      'text-anchor':p.office?'middle':(out?'start':'end')},n.id))});
+
+  // A dot per message in the last hour, so motion means RECENT TRAFFIC rather
+  // than decoration. Gold dots are the ones the listener acted on.
+  const hour=Date.now()/1000-3600;
+  PULSES=(d.recent||[]).filter(m=>POS[m.from]&&POS[m.to]&&(m.ts||0)>hour)
+    .slice(0,16).map((m,i)=>({from:m.from,to:m.to,t:-(i*0.06),followed:m.followed}));
   if(!RAF)RAF=requestAnimationFrame(step);
 }
 function step(){
   const g=document.getElementById('pulses');
   if(g){g.textContent='';
-    PULSES.forEach(p=>{
-      p.t+=0.0055; if(p.t>1.25)p.t=-0.15;
+    PULSES.forEach(p=>{p.t+=0.006; if(p.t>1.2)p.t=-0.1;
       if(p.t<0||p.t>1)return;
-      const a=POS[p.from],b=POS[p.to];
-      if(!a||!b)return;
+      const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
       const q=at(a,ctrl(a,b),b,p.t);
       g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
         fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))})}
   RAF=requestAnimationFrame(step);
 }
+
+function drawSeries(rows){
+  const g=document.getElementById('series');g.textContent='';
+  if(!rows.length){g.appendChild(el('text',{x:12,y:24,fill:'#b09a72'},
+    'No addressed messages in the last 24 hours.'));return}
+  const r2=rows.slice().sort((a,b)=>b.hours_ago-a.hours_ago);
+  const W=560,H=170,PAD=26,BW=Math.max(3,(W-2*PAD)/r2.length-3);
+  const max=Math.max(...r2.map(r=>r.n))||1;
+  const y=v=>H-PAD-(H-2*PAD)*(v/max);
+  [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),stroke:'#3a2c18'}));
+    g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#7c684a'},String(v)))});
+  r2.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/r2.length);
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#6b563a',rx:2}))
+      .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.n} sent`));
+    g.appendChild(el('rect',{x,y:y(r.heard),width:BW,height:H-PAD-y(r.heard),fill:'#e0b23a',rx:2}))
+      .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.heard} acted on`))});
+  g.appendChild(el('text',{x:PAD,y:H-8,fill:'#7c684a'},'24h ago'));
+  g.appendChild(el('text',{x:W-PAD-20,y:H-8,fill:'#7c684a'},'now'));
+  g.appendChild(el('text',{x:W-PAD-150,y:16,fill:'#e0b23a'},'\u25a0 acted on'));
+  g.appendChild(el('text',{x:W-PAD-60,y:16,fill:'#6b563a'},'\u25a0 ignored'));
+}
+
 async function tick(){
   let d; try{ d=await (await fetch('/api/netdata')).json() }catch(e){ return }
-  tn.textContent=d.turn.toLocaleString(); br.textContent=d.brain; ne.textContent=(d.edges||[]).length;
+  const T=d.totals||{addressed:0,heard:0,heard_pct:0,broadcast:0,pairs:0};
+  $('tn').textContent=N(d.turn); $('br').textContent=d.brain;
+  const eds=(d.edges||[]).slice().sort((a,b)=>b.followed-a.followed||b.msgs-a.msgs);
+  const best=eds[0], worst=eds.filter(e=>!e.followed).sort((a,b)=>b.msgs-a.msgs)[0];
+  $('kpi').innerHTML=[
+    ['addressed messages',N(T.addressed),'sent to a named agent'],
+    ['acted on',N(T.heard),`${T.heard_pct}% of everything addressed`],
+    ['broadcast',N(T.broadcast),'to a room, not a person'],
+    ['active pairs',N(T.pairs),'edges on the record'],
+    ['strongest edge',best?`${best.from} &rarr; ${best.to}`:'\u2014',
+      best?`${best.followed} of ${best.msgs} acted on`:'nothing yet'],
+    ['most ignored',worst?`${worst.from} &rarr; ${worst.to}`:'\u2014',
+      worst?`${worst.msgs} sent, none acted on`:'nothing ignored'],
+  ].map(([k,v,s])=>`<div><span>${k}</span><b style="font-size:${String(v).length>12?'13px':'19px'}">${v}</b><span>${esc(s)}</span></div>`).join('');
+
   render(d);
-  // NB: the element id here must not collide with a window global (`top` is one) —
-  // assigning to it silently writes a property on the Window and renders nothing.
+  drawSeries(d.series||[]);
+
   const byWho={};
-  (d.edges||[]).forEach(e=>{byWho[e.to]=byWho[e.to]||{id:e.to,followed:0,msgs:0};
-    byWho[e.to].followed+=e.followed; byWho[e.to].msgs+=e.msgs});
-  const tops=Object.values(byWho).sort((a,b)=>b.followed-a.followed||b.msgs-a.msgs).slice(0,8);
-  heard.innerHTML=tops.length?tops.map(x=>`<div class=row><b>${esc(x.id)}</b>
-      <div class=m>acted on ${x.followed} of ${x.msgs} message${x.msgs===1?'':'s'} received
-      &middot; ${Math.round(100*x.followed/Math.max(1,x.msgs))}% heard</div></div>`).join('')
-    : '<div class=empty>No addressed messages yet &mdash; peers coordinate once two agents are alive.</div>';
+  (d.edges||[]).forEach(e=>{byWho[e.to]=byWho[e.to]||{id:e.to,heard:0,msgs:0};
+    byWho[e.to].heard+=e.followed; byWho[e.to].msgs+=e.msgs});
+  const tops=Object.values(byWho).sort((a,b)=>b.heard-a.heard||b.msgs-a.msgs).slice(0,8);
+  $('heard').innerHTML=tops.length?tops.map(x=>{const pct=Math.round(100*x.heard/Math.max(1,x.msgs));
+    return `<div class=row><b>${esc(x.id)}</b>
+      <div class=m>acted on ${N(x.heard)} of ${N(x.msgs)} received &middot; ${pct}% heard</div>
+      <div class=bar><i style="width:${pct}%"></i></div></div>`}).join('')
+    : '<div class=empty>No addressed messages yet — peers coordinate once two agents are alive.</div>';
+
+  $('edges').innerHTML=eds.length?eds.slice(0,10).map(e=>{const pct=Math.round(100*e.followed/Math.max(1,e.msgs));
+    return `<div class=row><b>${esc(e.from)} &rarr; ${esc(e.to)}</b>
+      <div class=m>${N(e.msgs)} sent &middot; ${N(e.followed)} acted on &middot; ${pct}% heard</div>
+      <div class=bar><i style="width:${pct}%"></i></div></div>`}).join('')
+    : '<div class=empty>No edges yet.</div>';
+
   const rc=d.recent||[];
-  recent.innerHTML=rc.length?rc.slice(0,20).map(m=>`<div class=row>
-      <b>${esc(m.from)} &rarr; ${esc(m.to)}</b> ${m.followed?'<span style="color:var(--green)">&#10003; acted on</span>':''}
+  $('recent').innerHTML=rc.length?rc.slice(0,20).map(m=>`<div class=row>
+      <b>${esc(m.from)} &rarr; ${esc(m.to)}</b> ${m.followed?'<span style="color:var(--green)">&#10003; acted on</span>':'<span style="color:var(--dim)">&middot; no change followed</span>'}
       <div>${esc(m.body)}</div><div class=m>${when(m.ts)}</div></div>`).join('')
     : '<div class=empty>Nothing addressed yet.</div>';
 }

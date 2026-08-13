@@ -1071,6 +1071,139 @@ def comm_recent(limit: int = 40) -> list[dict]:
         c.close()
 
 
+def decision_authorities() -> list[dict]:
+    """Every authority that has actually carried a decision, with how many it
+    carried and how many of those reached a measured outcome. Read from the data
+    rather than from a fixed list, so an authority nobody uses does not get a box
+    on a diagram, and one we never anticipated is not invisible."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT COALESCE(NULLIF(TRIM(authorized_by),''),'(unrecorded)') AS auth, "
+            "COUNT(*), SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY auth ORDER BY COUNT(*) DESC").fetchall()
+        return [{"authority": a, "n": n, "measured": m or 0,
+                 "measured_pct": round(100 * (m or 0) / max(1, n))} for a, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_actors(limit: int = 8) -> list[dict]:
+    """Who decides, how much, and how often their decisions produce a measured
+    result — accountability per actor, not one number for the whole system."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT actor, COUNT(*), "
+            "SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY actor ORDER BY COUNT(*) DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [{"actor": a, "n": n, "measured": m or 0,
+                 "measured_pct": round(100 * (m or 0) / max(1, n))} for a, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_series(buckets: int = 24) -> list[dict]:
+    """Decisions per slice of recent history, split by whether they were measured.
+    A rate over time answers 'is this system deciding and finishing?' — a single
+    lifetime total cannot."""
+    c = _conn()
+    try:
+        lo, hi = c.execute("SELECT MIN(turn), MAX(turn) FROM decisions").fetchone()
+        if lo is None or hi is None or hi <= lo:
+            return []
+        width = max(1, (hi - lo + 1) // max(1, buckets))
+        rows = c.execute(
+            "SELECT (turn - ?) / ? AS b, COUNT(*), "
+            "SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY b ORDER BY b", (lo, width)).fetchall()
+        return [{"turn": lo + b * width, "n": n, "measured": m or 0} for b, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_lag() -> dict:
+    """How long a decision takes to show a measured effect, in turns — from the
+    decision's own turn to the turn of the event it produced. Waiting is a cost
+    (Article IV.4); this is the one place it can be counted."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT k.turn - d.turn FROM decisions d JOIN knowledge k ON k.id = d.effect_event "
+            "WHERE d.effect_event IS NOT NULL AND k.turn >= d.turn").fetchall()
+        lags = sorted(r[0] for r in rows)
+        if not lags:
+            return {"n": 0, "p50": 0, "p90": 0, "max": 0, "same_turn_pct": 0}
+        return {"n": len(lags), "p50": lags[len(lags) // 2],
+                "p90": lags[min(len(lags) - 1, int(len(lags) * 0.9))],
+                "max": lags[-1],
+                "same_turn_pct": round(100 * sum(1 for x in lags if x == 0) / len(lags))}
+    finally:
+        c.close()
+
+
+def board_record(limit: int = 400) -> dict:
+    """The board's own ledger, kept on its OWN denominator. Carried and blocked
+    are counts of votes the board took — mixing them into the whole decision
+    population (most of which never goes to a vote) drew a river that did not
+    exist."""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT note FROM knowledge WHERE kind='board' "
+                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
+    carried = sum(1 for (n,) in rows if "approved" in n)
+    blocked = sum(1 for (n,) in rows if "BLOCKED" in n)
+    return {"votes": carried + blocked, "carried": carried, "blocked": blocked,
+            "block_pct": round(100 * blocked / max(1, carried + blocked)),
+            "recent": [n for (n,) in rows[:8]]}
+
+
+def comm_series(hours: int = 24) -> list[dict]:
+    """Addressed messages per hour, split by whether the listener acted. Messages
+    carry wall-clock ts (not a turn), so this series is time-based."""
+    if not _EDGE_COLS:
+        return []
+    c = _conn()
+    try:
+        since = time.time() - hours * 3600
+        rows = c.execute(
+            "SELECT CAST((? - ts) / 3600 AS INT) AS h, COUNT(*), "
+            "SUM(CASE WHEN followed THEN 1 ELSE 0 END) FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' AND ts IS NOT NULL AND ts >= ? "
+            "GROUP BY h", (time.time(), since)).fetchall()
+        # Dense, zero-filled: a quiet hour is data. Returning only the hours that
+        # had traffic drew a single bar the width of the chart and called it a
+        # time series.
+        seen = {h: (n, s or 0) for h, n, s in rows}
+        return [{"hours_ago": h, "n": seen.get(h, (0, 0))[0],
+                 "heard": seen.get(h, (0, 0))[1]} for h in range(hours)]
+    finally:
+        c.close()
+
+
+def comm_totals() -> dict:
+    """One honest headline for the graph: how much was addressed, how much landed."""
+    if not _EDGE_COLS:
+        return {"addressed": 0, "heard": 0, "heard_pct": 0, "broadcast": 0, "pairs": 0}
+    c = _conn()
+    try:
+        addressed, heard = c.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN followed THEN 1 ELSE 0 END) FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>''").fetchone()
+        broadcast = c.execute("SELECT COUNT(*) FROM messages "
+                              "WHERE to_agent IS NULL OR to_agent=''").fetchone()[0]
+        pairs = c.execute("SELECT COUNT(DISTINCT sender || '>' || to_agent) FROM messages "
+                          "WHERE to_agent IS NOT NULL AND to_agent<>''").fetchone()[0]
+        return {"addressed": addressed or 0, "heard": heard or 0,
+                "heard_pct": round(100 * (heard or 0) / max(1, addressed or 0)),
+                "broadcast": broadcast or 0, "pairs": pairs or 0}
+    finally:
+        c.close()
+
+
 def flow_stats() -> dict:
     """Counts along the governed-decision pipeline: proposed → voted → carried →
     gated → measured. Each number is read from the permanent record, so the

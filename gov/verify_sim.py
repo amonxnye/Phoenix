@@ -449,5 +449,48 @@ check("the decision pipeline is counted from the permanent record",
 check("no stage of the pipeline reports a negative count",
       all(isinstance(v, int) and v >= 0 for v in _fs.values()))
 
+# ── 15. the views are ARITHMETIC, not decoration ────────────────────────────
+# A share that does not sum to its denominator is worse than no share at all:
+# it looks quantitative and is not. The first version of /flow drew bands from
+# the authority column into "carried", implying that policy decisions pass
+# through a board vote — two different populations drawn as one river.
+print("\n15. Views — every proportion adds up to its denominator")
+_auth = A.decision_authorities()
+check("authority shares cover the whole decision population exactly once",
+      sum(a["n"] for a in _auth) == _fs["proposed"],
+      f"{sum(a['n'] for a in _auth)} across {len(_auth)} authorities "
+      f"vs {_fs['proposed']} decisions")
+check("every decision's authority is attributed, none silently dropped",
+      all(a["authority"] for a in _auth))
+_act = A.decision_actors(50)
+check("actor counts also sum to the same denominator",
+      sum(a["n"] for a in _act) == _fs["proposed"])
+check("measured never exceeds decisions taken, per actor",
+      all(0 <= a["measured"] <= a["n"] for a in _act))
+_ser = A.decision_series(12)
+check("the time series accounts for every decision, not a sample",
+      sum(b["n"] for b in _ser) == _fs["proposed"], f"{len(_ser)} buckets")
+check("measured never exceeds taken in any bucket",
+      all(0 <= b["measured"] <= b["n"] for b in _ser))
+
+_br = A.board_record()
+check("the board's ledger is kept on its OWN denominator",
+      _br["votes"] == _br["carried"] + _br["blocked"])
+check("the block rate is a percentage of votes, not of all decisions",
+      _br["block_pct"] == round(100 * _br["blocked"] / max(1, _br["votes"])))
+
+_cs = A.comm_series(24)
+check("the message series is dense — a quiet hour is data, not a gap",
+      len(_cs) == 24 and all(c["heard"] <= c["n"] for c in _cs))
+A.msg_send("all", "Chief Governor", "Directive to the fleet — no recipient named.")
+_ct = A.comm_totals()
+check("heard can never exceed addressed",
+      _ct["heard"] <= _ct["addressed"]
+      and _ct["heard_pct"] == round(100 * _ct["heard"] / max(1, _ct["addressed"])),
+      f"{_ct['heard']}/{_ct['addressed']} = {_ct['heard_pct']}%")
+check("addressed and broadcast are counted separately, never conflated",
+      _ct["broadcast"] > 0 and _ct["addressed"] > 0,
+      f"{_ct['addressed']} addressed, {_ct['broadcast']} broadcast")
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
