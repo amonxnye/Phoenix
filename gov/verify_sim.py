@@ -355,6 +355,93 @@ try:
 finally:
     A._conn = _orig_conn
 
+# ── 13. Article IX.7 — no safeguard may depend on what it guards against ────
+# Four outages shared one shape: the alarm was routed through the thing that had
+# failed. These check the reporting paths that must survive a dead anchor.
+print("\n13. Substrate — the alarms that must work when the store does not")
+import sim_console as SC                            # noqa: E402  (needs anchor ready)
+
+_d = SC._disk()
+check("the data volume is gauged, not assumed",
+      _d["total_mb"] > 0 and 0 <= _d["used_pct"] <= 100,
+      f"{_d['used_pct']}% of {_d['total_mb']}MB used")
+
+_before = SC._STORAGE["faults"]
+SC._storage_fault("verify-probe")
+check("a failed write is counted in memory, not only in the store that failed",
+      SC._STORAGE["faults"] == _before + 1 and SC._STORAGE["last"] == "verify-probe")
+
+_src = __import__("inspect").getsource(SC._health_sampler)
+_tail = _src[_src.index("if stale > max(20 * TICK"):]
+_exit_at = _tail.index("os._exit(1)")
+check("the watchdog's restart is not gated behind an anchor write",
+      _tail.rindex("anchor.record", 0, _exit_at)
+      < _tail.rindex("except Exception:", 0, _exit_at) < _exit_at,
+      "the record is followed by its own except, and os._exit comes after both")
+
+_drv = __import__("inspect").getsource(SC._drive)
+check("a turn that RAISES is counted as a failed turn (Article IX.2)",
+      'failed_turns"] = _S.get("failed_turns", 0) + 1' in _drv
+      and _drv.index("except Exception as e") < _drv.index('_S["failed_turns"]'))
+check("repeated failing turns declare a stall from the error path",
+      '_S["stall"]' in _drv.split("except Exception as e")[1])
+check("absence of turns is watched from OUTSIDE the driver (IX.3)",
+      "stall:absence" in _src and "the world" in _src)
+
+# ── 14. the nightly archive: history survives a reboot AND stops growing ────
+print("\n14. Archive — history kept, space returned")
+import gzip                                         # noqa: E402
+import json as _json                                # noqa: E402
+
+A.ARCHIVE_DIR = tempfile.mkdtemp(dir=os.path.dirname(A.DB))   # not the real one
+atexit.register(shutil.rmtree, A.ARCHIVE_DIR, True)           # and never left behind
+for i in range(2_000):                              # a log worth folding away
+    A.record(i, "gather", f"vil-{i % 5} gathered 2874 food (now food {i})")
+_before = os.path.getsize(A.EVENTS_PATH)
+_rep = A.archive_night(keep_tail=200)
+check("the nightly archive runs and reports what it did",
+      _rep["ran"], f"{_rep['events_archived']:,} events, {_rep['freed_mb']}MB freed"
+      if _rep["ran"] else _rep["reason"])
+check("the working log is smaller afterwards, so the volume stops filling",
+      os.path.getsize(A.EVENTS_PATH) < _before,
+      f"{round(_before/1e6, 2)}MB → {round(os.path.getsize(A.EVENTS_PATH)/1e6, 2)}MB")
+
+_gz = [f for f in A.archives() if f["name"].startswith("events-")]
+_n = 0
+if _gz:
+    with gzip.open(os.path.join(A.ARCHIVE_DIR, _gz[0]["name"]), "rt") as _f:
+        for _line in _f:
+            _json.loads(_line)                      # every line must still parse
+            _n += 1
+check("the archived history is complete and still readable",
+      _n >= _rep["events_archived"] > 0, f"{_n:,} events replayed from gzip")
+
+_snap = [f for f in A.archives() if f["name"].startswith("anchor-")]
+check("the anchor is snapshotted alongside it, so memory survives too", bool(_snap),
+      _snap[0]["name"] if _snap else "none")
+check("the live log still reads after rotation", len(A.event_log(5)) > 0)
+# An archive is a write, and a write is exactly what a full volume cannot take.
+# It must decline and leave the log alone, not finish what the fault started.
+_real_statvfs = os.statvfs
+
+
+class _NoRoom:
+    f_bavail = 0
+    f_frsize = 4096
+    f_blocks = 1_000
+
+
+try:
+    os.statvfs = lambda *_a, **_k: _NoRoom()
+    _size_before = os.path.getsize(A.EVENTS_PATH)
+    _refused = A.archive_night()
+    check("an archive never runs the volume dry — it declines instead",
+          not _refused["ran"] and "declined" in _refused["reason"], _refused["reason"])
+    check("a declined archive leaves the live log untouched",
+          os.path.getsize(A.EVENTS_PATH) == _size_before)
+finally:
+    os.statvfs = _real_statvfs
+
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",
       {"proposed", "carried", "blocked", "measured", "escalated"} <= set(_fs),

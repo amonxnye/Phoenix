@@ -42,6 +42,42 @@ TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
+# ── The substrate, watched from outside itself ───────────────────────────────
+#
+# Four outages traced to one shape: a write failing where nothing could report it,
+# because every reporting channel was itself a write to the thing that had failed.
+# These two live in memory and speak on stderr, so they still work when the volume
+# does not. A world that cannot write is a world that cannot govern; it must say so.
+
+_STORAGE = {"faults": 0, "last": "", "ts": 0.0}
+
+
+def _storage_fault(where: str) -> None:
+    """Record a failed write somewhere the failure cannot suppress: process memory
+    and stderr. Throttled, because the failing case repeats every tick."""
+    _STORAGE["faults"] += 1
+    _STORAGE["last"] = where
+    _STORAGE["ts"] = time.time()
+    n = _STORAGE["faults"]
+    if n <= 3 or n % 200 == 0:
+        print(f"[storage] write FAILED at {where} — {n} total; the anchor is "
+              f"unwritable and the world cannot record anything",
+              file=sys.stderr, flush=True)
+
+
+def _disk() -> dict:
+    """Free space on the data volume. The data diet slowed the fill; it never gave
+    us a gauge, so the tank ran dry unannounced."""
+    try:
+        st = os.statvfs(os.path.dirname(anchor.EVENTS_PATH) or ".")
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        return {"total_mb": round(total / 1e6, 1), "free_mb": round(free / 1e6, 1),
+                "used_pct": round(100 * (total - free) / max(1, total), 1)}
+    except OSError:
+        return {"total_mb": 0.0, "free_mb": 0.0, "used_pct": 0.0}
+
+
 _LOCK = threading.Lock()
 _FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
@@ -784,8 +820,16 @@ def _one_turn():
     _S["turn"] += 1
     t = _S["turn"]
     anchor.CURRENT_TURN = t
-    anchor.config_set("turn", str(t))     # the turn clock survives restarts
+    # Liveness is stamped BEFORE any I/O that can fail. Persisting the clock is a
+    # convenience; the watchdog knowing a turn began is not. The persist call used
+    # to sit between the increment and this line, so one failing write left the
+    # world advancing its counter 145,000 times while every liveness signal in the
+    # system reported that no turn had ever run.
     _S["last_turn_ts"] = time.time()
+    try:
+        anchor.config_set("turn", str(t))     # the turn clock survives restarts
+    except Exception:
+        _storage_fault("config_set(turn)")
     w = sim.world()
 
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
@@ -1098,7 +1142,8 @@ def _one_turn():
     else:
         if _S.get("stall"):
             anchor.record(t, "stall", "stall CLEARED — production resumed")
-            _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
+            _S["notified"] = {k for k in _S["notified"]
+                              if not k.startswith(("stall:", "turnfail:"))}
         _S["stall"] = None
 
     # Article IV.7 — TACIT CONSENT: a decision queued for the human for more than an
@@ -1244,9 +1289,17 @@ def _health_sampler():
         # WATCHDOG: if no turn has completed for 5 minutes, the driver is dead or
         # wedged. Dump every thread's stack to the data dir (so the next boot can
         # tell us where), record it, and exit — the platform restarts us clean.
-        try:
-            stale = time.time() - _S.get("last_turn_ts", time.time())
-            if stale > max(20 * TICK, 300):
+        # NOTHING between detecting the wedge and exiting may be able to raise.
+        # The previous version put `anchor.record(...)` immediately before
+        # `os._exit(1)` inside one try/except: when the anchor was the broken
+        # thing — the exact case a watchdog exists for — the record raised, the
+        # except swallowed it, and the restart was never reached. It failed
+        # silently every 30 seconds for a week.
+        stale = time.time() - _S.get("last_turn_ts", time.time())
+        if stale > max(20 * TICK, 300):
+            print(f"[watchdog] driver wedged {stale:.0f}s — restarting",
+                  file=sys.stderr, flush=True)
+            try:                                   # best-effort diagnostics only
                 import faulthandler
                 dump_path = os.path.join(os.path.dirname(anchor.EVENTS_PATH),
                                          "driver-wedge-stacks.txt")
@@ -1254,9 +1307,70 @@ def _health_sampler():
                     fh.write(f"driver wedged: no turn for {stale:.0f}s at "
                              f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC\n")
                     faulthandler.dump_traceback(file=fh)
+            except Exception:
+                pass
+            try:                                   # best-effort record only
                 anchor.record(_S["turn"], "error",
-                              f"WATCHDOG: driver wedged {stale:.0f}s — stacks dumped, restarting")
-                os._exit(1)
+                              f"WATCHDOG: driver wedged {stale:.0f}s — restarting")
+            except Exception:
+                pass
+            os._exit(1)                            # UNCONDITIONAL, and last
+
+        # Article IX.2, completed: a world that is not RUNNING is stalled, not
+        # merely unproductive. The failed-turn counter lives inside the turn, so
+        # it can only count turns that happen — it reported 0 failed turns and no
+        # stall through seven days of a dead world. This sees the ABSENCE.
+        try:
+            if stale > max(5 * TICK, 90) and not _S.get("goal_met"):
+                _S["stall"] = (f"no turn has completed for {int(stale)}s — the world "
+                               f"is not running (driver wedged or anchor unwritable)")
+                if "stall:absence" not in _S["notified"]:
+                    _S["notified"].add("stall:absence")
+                    print(f"[stall] Article IX — {_S['stall']}", file=sys.stderr, flush=True)
+                    try:
+                        anchor.record(_S["turn"], "stall",
+                                      f"STALL (Article IX) — {_S['stall']}")
+                    except Exception:
+                        _storage_fault("stall record")
+        except Exception:
+            pass
+
+        # Nightly archive: history folded into dated, compressed files on the same
+        # volume, so a reboot loses nothing AND the working set stops growing
+        # forever. Runs on the first cycle after 02:00 UTC, once per day.
+        try:
+            g = time.gmtime()
+            today = time.strftime("%Y-%m-%d", g)
+            if g.tm_hour >= 2 and anchor.config_get("archived_day", "") != today:
+                anchor.config_set("archived_day", today)   # claim it before the work
+                rep = anchor.archive_night()
+                _S["last_archive"] = rep
+                print(f"[archive] {today}: " + ("ran — "
+                      f"{rep['events_archived']:,} events, {rep['freed_mb']}MB freed"
+                      if rep["ran"] else f"skipped — {rep['reason']}"),
+                      file=sys.stderr, flush=True)
+        except Exception:
+            _storage_fault("nightly archive")
+
+        # The gauge the data diet never gave us. Escalate BEFORE zero: at zero
+        # every channel that could carry the warning is already broken.
+        try:
+            d = _disk()
+            if d["used_pct"] < 75:                 # room again — the alarm re-arms
+                _S["notified"] -= {"disk:80", "disk:95"}
+            for mark in (95, 80):
+                if d["used_pct"] >= mark and f"disk:{mark}" not in _S["notified"]:
+                    _S["notified"].add(f"disk:{mark}")
+                    warn = (f"data volume {d['used_pct']}% full "
+                            f"({d['free_mb']}MB free of {d['total_mb']}MB) — at 100% the "
+                            f"anchor stops accepting writes and the world stops governing")
+                    print(f"[disk] {warn}", file=sys.stderr, flush=True)
+                    try:
+                        anchor.record(_S["turn"], "escalation", f"DISK — {warn}")
+                        anchor.msg_send("chief", "Chief Governor", f"DISK: {warn}")
+                    except Exception:
+                        _storage_fault("disk escalation")
+                    break
         except Exception:
             pass
         try:
@@ -1314,6 +1428,26 @@ def _drive():
         except Exception as e:                    # never let the loop die silently
             import traceback
             traceback.print_exc()
+            # A turn that RAISED produced nothing, so Article IX must count it as
+            # failed. It previously did not: the exception skipped the liveness
+            # block entirely, so a world dying every tick reported failed_turns 0.
+            _S["failed_turns"] = _S.get("failed_turns", 0) + 1
+            _storage_fault(f"turn: {type(e).__name__}")
+            # ...and DECLARE the stall here too. Article IX's stall block lives
+            # further down _one_turn, past the point where these turns die, so a
+            # world failing every tick would count 10, 100, 10,000 failed turns
+            # and still report no stall. The declaration belongs wherever the
+            # knowledge is, not only on the happy path.
+            if _S["failed_turns"] >= 10 and not _S.get("goal_met"):
+                _S["stall"] = (f"{_S['failed_turns']} consecutive turns raised "
+                               f"{type(e).__name__}: {str(e)[:120]}")
+                # The state stays live for the console; the LOG speaks once per
+                # cause. An alarm that repeats every tick is one nobody reads.
+                key = f"turnfail:{type(e).__name__}"
+                if key not in _S["notified"] or _S["failed_turns"] % 200 == 0:
+                    _S["notified"].add(key)
+                    print(f"[stall] Article IX — {_S['stall']}",
+                          file=sys.stderr, flush=True)
             try:
                 anchor.record(_S["turn"], "error", str(e)[:300])
             except Exception:
@@ -1450,6 +1584,13 @@ def _snapshot_build(now: float) -> dict:
             "stall": _S.get("stall"),
             "failed_turns": _S.get("failed_turns", 0),
             "tick_s": TICK,
+            # Read from memory and the filesystem, never from the anchor — these
+            # two have to stay readable precisely when the anchor does not.
+            "disk": _disk(),
+            "storage_faults": _STORAGE["faults"],
+            "storage_last_fault": _STORAGE["last"],
+            "last_archive": _S.get("last_archive"),
+            "archives": anchor.archives()[:8],
         }
         out = {
             "vision": {"name": _vision().name, **sc},
@@ -2004,6 +2145,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:300]}))
             return self._send(200, json.dumps(result))
+        if self.path == "/api/archive":
+            # Run tonight's archive now — the same code path the scheduler uses,
+            # so the button and the clock can never drift apart.
+            rep = anchor.archive_night()
+            _S["last_archive"] = rep
+            return self._send(200, json.dumps(rep))
         if self.path == "/api/workreset":
             import workspace as WS
             WS.init()
@@ -2391,7 +2538,10 @@ async function tick(){
     <div class=stat><span>lifetime burn</span><b>${(sy.lifetime_burn||0).toLocaleString()} compute ever &middot; value ${sy.value_per_1k} contribution per 1k</b></div>
     <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
     <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
+    <div class=stat><span>data volume</span><b style="color:${(sy.disk&&sy.disk.used_pct>=80)?'#fca5a5':'inherit'}">${sy.disk?`${sy.disk.used_pct}% full &middot; ${sy.disk.free_mb}MB free of ${sy.disk.total_mb}MB`:'—'}${(sy.disk&&sy.disk.used_pct>=80)?' &middot; <span class=flag>&#9888; at 100% the world stops governing</span>':''}</b></div>
+    ${sy.storage_faults?`<div class=stat><span>&#9888; failed writes</span><b style="color:#fca5a5">${sy.storage_faults.toLocaleString()} &middot; last at ${esc(sy.storage_last_fault||'—')} &middot; the anchor is not recording</b></div>`:''}
     <div class=stat><span>memory</span><b>${esc(sy.memory||'—')}</b></div>
+    <div class=stat><span>nightly archive</span><b>${(sy.archives&&sy.archives.length)?`${sy.archives.length} file${sy.archives.length===1?'':'s'} &middot; newest ${esc(sy.archives[0].name)} (${sy.archives[0].mb}MB) &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`:`none yet &middot; runs after 02:00 UTC &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`}</b></div>
     ${sy.human_gate?`<div class=stat><span>&#9888; WAITING ON YOU</span><b style="color:var(--gold)">${esc(sy.human_gate)} &middot; <a href="/" style="color:var(--gold)">decide on the console</a></b></div>`:''}
   </div>`;
   const a=d.agents||[];
@@ -2432,6 +2582,14 @@ async function hallTick(){
       ${hd?`<span style="color:var(--dim);font-size:11px"> &middot; health log: ${hd.samples.toLocaleString()} samples &middot; min ${hd.min}% &middot; avg ${hd.avg}% &middot; avg load ${hd.avg_util}% &middot; <a href="/api/health/export?uid=${encodeURIComponent(c.uid)}&gen=${c.gen}&format=csv" style="color:var(--gold)">&#8681; telemetry</a></span>`:''}
       <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} ${e.ts?new Date(e.ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
     </div>`}).join('')||'<div class=empty>No careers recorded yet — they begin at the next birth.</div>';
+}
+async function archiveNow(el){
+  el.textContent='archiving…';
+  try{ const r=await (await fetch('/api/archive',{method:'POST'})).json();
+    el.textContent=r.ran?`archived ${r.events_archived.toLocaleString()} events, ${r.freed_mb}MB freed`
+                        :`skipped — ${r.reason}`;
+  }catch(e){ el.textContent='archive failed' }
+  setTimeout(tick,1500);
 }
 tick(); setInterval(tick,1000);
 hallTick(); setInterval(hallTick,5000);

@@ -195,13 +195,35 @@ Everything below is those two laws, applied.
 2. Ten consecutive failed turns, or a Vision score frozen for twenty-five turns, is a
    **stall**. On a stall the world names the first binding constraint and escalates to
    the human — it does not continue quietly (`sim_console` liveness check).
-3. The Board and the Governor may not report a stalled world as healthy: a report
+   **A turn that raised is a failed turn**: producing nothing by erroring is not
+   different from producing nothing by idling.
+3. **A world that is not running is stalled, not merely unproductive.** The
+   failed-turn counter lives inside the turn and can therefore only count turns that
+   happen; the absence of turns is watched from outside the driver, on a clock that
+   does not depend on the driver, the anchor, or the database being alive. A liveness
+   check that can only observe a running world cannot detect a dead one
+   (`sim_console` sampler: stall-on-absence, then unconditional restart).
+4. **The substrate is a governed resource.** Free space on the data volume is read
+   every cycle, displayed, and escalated at 80% and 95% — before zero, because at
+   zero every channel that could carry the warning is already broken. A failed write
+   is counted in process memory and reported on stderr, never only into the store
+   that failed (`sim_console._disk`, `_storage_fault`). History is folded nightly
+   into dated, compressed archives beside the live files, so the record survives a
+   reboot **and** stops growing without bound; an archive that cannot be taken
+   safely is declined rather than attempted (`anchor.archive_night`).
+5. The Board and the Governor may not report a stalled world as healthy: a report
    covering a stalled period leads with that fact, and its score is capped (VIII.5).
-4. The constitution's brakes — the cap, the gate, the quorum, the reaper — each have
+6. The constitution's brakes — the cap, the gate, the quorum, the reaper — each have
    the power to stop the world. Liveness is the article that owns the consequence:
    stopping is a state that must always be visible, priced, and escalated.
+7. **No safeguard may depend on the thing it guards against.** A watchdog that
+   reports through the database it is meant to survive, a liveness counter that only
+   runs inside a working turn, an alarm that writes to a full disk — each is a
+   safeguard that is guaranteed to be absent exactly when it is needed. Recovery
+   paths run to completion before any optional reporting is attempted.
 > Enforced by `sim_console.py` (failed-turn counter, `_binding_constraint`, stall
-> escalation), surfaced on `/agents` SYSTEM HEALTH and in every work report.
+> escalation, the unconditional watchdog restart, the disk gauge), surfaced on
+> `/agents` SYSTEM HEALTH and in every work report.
 
 ## Amending this constitution
 

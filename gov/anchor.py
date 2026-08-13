@@ -826,6 +826,99 @@ def record(turn: int, kind: str, note: str, caused_by: int | None = None) -> int
     return eid
 
 
+ARCHIVE_DIR = os.path.join(_DATA_DIR, "archive")
+
+
+def archive_night(keep_tail: int = 20_000) -> dict:
+    """Fold the day's history into compressed, dated archives on the same volume.
+
+    The event log is append-only and the anchor is permanent, so both already
+    survive a reboot — what they do not survive is growing forever, and a full
+    volume is how this world stopped governing for a week. So this is a backup
+    that also buys space: the log is gzipped whole, then truncated to its recent
+    tail, and the anchor is snapshotted through SQLite's own backup API (safe on
+    a live database, unlike copying the file) and gzipped beside it. JSON lines
+    compress roughly fifteen-fold, so the full history costs a fraction of the
+    room it did while staying completely readable.
+
+    Never raises and never runs a volume dry: it refuses when free space would
+    not comfortably hold the copy. Returns a report for the console.
+    """
+    import gzip
+    import shutil
+    out = {"ran": False, "reason": "", "events_archived": 0,
+           "freed_mb": 0.0, "files": [], "ts": time.time()}
+    try:
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        # Refuse rather than finish the job the disk fault started.
+        st = os.statvfs(_DATA_DIR)
+        free = st.f_bavail * st.f_frsize
+        need = 0
+        for p in (EVENTS_PATH, DB):
+            if os.path.exists(p):
+                need += os.path.getsize(p)
+        if free < need // 4 + 5_000_000:           # gzip lands well under a quarter
+            out["reason"] = (f"declined — {free // 1_000_000}MB free is too little to "
+                             f"archive {need // 1_000_000}MB safely")
+            return out
+
+        # 1. the event log: gzip the whole thing, then keep only the recent tail.
+        if os.path.exists(EVENTS_PATH):
+            before = os.path.getsize(EVENTS_PATH)
+            dest = os.path.join(ARCHIVE_DIR, f"events-{day}.jsonl.gz")
+            with open(EVENTS_PATH, "rb") as src, gzip.open(dest, "wb", 6) as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            with open(EVENTS_PATH, "r", errors="replace") as fh:
+                lines = fh.readlines()
+            out["events_archived"] = len(lines)
+            if len(lines) > keep_tail:
+                tmp = EVENTS_PATH + ".rotating"
+                with open(tmp, "w") as fh:
+                    fh.writelines(lines[-keep_tail:])
+                os.replace(tmp, EVENTS_PATH)       # atomic: no window with no log
+                global _EVENT_COUNT
+                _EVENT_COUNT = None                # recount lazily against the new file
+            out["freed_mb"] = round(
+                (before - os.path.getsize(EVENTS_PATH)) / 1e6, 2)
+            out["files"].append(os.path.basename(dest))
+
+        # 2. the anchor: a consistent snapshot of a LIVE database, then gzipped.
+        snap = os.path.join(ARCHIVE_DIR, f"anchor-{day}.sqlite")
+        src_c, dst_c = _conn(), sqlite3.connect(snap)
+        try:
+            src_c.backup(dst_c)
+        finally:
+            dst_c.close()
+            src_c.close()
+        with open(snap, "rb") as s, gzip.open(snap + ".gz", "wb", 6) as z:
+            shutil.copyfileobj(s, z, 1 << 20)
+        os.remove(snap)                            # keep the compressed copy only
+        out["files"].append(os.path.basename(snap) + ".gz")
+
+        out["ran"] = True
+        config_set("last_archive", str(int(out["ts"])))
+        record(CURRENT_TURN, "archive",
+               f"nightly archive — {out['events_archived']:,} events to "
+               f"{', '.join(out['files'])}; {out['freed_mb']}MB freed")
+    except Exception as e:                         # a backup may never break the world
+        out["reason"] = f"{type(e).__name__}: {str(e)[:120]}"
+    return out
+
+
+def archives() -> list[dict]:
+    """What has been archived, newest first — the history you can still read."""
+    try:
+        rows = []
+        for name in sorted(os.listdir(ARCHIVE_DIR), reverse=True):
+            p = os.path.join(ARCHIVE_DIR, name)
+            rows.append({"name": name, "mb": round(os.path.getsize(p) / 1e6, 2),
+                         "ts": os.path.getmtime(p)})
+        return rows
+    except OSError:
+        return []
+
+
 def event_log(limit: int = 200) -> list[str]:
     """The permanent event log, newest first. TAIL-read: seek near the end and parse
     only what's needed — reading the whole multi-MB file per poller per second is
