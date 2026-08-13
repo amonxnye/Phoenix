@@ -166,6 +166,8 @@ Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console re
 | `/agents` | System health (stalls, burn, value per 1k compute), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent ever, permanently, with downloadable careers & health telemetry |
 | `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, a button that sends a live agent to fix the code — oracle-scored, auto-reverting |
 | `/chats` | Talk to any agent, the board, or the Chief Governor; watch votes narrated with live evidence (runway, momentum, affordability) |
+| `/flow` | **How a decision travels**: proposed → authorised by policy, board quorum, the human, or tacit consent → carried or blocked-and-escalated → measured. Band width is the number of decisions that took that path |
+| `/network` | **Who talks to whom, and who is actually heard.** Line thickness is messages sent; brightness is tips the listener *acted on* — the moment that pays both agents. A transcript proves a message was sent; this proves one was heard |
 | `/skills` | Lessons across generations, the capability ladder, and every decision's reasoning with a **trace-lineage** link (why ⇠ inputs, credit ⇢ outcomes) |
 | `/leaderboard` | The **Phoenix Eval** — same world, different frontier models, scorecards side by side |
 | `/logs` | The permanent log — filter by kind/text/time, export txt·csv·jsonl |

@@ -727,7 +727,7 @@ def _peer_chatter():
                        f"In one short line, coordinate with your colleague {receiver}: "
                        f"the settlement should gather {res} because {why}.") \
         or f"{receiver}, shift to {res} — {why}."
-    anchor.msg_send("internal", f"{sender} → {receiver}", line)
+    anchor.msg_send("internal", f"{sender} → {receiver}", line, to=receiver)
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
     anchor.career_add(receiver, _S["turn"], "message", f"from {sender}: {line[:140]}")
     _S["peer_tip"] = {"from": sender, "to": receiver, "res": res}   # rewarded if followed
@@ -760,7 +760,7 @@ def _fleet_speaks():
             anchor.msg_send(u.unit_id, "Chief Governor",
                             f"Acknowledged, {u.unit_id}. Your term ends at budget by design "
                             "(Article II) and a successor will be enlisted — hold your post; "
-                            "your contribution is on the permanent record.")
+                            "your contribution is on the permanent record.", to=u.unit_id)
             seen.add(f"ow:{u.unit_id}")
 
 
@@ -933,6 +933,7 @@ def _one_turn():
             if tip and tip["to"] == uid and tip["res"] == res:
                 economy.credit(uid, 25)
                 economy.credit(tip["from"], 25)
+                anchor.msg_follow(tip["from"], uid)   # the edge is now INFLUENCE, not chatter
                 anchor.record(t, "reward", f"{uid} +25 for learning from {tip['from']}; "
                                            f"{tip['from']} +25 for teaching")
                 anchor.career_add(uid, t, "reward", f"+25 learned from {tip['from']}: gather {res}")
@@ -1607,6 +1608,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/work":
             self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/flow":
+            self._count_view()
+            return self._send(200, FLOW_PAGE, "text/html; charset=utf-8")
+        if self.path == "/network":
+            self._count_view()
+            return self._send(200, NETWORK_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
@@ -1618,6 +1625,50 @@ class Handler(BaseHTTPRequestHandler):
                 "brain": brain.brain_name(),
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
+            }))
+        if self.path == "/api/flowdata":
+            # The governed-decision pipeline, counted from the permanent record.
+            snap = _snapshot()
+            return self._send(200, json.dumps({
+                "stats": anchor.flow_stats(),
+                "journeys": anchor.reasons_top(24),
+                "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM},
+                "gate": snap.get("system", {}).get("human_gate"),
+                "stall": snap.get("system", {}).get("stall"),
+                "tacit_after_s": TACIT_CONSENT_S,
+                "turn": _S["turn"],
+                "brain": brain.brain_name(),
+            }))
+        if self.path == "/api/netdata":
+            # The communication graph: agents, the edges between them, and which
+            # of those edges actually changed behaviour.
+            with _LOCK:
+                views = G.units(_GRAPH, _CP, only=_live_ids())
+            live = {u.unit_id: u for u in views}
+            nodes = []
+            for r in economy.roster(alive_only=False)[:40]:
+                u = live.get(r["agent"])
+                nodes.append({"id": r["agent"], "role": r["role"], "tier": r["tier"],
+                              "contribution": r["contribution"], "alive": r["alive"],
+                              "tokens": u.tokens if u else 0,
+                              "status": u.status if u else "retired"})
+            edges = anchor.comm_edges(4000)
+            # The Governor and the Board speak but hold no roster seat. Without a
+            # node they'd be silently dropped and their edges would vanish — an
+            # honest graph shows every participant, not just the paid ones.
+            known = {n["id"] for n in nodes}
+            for who in [e["from"] for e in edges] + [e["to"] for e in edges]:
+                if who not in known:
+                    known.add(who)
+                    nodes.append({"id": who, "role": "office", "tier": 3,
+                                  "contribution": 0, "alive": True,
+                                  "tokens": 0, "status": "standing office"})
+            return self._send(200, json.dumps({
+                "nodes": nodes,
+                "edges": edges,
+                "recent": anchor.comm_recent(40),
+                "turn": _S["turn"],
+                "brain": brain.brain_name(),
             }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
@@ -2096,6 +2147,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/flow">Decision Flow &rarr;</a>
+    <a class=navlink href="/network">Network &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2405,7 +2458,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -2861,6 +2914,307 @@ async function runWorker(){
   runbtn.disabled=false; load();
 }
 load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+# ── /flow — how a decision actually travels through the constitution ──────────
+#
+# Every other page shows WHAT happened. This one shows the PATH: proposed, then
+# authorised by policy / board quorum / the human / tacit consent, then carried
+# or blocked-and-escalated, then measured. The numbers come from the permanent
+# record, so the diagram is the system's own accounting rather than a drawing of
+# how we intended it to work.
+
+FLOW_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Decision Flow — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086;--bad:#e08a6a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.scroll{overflow-x:auto}
+.body{max-height:430px;overflow:auto}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.why{color:var(--blue);white-space:normal}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.alert{padding:10px 14px;color:var(--bad);border-bottom:1px solid var(--line)}
+.ok{color:var(--green)}
+.empty{padding:14px;color:var(--dim)}
+svg text{font:11px ui-monospace,Menlo,monospace}
+</style>
+<header>
+  <h1>&#9670; DECISION FLOW</h1>
+  <a href="/">Console</a><a href="/network">Network</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <span class=meta>turn <span id=tn>—</span> &middot; brain: <span id=br>—</span></span>
+</header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class=card>
+    <h2>The path every decision takes &mdash; counted from the permanent record</h2>
+    <div id=live></div>
+    <div class=scroll><svg id=flow viewBox="0 0 1140 470" width="100%" role=img
+      aria-label="Decision pipeline: proposed, authorised, carried or blocked, measured"></svg></div>
+    <div class=note>Band width is proportional to the number of decisions that took that path.
+      A blocked power is not a dead end &mdash; Article VIII.4 requires it to be escalated,
+      and that branch is drawn too.</div>
+  </div>
+  <div class=card><h2>Recent journeys &mdash; decision, who authorised it, what it measurably did</h2>
+    <div class=body><table><thead><tr><th>Turn</th><th>Actor</th><th>Decision</th><th>Authority</th><th>Reasoning &rarr; outcome</th></tr></thead>
+    <tbody id=rows></tbody></table><div class=empty id=empty>No decisions on the record yet.</div></div></div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\\u2014';
+const SVGNS='http://www.w3.org/2000/svg';
+function el(tag,attrs,text){const n=document.createElementNS(SVGNS,tag);
+  for(const k in attrs)n.setAttribute(k,attrs[k]);
+  if(text!==undefined)n.textContent=text;return n}
+
+// A stage is a labelled box; a band is a path whose WIDTH carries the count.
+function box(g,x,y,w,h,title,n,sub,colour){
+  g.appendChild(el('rect',{x,y,width:w,height:h,rx:8,fill:'#241a0f',stroke:colour,'stroke-width':1.5}));
+  g.appendChild(el('text',{x:x+12,y:y+20,fill:colour},title));
+  g.appendChild(el('text',{x:x+12,y:y+42,fill:'#f0e6d2','font-size':17},n.toLocaleString()));
+  if(sub)g.appendChild(el('text',{x:x+12,y:y+60,fill:'#b09a72','font-size':10},sub));
+}
+function band(g,x1,y1,x2,y2,n,total,colour){
+  const w=Math.max(1.5,Math.min(26,(n/Math.max(1,total))*26));
+  const mx=(x1+x2)/2;
+  g.appendChild(el('path',{d:`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`,
+    fill:'none',stroke:colour,'stroke-width':w,'stroke-opacity':n?0.5:0.12,'stroke-linecap':'round'}));
+}
+function draw(d){
+  const s=d.stats,g=document.getElementById('flow');
+  g.textContent='';
+  const total=Math.max(1,s.proposed);
+  // Column 1 — everything starts as a recorded proposal with a stated why.
+  box(g,20,180,190,78,'PROPOSED',s.proposed,'Article I \\u2014 with a stated why','#8ab4ff');
+  // Column 2 — the authority that may carry it (Article VIII / IV).
+  const auth=[['by policy',s.by_policy,'reversible, bounded','#a8e086',30],
+              ['board quorum',s.by_board,'Article VIII \\u2014 3 seats',   '#e0b23a',130],
+              ['the human',s.by_human,'Article IV \\u2014 irreversible','#8ab4ff',230],
+              ['tacit consent',s.tacit,'Article IV.7 \\u2014 after 1h','#b09a72',330]];
+  auth.forEach(([t,n,sub,c,y])=>{ band(g,210,219,350,y+34,n,total,c); box(g,350,y,200,68,t.toUpperCase(),n,sub,c) });
+  // Column 3 — what the board actually did with the powers routed to it.
+  band(g,550,164,700,120,s.carried,total,'#a8e086');
+  band(g,550,164,700,270,s.blocked,total,'#e08a6a');
+  box(g,700,86,190,68,'CARRIED',s.carried,'quorum reached','#a8e086');
+  box(g,700,236,190,68,'BLOCKED',s.blocked,'a power withheld','#e08a6a');
+  // Article VIII.4 — a block that is never reported is a block that hides.
+  band(g,890,270,700,380,s.escalated,total,'#e08a6a');
+  box(g,700,346,190,68,'ESCALATED',s.escalated,'Article VIII.4 \\u2014 reported once','#e08a6a');
+  // Column 4 — the only score that counts: a measured result.
+  band(g,890,120,950,190,s.measured,total,'#a8e086');
+  box(g,950,156,170,78,'MEASURED',s.measured,'outcome on the record','#a8e086');
+  // Still-open decisions are carried ones awaiting a result — NOT blocked ones,
+  // so this band leaves the same box the measured one does.
+  const open=Math.max(0,s.proposed-s.measured);
+  band(g,890,140,950,300,open,total,'#b09a72');
+  box(g,950,266,170,68,'STILL OPEN',open,'no outcome yet','#b09a72');
+  g.appendChild(el('text',{x:20,y:445,fill:'#b09a72','font-size':10},
+    `gate pauses: ${s.gated.toLocaleString()}  \\u00b7  stalls declared: ${s.stalls.toLocaleString()}  \\u00b7  quorum: ${d.board.quorum} of ${d.board.governors.length}`));
+}
+async function tick(){
+  let d; try{ d=await (await fetch('/api/flowdata')).json() }catch(e){ return }
+  tn.textContent=d.turn.toLocaleString(); br.textContent=d.brain;
+  draw(d);
+  const bits=[];
+  if(d.stall)bits.push(`<div class=alert>&#9888; STALLED (Article IX) &mdash; ${esc(d.stall)}</div>`);
+  if(d.gate){const g=d.gate;
+    bits.push(`<div class=alert>&#9208; AT THE GATE &mdash; ${esc(g.action||g.uid||'a decision')} awaiting a human`+
+      (g.waited_turns!==undefined?` &middot; waited ${g.waited_turns} turns`:'')+
+      ` &middot; tacit consent after ${Math.round(d.tacit_after_s/60)} min (Article IV.7)</div>`)}
+  if(!bits.length)bits.push(`<div class="alert ok">&#10003; Nothing waiting at the gate; no stall declared.</div>`);
+  live.innerHTML=bits.join('');
+  const js=d.journeys||[];
+  empty.style.display=js.length?'none':'block';
+  rows.innerHTML=js.map(r=>`<tr><td>t${r.turn}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
+    <td>${esc(r.actor)}</td><td>${esc(r.decision)}</td>
+    <td style="color:var(--gold)">${esc(r.authorized_by||'\\u2014')}</td>
+    <td class=why>${esc(r.why)}${r.outcome?`<div class=ok>&rArr; ${esc(r.outcome)}</div>`
+      :'<div style="color:var(--dim);font-size:11px">&rArr; outcome not yet measured</div>'}</td></tr>`).join('');
+}
+tick(); setInterval(tick,4000);
+</script>
+</html>"""
+
+
+# ── /network — the communication graph, animated ──────────────────────────────
+#
+# Thickness is how much two agents talk. BRIGHTNESS is how often the listener
+# actually acted on it — the tip that changed a gather order, which pays both
+# sender and receiver. A transcript proves a message was sent; this proves one
+# was heard. The page states its own limitation: peer coordination is currently
+# routed senior-to-junior by policy, so the SHAPE is largely by design and only
+# the brightness is earned.
+
+NETWORK_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Communication Network — The Governor</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:2fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.body{max-height:430px;overflow:auto}
+.row{padding:8px 14px;border-bottom:1px solid var(--line)}
+.row b{color:var(--gold)}.row .m{color:var(--dim);font-size:11px}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:14px;color:var(--dim)}
+svg text{font:10px ui-monospace,Menlo,monospace}
+#tip{position:fixed;pointer-events:none;background:#241a0f;border:1px solid var(--gold);border-radius:6px;
+  padding:6px 9px;font-size:11px;max-width:320px;display:none;z-index:50}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+</style>
+<header>
+  <h1>&#9670; COMMUNICATION NETWORK</h1>
+  <a href="/">Console</a><a href="/flow">Decision Flow</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <span class=meta><span id=ne>0</span> edges &middot; turn <span id=tn>—</span> &middot; brain: <span id=br>—</span></span>
+</header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<div id=tip></div>
+<main>
+  <div class=card>
+    <h2>Who talks to whom &mdash; and who is actually heard</h2>
+    <svg id=net viewBox="0 0 900 620" width="100%" role=img
+      aria-label="Network of agents; edge brightness shows tips that were acted on"></svg>
+    <div class=legend>
+      <span>&#9679; node size = contribution</span>
+      <span>&#9711; gold ring = still alive</span>
+      <span>line thickness = messages sent</span>
+      <span style="color:var(--gold)">bright line = tips the listener ACTED on</span>
+      <span>&#8226; travelling dot = a recent message</span>
+    </div>
+    <div class=note><b>What this can and cannot show.</b> Peer coordination is currently routed
+      most-senior &rarr; rotating-junior by policy, so the star SHAPE is largely by design, not
+      emergence. The honest signal is brightness: an edge only lights up when the receiver
+      changed what they were gathering because of the message &mdash; the moment that pays both
+      of them. Making the shape meaningful means letting agents choose whom to tell, which is a
+      change to the messaging policy, not to this page.</div>
+  </div>
+  <div>
+    <div class=card style="margin-bottom:14px"><h2>Most heard &mdash; influence, not volume</h2>
+      <div class=body id=heard></div></div>
+    <div class=card><h2>Latest addressed messages</h2>
+      <div class=body id=recent></div></div>
+  </div>
+</main>
+<script>
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\\u2014';
+const SVGNS='http://www.w3.org/2000/svg';
+const CX=450,CY=300,R=225;
+let POS={},EDGES=[],PULSES=[],RAF=null;
+function el(tag,attrs){const n=document.createElementNS(SVGNS,tag);for(const k in attrs)n.setAttribute(k,attrs[k]);return n}
+function showTip(e,html){const t=document.getElementById('tip');
+  t.innerHTML=html;t.style.display='block';t.style.left=(e.clientX+14)+'px';t.style.top=(e.clientY+14)+'px'}
+function hideTip(){document.getElementById('tip').style.display='none'}
+// Quadratic bezier bowed toward the centre, so opposite edges don't overlap.
+function ctrl(a,b){return {x:(a.x+b.x)/2*0.62+CX*0.38, y:(a.y+b.y)/2*0.62+CY*0.38}}
+function at(a,c,b,t){const u=1-t;
+  return {x:u*u*a.x+2*u*t*c.x+t*t*b.x, y:u*u*a.y+2*u*t*c.y+t*t*b.y}}
+
+function render(d){
+  const svg=document.getElementById('net');svg.textContent='';
+  const nodes=d.nodes||[];
+  if(!nodes.length){svg.appendChild(el('rect',{x:0,y:0,width:900,height:620,fill:'none'}));return}
+  const maxC=Math.max(1,...nodes.map(n=>n.contribution));
+  POS={};
+  nodes.forEach((n,i)=>{const th=(i/nodes.length)*Math.PI*2-Math.PI/2;
+    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n}});
+  // Edges first so nodes sit on top.
+  const gE=el('g',{});svg.appendChild(gE);
+  EDGES=(d.edges||[]).filter(e=>POS[e.from]&&POS[e.to]);
+  const maxM=Math.max(1,...EDGES.map(e=>e.msgs));
+  EDGES.forEach(e=>{
+    const a=POS[e.from],b=POS[e.to],c=ctrl(a,b);
+    const heard=e.followed/Math.max(1,e.msgs);
+    const p=el('path',{d:`M${a.x},${a.y} Q${c.x},${c.y} ${b.x},${b.y}`,fill:'none',
+      stroke:e.followed?'#e0b23a':'#6b563a',
+      'stroke-width':Math.max(1,Math.min(7,1+6*e.msgs/maxM)),
+      'stroke-opacity':(0.16+0.74*heard).toFixed(2),'stroke-linecap':'round'});
+    p.addEventListener('mousemove',ev=>showTip(ev,
+      `<b>${esc(e.from)} &rarr; ${esc(e.to)}</b><br>${e.msgs} message${e.msgs===1?'':'s'} sent<br>`+
+      `<span style="color:#e0b23a">${e.followed} acted on</span> (${Math.round(heard*100)}% heard)`));
+    p.addEventListener('mouseleave',hideTip);
+    gE.appendChild(p)});
+  const gP=el('g',{});svg.appendChild(gP);gP.id='pulses';
+  // Nodes.
+  const gN=el('g',{});svg.appendChild(gN);
+  nodes.forEach(n=>{const p=POS[n.id];
+    const r=6+12*Math.sqrt(n.contribution/maxC);
+    const col=n.alive?(n.tier>=2?'#e0b23a':n.tier===1?'#a8e086':'#8ab4ff'):'#5d4b33';
+    const c=el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
+      stroke:n.alive?'#e0b23a':'#3a2c18','stroke-width':n.alive?1.5:1});
+    c.addEventListener('mousemove',ev=>showTip(ev,
+      `<b>${esc(n.id)}</b><br>${esc(n.role)} &middot; tier ${n.tier}<br>`+
+      `contribution ${n.contribution.toLocaleString()}<br>${n.alive?esc(n.status):'retired'}`));
+    c.addEventListener('mouseleave',hideTip);
+    gN.appendChild(c);
+    const lx=p.x+(p.x>CX?r+5:-(r+5));
+    gN.appendChild(Object.assign(el('text',{x:lx,y:p.y+3,fill:n.alive?'#f0e6d2':'#7a6547',
+      'text-anchor':p.x>CX?'start':'end'}),{textContent:n.id}))});
+  // Seed one travelling dot per recent message, newest brightest.
+  PULSES=(d.recent||[]).slice(0,14).filter(m=>POS[m.from]&&POS[m.to])
+    .map((m,i)=>({from:m.from,to:m.to,t:-(i*0.07),followed:m.followed,body:m.body}));
+  if(!RAF)RAF=requestAnimationFrame(step);
+}
+function step(){
+  const g=document.getElementById('pulses');
+  if(g){g.textContent='';
+    PULSES.forEach(p=>{
+      p.t+=0.0055; if(p.t>1.25)p.t=-0.15;
+      if(p.t<0||p.t>1)return;
+      const a=POS[p.from],b=POS[p.to];
+      if(!a||!b)return;
+      const q=at(a,ctrl(a,b),b,p.t);
+      g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
+        fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))})}
+  RAF=requestAnimationFrame(step);
+}
+async function tick(){
+  let d; try{ d=await (await fetch('/api/netdata')).json() }catch(e){ return }
+  tn.textContent=d.turn.toLocaleString(); br.textContent=d.brain; ne.textContent=(d.edges||[]).length;
+  render(d);
+  // NB: the element id here must not collide with a window global (`top` is one) —
+  // assigning to it silently writes a property on the Window and renders nothing.
+  const byWho={};
+  (d.edges||[]).forEach(e=>{byWho[e.to]=byWho[e.to]||{id:e.to,followed:0,msgs:0};
+    byWho[e.to].followed+=e.followed; byWho[e.to].msgs+=e.msgs});
+  const tops=Object.values(byWho).sort((a,b)=>b.followed-a.followed||b.msgs-a.msgs).slice(0,8);
+  heard.innerHTML=tops.length?tops.map(x=>`<div class=row><b>${esc(x.id)}</b>
+      <div class=m>acted on ${x.followed} of ${x.msgs} message${x.msgs===1?'':'s'} received
+      &middot; ${Math.round(100*x.followed/Math.max(1,x.msgs))}% heard</div></div>`).join('')
+    : '<div class=empty>No addressed messages yet &mdash; peers coordinate once two agents are alive.</div>';
+  const rc=d.recent||[];
+  recent.innerHTML=rc.length?rc.slice(0,20).map(m=>`<div class=row>
+      <b>${esc(m.from)} &rarr; ${esc(m.to)}</b> ${m.followed?'<span style="color:var(--green)">&#10003; acted on</span>':''}
+      <div>${esc(m.body)}</div><div class=m>${when(m.ts)}</div></div>`).join('')
+    : '<div class=empty>Nothing addressed yet.</div>';
+}
+tick(); setInterval(tick,4000);
 </script>
 </html>"""
 

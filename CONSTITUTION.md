@@ -151,6 +151,16 @@ Everything below is those two laws, applied.
 5. Records are complete: telemetry is not truncated at the point where it becomes
    informative, and outcomes name the decision that caused them (`decisions`,
    `knowledge.caused_by`).
+6. **Communication is recorded as a graph, and the graph records whether anyone
+   listened.** A message addressed to a named agent stores that recipient as its own
+   field, and the edge is marked *followed* only when the recipient measurably
+   changed course because of it — the same event that pays both parties. Volume is
+   not influence, and the record distinguishes them (`anchor.comm_edges`,
+   `anchor.msg_follow`, surfaced on `/network`).
+7. **The path of a decision is legible, not merely its result.** Every decision
+   carries the authority that carried it — policy, board quorum, the human, or tacit
+   consent — and the pipeline from proposal to measured outcome is counted from the
+   permanent record rather than asserted (`anchor.flow_stats`, surfaced on `/flow`).
 > Enforced by `governor.py`, `anchor.py`, `sim_console.py`; tracing via `LANGCHAIN_*` env vars.
 
 ---

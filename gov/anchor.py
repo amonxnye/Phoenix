@@ -111,6 +111,19 @@ def init() -> None:
             c.execute("ALTER TABLE skills ADD COLUMN stale INT DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # Communication as a GRAPH, not a transcript. A message addressed to a named
+        # agent carries that name in its own column, and `followed` records whether
+        # the recipient acted on it — the difference between talking and influence.
+        for col, decl in (("to_agent", "TEXT"), ("followed", "INT DEFAULT 0")):
+            try:
+                c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass                               # column already there
+        # Backfill: peer messages predate the column and encode the edge in the
+        # sender as "vil-a -> vil-b". Parse it once so history draws too.
+        c.execute("UPDATE messages SET to_agent = TRIM(SUBSTR(sender, INSTR(sender, ?) + 1)) "
+                  "WHERE to_agent IS NULL AND INSTR(sender, ?) > 0", ("→", "→"))
+        c.execute("CREATE INDEX IF NOT EXISTS idx_msg_edge ON messages(to_agent)")
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -813,14 +826,18 @@ def event_log(limit: int = 200) -> list[str]:
     return list(reversed(out))
 
 
-def msg_send(thread: str, sender: str, body: str) -> None:
+def msg_send(thread: str, sender: str, body: str, to: str = "") -> None:
     """Store a chat message. thread = the counterpart the human converses with;
-    sender = 'operator' (the human) or the counterpart's name. Every message is
-    also mirrored into the event log — communications are observable, not hidden."""
+    sender = 'operator' (the human) or the counterpart's name. `to` names the
+    recipient when the message is ADDRESSED rather than broadcast — that is the
+    edge the communication graph is drawn from. Every message is also mirrored
+    into the event log — communications are observable, not hidden."""
+    if not to and "→" in sender:
+        to = sender.split("→", 1)[1].strip()       # legacy "a -> b" senders still draw
     c = _conn()
     try:
-        c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
-                  (thread, sender, body, time.time()))
+        c.execute("INSERT INTO messages(thread, sender, body, ts, to_agent) VALUES(?,?,?,?,?)",
+                  (thread, sender, body, time.time(), to or None))
         c.commit()
     finally:
         c.close()
@@ -858,6 +875,92 @@ def msg_count(thread: str) -> int:
     c = _conn()
     try:
         return c.execute("SELECT COUNT(*) FROM messages WHERE thread=?", (thread,)).fetchone()[0]
+    finally:
+        c.close()
+
+
+# ── The communication graph — who talks to whom, and who is actually heard ────
+#
+# A transcript shows that a message was sent. A graph shows whether it MOVED
+# anyone. `followed` is set when the recipient acts on the tip (the same event
+# that pays both agents), so edge weight is influence, not volume.
+
+def _edge_from(sender: str) -> str:
+    return sender.split("→", 1)[0].strip() if "→" in sender else sender
+
+
+def msg_follow(sender: str, to: str) -> bool:
+    """Mark the most recent unfollowed message on this edge as acted upon.
+    Returns True if one was marked — a tip nobody acted on is left cold."""
+    c = _conn()
+    try:
+        row = c.execute("SELECT id FROM messages WHERE to_agent=? AND followed=0 "
+                        "AND (sender=? OR sender LIKE ?) ORDER BY id DESC LIMIT 1",
+                        (to, sender, sender + " →%")).fetchone()
+        if not row:
+            return False
+        c.execute("UPDATE messages SET followed=1 WHERE id=?", (row[0],))
+        c.commit()
+        return True
+    finally:
+        c.close()
+
+
+def comm_edges(limit: int = 4000) -> list[dict]:
+    """Aggregated edges over the most recent addressed messages: how many were
+    sent along each, and how many of those the recipient acted on."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT sender, to_agent, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
+    agg: dict[tuple, dict] = {}
+    for sender, to, followed in rows:
+        key = (_edge_from(sender), to)
+        e = agg.setdefault(key, {"from": key[0], "to": key[1], "msgs": 0, "followed": 0})
+        e["msgs"] += 1
+        e["followed"] += 1 if followed else 0
+    return sorted(agg.values(), key=lambda e: (-e["followed"], -e["msgs"]))
+
+
+def comm_recent(limit: int = 40) -> list[dict]:
+    """The most recent addressed messages, newest first — what to animate."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT sender, to_agent, body, ts, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"from": _edge_from(s), "to": t, "body": b, "ts": ts,
+                 "followed": bool(f)} for s, t, b, ts, f in rows]
+    finally:
+        c.close()
+
+
+def flow_stats() -> dict:
+    """Counts along the governed-decision pipeline: proposed → voted → carried →
+    gated → measured. Each number is read from the permanent record, so the
+    diagram is the system's own accounting, not a drawing of intent."""
+    c = _conn()
+    try:
+        def one(sql, *a):
+            return c.execute(sql, a).fetchone()[0] or 0
+        return {
+            "proposed": one("SELECT COUNT(*) FROM decisions"),
+            "by_board": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%board%"),
+            "by_human": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%human%"),
+            "by_policy": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%policy%"),
+            "tacit": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%tacit%"),
+            "carried": one("SELECT COUNT(*) FROM knowledge WHERE kind='board' AND note LIKE ?", "%approved%"),
+            "blocked": one("SELECT COUNT(*) FROM knowledge WHERE kind='board' AND note LIKE ?", "%BLOCKED%"),
+            "measured": one("SELECT COUNT(*) FROM decisions WHERE outcome IS NOT NULL AND outcome<>''"),
+            "gated": one("SELECT COUNT(*) FROM knowledge WHERE kind='gate'"),
+            "escalated": one("SELECT COUNT(*) FROM knowledge WHERE kind='escalation'"),
+            "stalls": one("SELECT COUNT(*) FROM knowledge WHERE kind='stall'"),
+        }
     finally:
         c.close()
 

@@ -284,5 +284,47 @@ check("a different situation retrieves a different lesson",
 check("retrieval never leaves a decision without wisdom",
       len(A.skills_relevant("zzzz qqqq nomatchwords", 3)) > 0)
 
+# ── 12. the communication graph: talking vs being heard ─────────────────────
+# A transcript proves a message was sent. The graph has to prove one was ACTED
+# ON, or "communication" is just volume with a nice layout.
+print("\n12. Communication graph — influence, not volume")
+_a, _b, _c = f"vil-a{stamp}", f"vil-b{stamp}", f"vil-c{stamp}"
+A.msg_send("internal", f"{_a} → {_b}", "shift to gold — the advance needs it", to=_b)
+_edge = {(e["from"], e["to"]): e for e in A.comm_edges(500)}
+check("an addressed message becomes a graph EDGE, not just a line of text",
+      (_a, _b) in _edge, f"{len(_edge)} edges on the record")
+check("a tip nobody acted on stays cold", _edge[(_a, _b)]["followed"] == 0)
+
+check("acting on a tip marks the edge heard", A.msg_follow(_a, _b))
+_edge = {(e["from"], e["to"]): e for e in A.comm_edges(500)}
+check("the edge now carries INFLUENCE, not just traffic",
+      _edge[(_a, _b)]["followed"] == 1,
+      f"{_edge[(_a, _b)]['followed']}/{_edge[(_a, _b)]['msgs']} acted on")
+
+# Volume must not outrank influence: a chattier edge nobody follows ranks below
+# a quieter one that changed behaviour.
+for i in range(4):
+    A.msg_send("internal", f"{_a} → {_c}", f"unheeded suggestion {i}", to=_c)
+_ranked = [(e["from"], e["to"]) for e in A.comm_edges(500)]
+check("a heard edge outranks a chattier edge nobody follows",
+      _ranked.index((_a, _b)) < _ranked.index((_a, _c)),
+      f"heard at #{_ranked.index((_a, _b)) + 1}, chatty at #{_ranked.index((_a, _c)) + 1}")
+check("an unfollowed edge cannot be marked heard twice over", not A.msg_follow(_a, _b))
+
+# Legacy rows encode the edge in the sender ("a -> b") with no recipient column;
+# they must still draw, or the graph starts empty on every existing world.
+A.msg_send("internal", f"{_b} → {_a}", "acknowledged — switching")
+check("a legacy arrow-encoded sender still draws an edge",
+      (_b, _a) in {(e["from"], e["to"]) for e in A.comm_edges(500)})
+check("the recent feed carries both ends and whether it landed",
+      all({"from", "to", "body", "followed"} <= set(m) for m in A.comm_recent(5)))
+
+_fs = A.flow_stats()
+check("the decision pipeline is counted from the permanent record",
+      {"proposed", "carried", "blocked", "measured", "escalated"} <= set(_fs),
+      f"{_fs['proposed']} proposed, {_fs['measured']} measured")
+check("no stage of the pipeline reports a negative count",
+      all(isinstance(v, int) and v >= 0 for v in _fs.values()))
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
