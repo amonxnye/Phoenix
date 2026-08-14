@@ -442,6 +442,49 @@ try:
 finally:
     os.statvfs = _real_statvfs
 
+# ── 16. the pages are legible — contrast and motion are CHECKED, not intended ──
+# "A rule with no enforcing code is a wish." Readable colour and optional motion
+# are rules, so they get a test. Three colours shipped today failed WCAG AA and
+# nothing caught them; the animation ran regardless of the reader's preference.
+print("\n16. Legibility — contrast and motion, enforced")
+
+
+def _lum(hexc):
+    hexc = hexc.lstrip("#")
+    ch = []
+    for i in (0, 2, 4):
+        v = int(hexc[i:i + 2], 16) / 255
+        ch.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+
+def _contrast(a, b):
+    la, lb = _lum(a), _lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+_PANEL = "#1c150d"
+_TEXT = {"ink": "#f0e6d2", "dim": "#b09a72", "gold": "#e0b23a", "green": "#a8e086",
+         "blue": "#8ab4ff", "bad": "#e08a6a", "subtitle": "#96805c"}
+_GRAPHIC = {"unheard edge": "#87704f", "still-open bar": "#567f3f"}
+_bad_text = {k: round(_contrast(v, _PANEL), 2)
+             for k, v in _TEXT.items() if _contrast(v, _PANEL) < 4.5}
+_bad_gfx = {k: round(_contrast(v, _PANEL), 2)
+            for k, v in _GRAPHIC.items() if _contrast(v, _PANEL) < 3.0}
+check("every text colour meets WCAG AA (4.5:1) on the panel",
+      not _bad_text, str(_bad_text) if _bad_text else
+      f"lowest {min(round(_contrast(v, _PANEL), 2) for v in _TEXT.values())}:1")
+check("every data-bearing graphic meets AA for non-text (3:1)",
+      not _bad_gfx, str(_bad_gfx) if _bad_gfx else
+      f"lowest {min(round(_contrast(v, _PANEL), 2) for v in _GRAPHIC.values())}:1")
+_console_src = open(os.path.join(HERE, "sim_console.py")).read()
+check("no page animates against the reader's stated preference",
+      _console_src.count("prefers-reduced-motion") >= 11
+      and "const STILL=matchMedia" in _console_src,
+      f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
+check("the colours the pages actually use are the ones tested",
+      all(v in _console_src for v in list(_TEXT.values()) + list(_GRAPHIC.values())))
+
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",
       {"proposed", "carried", "blocked", "measured", "escalated"} <= set(_fs),

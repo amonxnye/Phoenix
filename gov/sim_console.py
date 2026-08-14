@@ -2325,7 +2325,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>Fleet</h2>
@@ -2512,7 +2513,8 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
@@ -2634,7 +2636,8 @@ button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=wrap>
   <div class=side id=side></div>
@@ -2700,7 +2703,8 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main id=main>loading…</main>
 <script>
@@ -2799,7 +2803,8 @@ mark{background:#5a4a1a;color:#fff}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=log id=log></div>
 <script>
@@ -2883,7 +2888,8 @@ td.why{color:var(--blue);white-space:normal}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
@@ -2955,7 +2961,8 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
@@ -3034,7 +3041,8 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
@@ -3110,7 +3118,7 @@ main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-temp
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#7c684a;margin-left:auto;font-size:10px}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#96805c;margin-left:auto;font-size:10px}
 .pad{padding:12px 14px}
 .body{max-height:420px;overflow:auto}
 .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
@@ -3141,7 +3149,8 @@ svg text{font:10px ui-monospace,Menlo,monospace}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><div id=live></div><div class=kpi id=kpi></div></div>
@@ -3207,16 +3216,16 @@ function drawSeries(rows){
   const max=Math.max(...rows.map(r=>r.n))||1;
   const y=v=>H-PAD-(H-2*PAD)*(v/max);
   [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),
-    stroke:'#3a2c18'}));g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#7c684a'},String(v)))});
+    stroke:'#3a2c18'}));g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#96805c'},String(v)))});
   rows.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/rows.length);
-    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#3f5f2f',rx:2}))
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#567f3f',rx:2}))
       .appendChild(el('title',{},`t${r.turn}: ${r.n} taken`));
     g.appendChild(el('rect',{x,y:y(r.measured),width:BW,height:H-PAD-y(r.measured),
       fill:'#a8e086',rx:2})).appendChild(el('title',{},`t${r.turn}: ${r.measured} measured`));
     if(i%Math.ceil(rows.length/8)===0)
-      g.appendChild(el('text',{x,y:H-8,fill:'#7c684a'},'t'+r.turn))});
+      g.appendChild(el('text',{x,y:H-8,fill:'#96805c'},'t'+r.turn))});
   g.appendChild(el('text',{x:W-PAD-190,y:16,fill:'#a8e086'},'\u25a0 measured'));
-  g.appendChild(el('text',{x:W-PAD-90,y:16,fill:'#3f5f2f'},'\u25a0 still open'));
+  g.appendChild(el('text',{x:W-PAD-90,y:16,fill:'#567f3f'},'\u25a0 still open'));
 }
 
 async function tick(){
@@ -3303,7 +3312,7 @@ main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-temp
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#7c684a;margin-left:auto;font-size:10px}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:#96805c;margin-left:auto;font-size:10px}
 .pad{padding:12px 14px}
 .body{max-height:400px;overflow:auto}
 .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
@@ -3331,7 +3340,8 @@ svg text{font:10px ui-monospace,Menlo,monospace}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=tip></div>
 <main>
@@ -3376,6 +3386,7 @@ const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',
 const N=n=>(n||0).toLocaleString();
 const SVGNS='http://www.w3.org/2000/svg';
 const CX=450,CY=275,R=205;
+const STILL=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let POS={},PULSES=[],RAF=null;
 function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
   if(x!==undefined)n.textContent=x;return n}
@@ -3418,7 +3429,7 @@ function render(d){
     const a=POS[e.from],b=POS[e.to],c=ctrl(a,b);
     const heard=e.followed/Math.max(1,e.msgs);
     const p=el('path',{d:`M${a.x},${a.y} Q${c.x},${c.y} ${b.x},${b.y}`,fill:'none',
-      stroke:e.followed?'#e0b23a':'#6b563a',
+      stroke:e.followed?'#e0b23a':'#87704f',
       'stroke-width':Math.max(1,Math.min(8,1+7*e.msgs/maxM)),
       'stroke-opacity':(0.14+0.76*heard).toFixed(2),'stroke-linecap':'round'});
     p.addEventListener('mousemove',ev=>showTip(ev,
@@ -3454,6 +3465,18 @@ function render(d){
   const hour=Date.now()/1000-3600;
   PULSES=(d.recent||[]).filter(m=>POS[m.from]&&POS[m.to]&&(m.ts||0)>hour)
     .slice(0,16).map((m,i)=>({from:m.from,to:m.to,t:-(i*0.06),followed:m.followed}));
+  // Motion is an enhancement, never the only carrier of meaning. Readers who ask
+  // for reduced motion get the same information as static marks at the midpoint
+  // of each edge — nothing is lost, nothing moves.
+  if(STILL){
+    const g=document.getElementById('pulses');
+    if(g){g.textContent='';
+      PULSES.forEach(p=>{const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
+        const q=at(a,ctrl(a,b),b,0.5);
+        g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
+          fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))})}
+    return;
+  }
   if(!RAF)RAF=requestAnimationFrame(step);
 }
 function step(){
@@ -3477,16 +3500,16 @@ function drawSeries(rows){
   const max=Math.max(...r2.map(r=>r.n))||1;
   const y=v=>H-PAD-(H-2*PAD)*(v/max);
   [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),stroke:'#3a2c18'}));
-    g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#7c684a'},String(v)))});
+    g.appendChild(el('text',{x:4,y:y(v)+4,fill:'#96805c'},String(v)))});
   r2.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/r2.length);
-    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#6b563a',rx:2}))
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:'#87704f',rx:2}))
       .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.n} sent`));
     g.appendChild(el('rect',{x,y:y(r.heard),width:BW,height:H-PAD-y(r.heard),fill:'#e0b23a',rx:2}))
       .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.heard} acted on`))});
-  g.appendChild(el('text',{x:PAD,y:H-8,fill:'#7c684a'},'24h ago'));
-  g.appendChild(el('text',{x:W-PAD-20,y:H-8,fill:'#7c684a'},'now'));
+  g.appendChild(el('text',{x:PAD,y:H-8,fill:'#96805c'},'24h ago'));
+  g.appendChild(el('text',{x:W-PAD-20,y:H-8,fill:'#96805c'},'now'));
   g.appendChild(el('text',{x:W-PAD-150,y:16,fill:'#e0b23a'},'\u25a0 acted on'));
-  g.appendChild(el('text',{x:W-PAD-60,y:16,fill:'#6b563a'},'\u25a0 ignored'));
+  g.appendChild(el('text',{x:W-PAD-60,y:16,fill:'#87704f'},'\u25a0 ignored'));
 }
 
 async function tick(){
