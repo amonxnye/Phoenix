@@ -258,8 +258,11 @@ check("a real source that does NOT contain the claim is refused",
 v_bare = A.ingest("camps", _src, "camps are good", quote="")
 check("an unquoted assertion is never verified", not v_bare["verified"], v_bare["reason"])
 
-_ver = A.external(20, verified_only=True)
-_all = A.external(20)
+# Ask for more than the record holds. With a small limit both lists saturate at
+# the cap on a lived-in anchor, and the comparison silently degrades to 20 == 20 —
+# a check that passes on an empty world and fails on a busy one tests nothing.
+_ver = A.external(10_000, verified_only=True)
+_all = A.external(10_000)
 check("unverified knowledge is kept on the record but excluded from steering",
       len(_all) > len(_ver) and all(x["verified"] for x in _ver),
       f"{len(_ver)} verified of {len(_all)} recorded")
@@ -484,6 +487,20 @@ check("no page animates against the reader's stated preference",
       f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
 check("the colours the pages actually use are the ones tested",
       all(v in _console_src for v in list(_TEXT.values()) + list(_GRAPHIC.values())))
+# A relationship graph has to answer "who is talking to whom" without a hover, and
+# has to survive growing past a handful of members.
+check("edges declare their direction with an arrowhead",
+      "marker-end" in _console_src and "orient:'auto-start-reverse'" in _console_src)
+check("arrowheads are fixed in user space, not scaled by line width",
+      "markerUnits:'userSpaceOnUse'" in _console_src,
+      "otherwise a 9px line draws a 54px head")
+check("both directions of a pair are drawn apart, never on top of each other",
+      "const side=(from<to)?1:-1" in _console_src)
+check("edges stop at the node rim instead of vanishing beneath it",
+      "function trim(" in _console_src)
+check("the graph can be expanded and focused, and Escape undoes both",
+      all(k in _console_src for k in ("function expand()", "FOCUS=(FOCUS===n.id)",
+                                      "e.key!=='Escape'")))
 
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",

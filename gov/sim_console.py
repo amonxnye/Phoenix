@@ -3329,6 +3329,15 @@ main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-temp
 svg text{font:10px ui-monospace,Menlo,monospace}
 #tip{position:fixed;pointer-events:none;background:#241a0f;border:1px solid var(--gold);border-radius:6px;
   padding:6px 9px;font-size:11px;max-width:330px;display:none;z-index:50}
+.ghost{background:#241a0f;border:1px solid var(--line);color:var(--gold);border-radius:5px;
+  padding:2px 9px;font:11px ui-monospace,Menlo,monospace;cursor:pointer;letter-spacing:0;text-transform:none}
+.ghost:hover{border-color:var(--gold)}
+/* Expanded: the graph owns the window. Everything else stays in the DOM, so the
+   page keeps working and Escape puts it straight back. */
+#graphcard.expanded{position:fixed;inset:10px;z-index:60;overflow:auto;
+  box-shadow:0 0 0 100vmax rgba(9,6,3,.86)}
+#graphcard.expanded #net{height:auto}
+#graphcard.expanded .note{display:none}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 </style>
 <header>
@@ -3347,15 +3356,19 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 <main>
   <div class="card wide"><div class=kpi id=kpi></div></div>
 
-  <div class="card wide"><h2>Who talks to whom <em>ring ordered by influence &mdash; most-heard first, clockwise</em></h2>
+  <div class="card wide" id=graphcard><h2>Who talks to whom
+      <button id=expandbtn class=ghost onclick="expand()">&#10530; expand</button>
+      <em>ring ordered by influence &mdash; most-heard first, clockwise</em></h2>
     <svg id=net viewBox="0 0 900 560" width="100%" role=img
-      aria-label="Agents ringed by influence; offices at the centre; edge brightness is tips acted on"></svg>
+      aria-label="Agents ringed by influence; offices at the centre; arrows run from sender to recipient; edge brightness is the share the listener acted on"></svg>
     <div class=legend>
       <span>&#9679; radius = contribution</span>
       <span>centre = standing offices (no roster seat)</span>
+      <span>&#10230; arrow = sender to recipient</span>
       <span>line width = messages</span>
       <span style="color:var(--gold)">brightness = share the listener ACTED on</span>
       <span>&#8226; dot = message in the last hour</span>
+      <span>click a node to isolate its conversations</span>
     </div>
     <div class=note><b>What this can and cannot show.</b> Peer coordination is routed
       most-senior &rarr; rotating-junior by policy, so the shape is largely by design.
@@ -3385,83 +3398,158 @@ const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[
 const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\u2014';
 const N=n=>(n||0).toLocaleString();
 const SVGNS='http://www.w3.org/2000/svg';
-const CX=450,CY=275,R=205;
+// Geometry is recomputed on every render so the graph can be EXPANDED: the
+// viewBox grows, the ring grows with it, and nothing is hard-coded to one size.
+let VB={w:900,h:560}, CX=450, CY=280, R=205;
 const STILL=matchMedia('(prefers-reduced-motion: reduce)').matches;
-let POS={},PULSES=[],RAF=null;
+let POS={},RAD={},PULSES=[],RAF=null,FOCUS=null,LAST=null;
 function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
   if(x!==undefined)n.textContent=x;return n}
-function showTip(e,h){const t=document.getElementById('tip');t.innerHTML=h;t.style.display='block';
-  t.style.left=Math.min(innerWidth-340,e.clientX+14)+'px';t.style.top=(e.clientY+14)+'px'}
-function hideTip(){document.getElementById('tip').style.display='none'}
-function ctrl(a,b){return {x:(a.x+b.x)/2*0.60+CX*0.40, y:(a.y+b.y)/2*0.60+CY*0.40}}
+function showTip(e,h){const t=$('tip');t.innerHTML=h;t.style.display='block';
+  t.style.left=Math.min(innerWidth-340,e.clientX+14)+'px';
+  t.style.top=Math.min(innerHeight-130,e.clientY+14)+'px'}
+function hideTip(){$('tip').style.display='none'}
+
+// Bow each edge PERPENDICULAR to its own chord, with the side chosen by the pair's
+// alphabetical order. A->B and B->A therefore curve opposite ways instead of lying
+// exactly on top of each other, which is what hid half the conversations.
+function ctrl(a,b,from,to){
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const dx=b.x-a.x, dy=b.y-a.y, len=Math.hypot(dx,dy)||1;
+  const side=(from<to)?1:-1, bow=Math.min(95,len*0.20)*side;
+  return {x:mx-(dy/len)*bow, y:my+(dx/len)*bow};
+}
 function at(a,c,b,t){const u=1-t;
   return {x:u*u*a.x+2*u*t*c.x+t*t*b.x, y:u*u*a.y+2*u*t*c.y+t*t*b.y}}
+// Trim the curve to the rim of each circle (plus room for the arrowhead) so a line
+// is never swallowed by the node it points at.
+function trim(a,c,b,ra,rb){
+  const t0=Math.hypot(c.x-a.x,c.y-a.y)||1, t1=Math.hypot(b.x-c.x,b.y-c.y)||1;
+  return {a:{x:a.x+(c.x-a.x)/t0*ra, y:a.y+(c.y-a.y)/t0*ra},
+          b:{x:b.x-(b.x-c.x)/t1*rb, y:b.y-(b.y-c.y)/t1*rb}};
+}
 
 function render(d){
-  const svg=document.getElementById('net');svg.textContent='';
-  const nodes=(d.nodes||[]).slice();
-  const edges=(d.edges||[]);
+  LAST=d;
+  const svg=$('net');svg.textContent='';
+  svg.setAttribute('viewBox',`0 0 ${VB.w} ${VB.h}`);
+  CX=VB.w/2; CY=VB.h/2; R=Math.min(VB.w,VB.h)*0.37;
+  const big=VB.w>1000;
+  const nodes=(d.nodes||[]).slice(), edges=(d.edges||[]);
   if(!nodes.length){svg.appendChild(el('text',{x:20,y:40,fill:'#b09a72'},
     'No agents on the roster yet.'));return}
 
   // Influence decides the LAYOUT, not the roster's arbitrary order: rank each
-  // agent by tips it acted on, then place them clockwise from the top. Position
-  // now carries information instead of being an artefact of insertion order.
-  const inb={};
+  // agent by tips it acted on, then place them clockwise from the top.
+  const inb={},outb={};
   edges.forEach(e=>{const r=inb[e.to]=inb[e.to]||{heard:0,msgs:0};
-    r.heard+=e.followed; r.msgs+=e.msgs});
+    r.heard+=e.followed; r.msgs+=e.msgs;
+    const o=outb[e.from]=outb[e.from]||{heard:0,msgs:0};
+    o.heard+=e.followed; o.msgs+=e.msgs});
   const offices=nodes.filter(n=>n.role==='office');
   const ring=nodes.filter(n=>n.role!=='office').sort((a,b)=>
     ((inb[b.id]||{}).heard||0)-((inb[a.id]||{}).heard||0) ||
     ((inb[b.id]||{}).msgs||0)-((inb[a.id]||{}).msgs||0) ||
     b.contribution-a.contribution);
   const maxC=Math.max(1,...nodes.map(n=>n.contribution));
-  POS={};
+  POS={};RAD={};
   ring.forEach((n,i)=>{const th=(i/ring.length)*Math.PI*2-Math.PI/2;
-    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n}});
+    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n};
+    RAD[n.id]=(big?8:6)+(big?16:12)*Math.sqrt(n.contribution/maxC)});
   offices.forEach((n,i)=>{const th=(i/Math.max(1,offices.length))*Math.PI*2-Math.PI/2;
-    const r=offices.length>1?58:0;
-    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true}});
+    const r=offices.length>1?R*0.28:0;
+    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true};
+    RAD[n.id]=big?17:13});
+
+  // One arrowhead marker per colour, so DIRECTION is readable without hovering.
+  // Who advises whom is the first question anyone asks of a graph like this.
+  const defs=el('defs',{});svg.appendChild(defs);
+  [['ah-heard','#e0b23a'],['ah-cold','#87704f']].forEach(([id,col])=>{
+    // markerUnits defaults to strokeWidth, which gave a 9px line a 54px arrowhead.
+    // Fix the head in user space so direction reads the same on every edge.
+    const m=el('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:15,
+      markerHeight:15,markerUnits:'userSpaceOnUse',orient:'auto-start-reverse'});
+    m.appendChild(el('path',{d:'M0,1 L10,5 L0,9 z',fill:col}));
+    defs.appendChild(m)});
 
   const gE=el('g',{});svg.appendChild(gE);
   const maxM=Math.max(1,...edges.map(e=>e.msgs));
-  edges.filter(e=>POS[e.from]&&POS[e.to]).forEach(e=>{
-    const a=POS[e.from],b=POS[e.to],c=ctrl(a,b);
+  const drawn=edges.filter(e=>POS[e.from]&&POS[e.to]);
+  drawn.forEach(e=>{
+    const A=POS[e.from],B=POS[e.to],c=ctrl(A,B,e.from,e.to);
+    const w=Math.max(1.4,Math.min(9,1.4+7.6*e.msgs/maxM));
+    const t=trim(A,c,B,RAD[e.from]+2,RAD[e.to]+4+w);
     const heard=e.followed/Math.max(1,e.msgs);
-    const p=el('path',{d:`M${a.x},${a.y} Q${c.x},${c.y} ${b.x},${b.y}`,fill:'none',
-      stroke:e.followed?'#e0b23a':'#87704f',
-      'stroke-width':Math.max(1,Math.min(8,1+7*e.msgs/maxM)),
-      'stroke-opacity':(0.14+0.76*heard).toFixed(2),'stroke-linecap':'round'});
+    const dim=FOCUS&&e.from!==FOCUS&&e.to!==FOCUS;
+    const p=el('path',{d:`M${t.a.x},${t.a.y} Q${c.x},${c.y} ${t.b.x},${t.b.y}`,fill:'none',
+      stroke:e.followed?'#e0b23a':'#87704f','stroke-width':w,
+      'marker-end':`url(#${e.followed?'ah-heard':'ah-cold'})`,
+      'stroke-opacity':(dim?0.07:(0.34+0.56*heard)).toFixed(2),'stroke-linecap':'round'});
     p.addEventListener('mousemove',ev=>showTip(ev,
       `<b>${esc(e.from)} &rarr; ${esc(e.to)}</b><br>${N(e.msgs)} message${e.msgs===1?'':'s'}<br>`+
       `<span style="color:#e0b23a">${N(e.followed)} acted on</span> &middot; ${Math.round(heard*100)}% heard`));
     p.addEventListener('mouseleave',hideTip);
-    gE.appendChild(p)});
+    gE.appendChild(p);
+    // Expanded, there is room to print the traffic outright, so the reader does
+    // not have to hover every line to read the graph.
+    // Sit the label just off the curve on its bowed side, so it never lands on the
+    // node captions at the ends. Skip edges too short to hold one legibly.
+    const chord=Math.hypot(t.b.x-t.a.x,t.b.y-t.a.y);
+    if(big&&!dim&&chord>90){
+      const q=at(t.a,c,t.b,0.5), m={x:(t.a.x+t.b.x)/2,y:(t.a.y+t.b.y)/2};
+      const off=Math.hypot(q.x-m.x,q.y-m.y)||1;
+      const lx=q.x+(q.x-m.x)/off*12, ly=q.y+(q.y-m.y)/off*12+4;
+      // Never print a count on top of a node or its caption — an unreadable
+      // number is worse than none, because it implies the chart is crowded when
+      // it is only badly placed.
+      const clash=Object.keys(POS).some(k=>
+        Math.hypot(POS[k].x-lx,POS[k].y-ly)<RAD[k]+34);
+      if(!clash)gE.appendChild(el('text',{x:lx,y:ly,
+        fill:e.followed?'#e0b23a':'#96805c','text-anchor':'middle','font-size':11},
+        `${e.followed}/${e.msgs}`))}
+  });
   const gP=el('g',{id:'pulses'});svg.appendChild(gP);
 
   const gN=el('g',{});svg.appendChild(gN);
   nodes.forEach(n=>{const p=POS[n.id];if(!p)return;
-    const st=inb[n.id]||{heard:0,msgs:0};
-    const r=p.office?13:6+12*Math.sqrt(n.contribution/maxC);
+    const st=inb[n.id]||{heard:0,msgs:0}, so=outb[n.id]||{heard:0,msgs:0};
+    const r=RAD[n.id];
+    const dim=FOCUS&&FOCUS!==n.id&&!drawn.some(e=>
+      (e.from===FOCUS&&e.to===n.id)||(e.to===FOCUS&&e.from===n.id));
     const col=p.office?'#8ab4ff':n.alive?(n.tier>=2?'#e0b23a':'#a8e086'):'#5d4b33';
-    if(p.office)gN.appendChild(el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
-      stroke:'#8ab4ff','stroke-opacity':0.25,'stroke-dasharray':'3 3'}));
-    const c=el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
-      stroke:n.alive?col:'#3a2c18','stroke-width':1.5});
-    c.addEventListener('mousemove',ev=>showTip(ev,
+    const g=el('g',{opacity:dim?0.2:1});
+    if(p.office)g.appendChild(el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
+      stroke:'#8ab4ff','stroke-opacity':0.3,'stroke-dasharray':'3 3'}));
+    g.appendChild(el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
+      stroke:n.alive?col:'#3a2c18','stroke-width':1.5}));
+    const out=p.x>CX;
+    g.appendChild(el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+      y:p.y+(p.office?r+15:4),fill:n.alive?'#f0e6d2':'#7a6547','font-size':big?13:11,
+      'text-anchor':p.office?'middle':(out?'start':'end')},n.id));
+    // An office almost never RECEIVES, so "0/0 heard" under it would be noise
+    // dressed as data. Report what each node actually does: offices are judged on
+    // whether their advice was heeded, agents on what they acted upon.
+    if(big)g.appendChild(el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+      y:p.y+(p.office?r+30:19),fill:'#96805c','font-size':10,
+      'text-anchor':p.office?'middle':(out?'start':'end')},
+      p.office?`${so.heard}/${so.msgs} heeded`:`${st.heard}/${st.msgs} heard`));
+    g.style.cursor='pointer';
+    g.addEventListener('mousemove',ev=>showTip(ev,
       `<b>${esc(n.id)}</b><br>${esc(n.role)}${p.office?'':' &middot; tier '+n.tier}<br>`+
       (p.office?'standing office &middot; no roster seat'
               :`contribution ${N(n.contribution)}<br>${n.alive?esc(n.status):'retired'}`)+
-      `<br>received ${N(st.msgs)}, acted on <span style="color:#e0b23a">${N(st.heard)}</span>`));
-    c.addEventListener('mouseleave',hideTip);
-    gN.appendChild(c);
-    const out=p.x>CX;
-    gN.appendChild(el('text',{x:p.x+(p.office?0:(out?r+5:-(r+5))),
-      y:p.y+(p.office?r+14:3),fill:n.alive?'#f0e6d2':'#7a6547',
-      'text-anchor':p.office?'middle':(out?'start':'end')},n.id))});
+      `<br>received ${N(st.msgs)}, acted on <span style="color:#e0b23a">${N(st.heard)}</span>`+
+      `<br>sent ${N(so.msgs)}, heeded <span style="color:#e0b23a">${N(so.heard)}</span>`+
+      `<br><span style="color:#96805c">click to isolate</span>`));
+    g.addEventListener('mouseleave',hideTip);
+    // Click to isolate: in a busy graph the only way to read one agent's
+    // conversations is to mute everyone else's.
+    g.addEventListener('click',()=>{FOCUS=(FOCUS===n.id)?null:n.id;render(LAST)});
+    gN.appendChild(g)});
 
-  // A dot per message in the last hour, so motion means RECENT TRAFFIC rather
-  // than decoration. Gold dots are the ones the listener acted on.
+  if(FOCUS)svg.appendChild(el('text',{x:14,y:VB.h-12,fill:'#e0b23a','font-size':12},
+    `isolating ${FOCUS} — click it again, or press Esc, to show everyone`));
+
   const hour=Date.now()/1000-3600;
   PULSES=(d.recent||[]).filter(m=>POS[m.from]&&POS[m.to]&&(m.ts||0)>hour)
     .slice(0,16).map((m,i)=>({from:m.from,to:m.to,t:-(i*0.06),followed:m.followed}));
@@ -3469,27 +3557,42 @@ function render(d){
   // for reduced motion get the same information as static marks at the midpoint
   // of each edge — nothing is lost, nothing moves.
   if(STILL){
-    const g=document.getElementById('pulses');
-    if(g){g.textContent='';
-      PULSES.forEach(p=>{const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
-        const q=at(a,ctrl(a,b),b,0.5);
-        g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
-          fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))})}
+    PULSES.forEach(p=>{const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
+      const q=at(a,ctrl(a,b,p.from,p.to),b,0.5);
+      gP.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
+        fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))});
     return;
   }
   if(!RAF)RAF=requestAnimationFrame(step);
 }
 function step(){
-  const g=document.getElementById('pulses');
+  const g=$('pulses');
   if(g){g.textContent='';
     PULSES.forEach(p=>{p.t+=0.006; if(p.t>1.2)p.t=-0.1;
       if(p.t<0||p.t>1)return;
       const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
-      const q=at(a,ctrl(a,b),b,p.t);
+      const q=at(a,ctrl(a,b,p.from,p.to),b,p.t);
       g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
         fill:p.followed?'#e0b23a':'#8ab4ff','fill-opacity':0.9}))})}
   RAF=requestAnimationFrame(step);
 }
+
+// Expand: the graph takes the whole window, the ring grows into it, and every edge
+// and node gains a printed count. A network you cannot enlarge is a network you
+// cannot read the moment it has more than a handful of members.
+function expand(){
+  const on=$('graphcard').classList.toggle('expanded');
+  VB=on?{w:Math.max(1100,Math.min(1900,innerWidth-56)),
+         h:Math.max(680,innerHeight-210)}:{w:900,h:560};
+  $('expandbtn').textContent=on?'✕ collapse':'⤡ expand';
+  document.body.style.overflow=on?'hidden':'';
+  if(LAST)render(LAST);
+}
+addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  if(FOCUS){FOCUS=null;if(LAST)render(LAST);return}
+  if($('graphcard').classList.contains('expanded'))expand();
+});
 
 function drawSeries(rows){
   const g=document.getElementById('series');g.textContent='';
