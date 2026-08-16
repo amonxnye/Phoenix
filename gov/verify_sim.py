@@ -509,6 +509,39 @@ check("the decision pipeline is counted from the permanent record",
 check("no stage of the pipeline reports a negative count",
       all(isinstance(v, int) and v >= 0 for v in _fs.values()))
 
+# ── 14b. Article I.2 — busy is not productive ───────────────────────────────
+# Taken from the live world on 2026-08-16: Castle Age, 96% and frozen for 25
+# turns, holding 29,864,149 resources against a target of 2,000 — 14,932x — while
+# 65.7% of all activity was still gathering. failed_turns read 0 the whole time,
+# because any gather cleared the counter, and the stall blamed "a full roster
+# that is not producing" while the roster produced five gathers a turn.
+print("\n14b. Waste — effort on a component already full")
+import sim as _S_sim                                # noqa: E402
+import vision as _V                                 # noqa: E402
+
+_live = {"food": 4_999_990, "wood": 19_890_747, "gold": 4_973_412,
+         "age": "Castle Age", "pop_cap": 10}
+_built = {"house": 1, "mill": 1, "lumber_camp": 1, "mining_camp": 1, "wheelbarrow": 1}
+_sc = _V.scorecard({**_live, **_built}, _built, 0, _V.get("castle"))
+check("the live world's economy is scored as full", _sc["econ_pct"] == 100,
+      f"{_sc['extra_value_pct']:,.0f}% over target")
+check("its shortfall is developments, not resources", _sc["dev_pct"] < 100,
+      f"dev {_sc['dev_pct']}% · age {_sc['age_pct']}% · econ {_sc['econ_pct']}%"
+      f" — {len(_built)} of {_V.get('castle').target_buildings} buildings")
+check("so gathering more cannot raise the score",
+      _V.scorecard({**_live, **_built, "wood": _live["wood"] * 10},
+                   _built, 0, _V.get("castle"))["progress"] == _sc["progress"],
+      "ten times the wood moves the score by exactly 0 points")
+
+_src = open(os.path.join(HERE, "sim_console.py")).read()
+check("a turn that acts without moving the score is counted as waste",
+      'waste_turns' in _src and 'waste_since_report' in _src)
+check("waste is debited from the Governor's score, not just displayed",
+      "score -= min(3, wasted // 50)" in _src)
+check("a stall names the component that is SHORT, not the roster",
+      "the only component short, at" in _src
+      and "gathering cannot move the score (Article I.2)" in _src)
+
 # ── 15. the views are ARITHMETIC, not decoration ────────────────────────────
 # A share that does not sum to its denominator is worse than no share at all:
 # it looks quantitative and is not. The first version of /flow drew bands from

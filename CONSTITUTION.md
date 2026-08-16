@@ -19,6 +19,12 @@ Everything below is those two laws, applied.
    Work that does not move the score is waste, **and waste is counted**: every work
    report states the Vision delta, compute spent, spoilage lost and failed turns
    (`sim_console._governor_report`).
+   **Effort poured into a component already at 100% is waste of the costliest kind** —
+   it looks like productivity, so nothing else in the system objects to it. Such
+   turns are counted separately from failed turns and debited from the Governor's
+   score; a stall names the component that is *short*, never merely "the roster is
+   not producing", because a fleet working flat out on the wrong thing is the
+   commonest way for a score to freeze (`_S["waste_turns"]`, `_binding_constraint`).
 3. The Vision is **the only** oracle: objective, cheap, and instant to read. If a goal
    cannot be scored, it cannot be pursued — restate it until it can. Two disagreeing
    scores means the world has no oracle at all.

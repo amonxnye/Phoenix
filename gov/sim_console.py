@@ -347,6 +347,21 @@ def _binding_constraint() -> str:
     ok, reason = G.may_spawn(views)
     if not ok:
         return f"the compute cap — {reason}"
+    # WHICH COMPONENT of the vision is short? A stall in a world that is working
+    # flat out is almost never "nobody is producing" — it is "everyone is producing
+    # the wrong thing", and saying the former sends the operator to inspect healthy
+    # agents. Name the deficit, and name what cannot close it.
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    short = [(n, p) for n, p in (("developments", sc["dev_pct"]),
+                                 ("the age", sc["age_pct"]),
+                                 ("the economy", sc["econ_pct"])) if p < 100]
+    if short:
+        name, pct = min(short, key=lambda x: x[1])
+        note = ""
+        if sc["econ_pct"] >= 100:
+            note = (f"; the economy is already full at {sc['extra_value_pct']:,.0f}% "
+                    f"surplus, so gathering cannot move the score (Article I.2)")
+        return f"{name} — the only component short, at {pct}%{note}"
     w = sim.world()
     if len(_S["villagers"]) >= min(_target_villagers(), w["pop_cap"]):
         return "a full roster that is not producing — inspect agent states on /agents"
@@ -561,9 +576,11 @@ def _governor_report():
     anchor.config_set("last_report_burn", str(life_now))
     spoiled = _S.pop("spoil_since_report", 0)
     failed = _S.pop("failed_since_report", 0)
+    wasted = _S.pop("waste_since_report", 0)
     facts = (f"VISION Δ {delta:+d}% this period · {period_tokens:,} compute spent · "
              f"{spend_pct}% of cap in use · {spoiled:,} food spoiled · {failed} failed "
-             f"turns · {d['waste']} failed builds · stock food {w['food']:,}/"
+             f"turns · {wasted} turns spent on components already full · "
+             f"{d['waste']} failed builds · stock food {w['food']:,}/"
              f"wood {w['wood']:,}/gold {w['gold']:,}")
     if _S.get("stall"):                           # IX.4: a stalled world may not be reported healthy
         facts = f"STALLED — {_S['stall']} · " + facts
@@ -579,6 +596,9 @@ def _governor_report():
     score -= 2 if spend_pct < 30 else 0                      # idle budget is a penalty
     score -= min(3, spoiled // 5_000)                        # rot is waste (I.2)
     score -= min(3, failed // 5)                             # dead turns are waste
+    # Busy-on-the-wrong-thing is waste too, and the costliest kind: it looks like
+    # productivity, so nothing else in the system objects to it (I.2).
+    score -= min(3, wasted // 50)
     if delta <= 0:
         # a gradient inside the failure band: a correctly-diagnosed, clean stall
         # scores 3; thrashing (waste, heavy rot, undiagnosed dead turns) sinks lower
@@ -1123,8 +1143,20 @@ def _one_turn():
     # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
     # vision score frozen for 25 turns, is a STALL: name the binding constraint and
     # escalate — never continue quietly.
-    if _S.pop("_acted", False):
+    # Article I.2, now ENFORCED: "work that does not move the score is waste, and
+    # waste is counted." Activity alone cleared the failed-turn counter, so a fleet
+    # could gather forever into an economy already 15,000x its target and never
+    # register a single failure — which is exactly what the live world did for
+    # 12,000 turns. A turn that ACTED but moved nothing, while the component it
+    # fed is already full, is waste: counted on its own line, not hidden inside
+    # "productive".
+    acted = _S.pop("_acted", False)
+    if acted:
         _S["failed_turns"] = 0
+        if ((_progress_delta(2) or 0) <= 0 and sc_now["econ_pct"] >= 100
+                and sc_now["progress"] < 100):
+            _S["waste_turns"] = _S.get("waste_turns", 0) + 1
+            _S["waste_since_report"] = _S.get("waste_since_report", 0) + 1
     else:
         _S["failed_turns"] = _S.get("failed_turns", 0) + 1
         _S["failed_since_report"] = _S.get("failed_since_report", 0) + 1
@@ -1583,6 +1615,9 @@ def _snapshot_build(now: float) -> dict:
             "human_gate": human_gate,
             "stall": _S.get("stall"),
             "failed_turns": _S.get("failed_turns", 0),
+            # Busy is not the same as productive, and the console must not let one
+            # stand in for the other (Article I.2).
+            "waste_turns": _S.get("waste_turns", 0),
             "tick_s": TICK,
             # Read from memory and the filesystem, never from the anchor — these
             # two have to stay readable precisely when the anchor does not.
