@@ -382,6 +382,28 @@ check("the watchdog's restart is not gated behind an anchor write",
       < _tail.rindex("except Exception:", 0, _exit_at) < _exit_at,
       "the record is followed by its own except, and os._exit comes after both")
 
+# Making the exit unconditional cured the silent hang and bought a restart loop:
+# a full volume stops turns completing, so the watchdog fired every five minutes
+# forever and each restart killed the console that could have explained it. The
+# recovery has to match the diagnosis.
+_saved_faults = SC._STORAGE["faults"]
+try:
+    SC._STORAGE["faults"] = 0
+    A.config_set("wd_restarts", "")
+    check("a genuine wedge still earns a restart", SC._restart_helps())
+    SC._restart_helps(); SC._restart_helps()
+    check("but three restarts an hour is a loop, not a recovery",
+          not SC._restart_helps(), "the fourth is refused")
+    A.config_set("wd_restarts", "")
+    SC._storage_fault("verify-restart-probe")
+    check("a broken substrate is never restarted into",
+          not SC._restart_helps(), "restarting cannot empty a disk")
+    check("refusing to restart does not also refuse to report",
+          "wd:futile" in _src and "stale > max(5 * TICK, 90)" in _src)
+finally:
+    SC._STORAGE["faults"] = _saved_faults
+    A.config_set("wd_restarts", "")
+
 _drv = __import__("inspect").getsource(SC._drive)
 check("a turn that RAISES is counted as a failed turn (Article IX.2)",
       'failed_turns"] = _S.get("failed_turns", 0) + 1' in _drv

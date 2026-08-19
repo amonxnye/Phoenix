@@ -65,6 +65,30 @@ def _storage_fault(where: str) -> None:
               file=sys.stderr, flush=True)
 
 
+def _restart_helps() -> bool:
+    """Would restarting actually fix this? Two ways the answer is no.
+
+    The substrate is the fault — a full or unwritable volume survives a restart
+    untouched, so exiting just destroys the console that would have explained it.
+    Or we have already tried: three restarts in an hour is a loop, not a recovery,
+    and a platform reads a looping process as a failed deployment.
+    """
+    if _STORAGE["faults"] or _disk()["used_pct"] >= 99:
+        return False
+    try:                                  # the budget only needs the anchor in the
+        now = time.time()                 # branch where the anchor still works
+        raw = anchor.config_get("wd_restarts", "")
+        n, first = (int(x) for x in raw.split(":")) if ":" in raw else (0, int(now))
+        if now - first > 3600:
+            n, first = 0, int(now)        # a fresh hour, a fresh budget
+        if n >= 3:
+            return False
+        anchor.config_set("wd_restarts", f"{n + 1}:{first}")
+    except Exception:
+        pass                              # can't read the budget — don't block recovery
+    return True
+
+
 def _disk() -> dict:
     """Free space on the data volume. The data diet slowed the fill; it never gave
     us a gauge, so the tank ran dry unannounced."""
@@ -1327,8 +1351,24 @@ def _health_sampler():
         # thing — the exact case a watchdog exists for — the record raised, the
         # except swallowed it, and the restart was never reached. It failed
         # silently every 30 seconds for a week.
+        #
+        # AND the recovery must match the diagnosis. Making the exit unconditional
+        # fixed the silent hang and introduced a restart loop: a full volume stops
+        # turns completing, so the watchdog fired every five minutes forever, and
+        # each restart killed the one console that could have said why. Restarting
+        # cures a WEDGED PROCESS. It cannot cure a broken substrate, and a recovery
+        # that cannot work is not worth the observability it destroys.
         stale = time.time() - _S.get("last_turn_ts", time.time())
-        if stale > max(20 * TICK, 300):
+        if stale > max(20 * TICK, 300) and not _restart_helps():
+            # Futile: say so once, then leave `stale` intact so the Article IX.2
+            # stall below still fires. Refusing to restart must never also mean
+            # refusing to report — that would be the eight-day silence again.
+            if "wd:futile" not in _S["notified"]:
+                _S["notified"].add("wd:futile")
+                print(f"[watchdog] driver wedged {stale:.0f}s — NOT restarting: a "
+                      f"restart cannot fix this fault. Holding the console up so "
+                      f"someone can see why.", file=sys.stderr, flush=True)
+        elif stale > max(20 * TICK, 300):
             print(f"[watchdog] driver wedged {stale:.0f}s — restarting",
                   file=sys.stderr, flush=True)
             try:                                   # best-effort diagnostics only

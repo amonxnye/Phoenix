@@ -227,6 +227,14 @@ Everything below is those two laws, applied.
    runs inside a working turn, an alarm that writes to a full disk — each is a
    safeguard that is guaranteed to be absent exactly when it is needed. Recovery
    paths run to completion before any optional reporting is attempted.
+8. **The recovery must match the diagnosis, and is itself bounded.** Restarting cures
+   a wedged process; it cannot cure a broken substrate, and restarting into an
+   unwritable volume destroys the only console that could explain the fault. A
+   recovery that cannot work is not worth the observability it costs. Repetition is
+   the same error in time: three restarts within an hour is a loop, not a recovery,
+   and the system stops, holds itself up, and escalates instead. **Declining to act
+   never licenses declining to report** — a refused restart still declares its stall
+   (`sim_console._restart_helps`).
 > Enforced by `sim_console.py` (failed-turn counter, `_binding_constraint`, stall
 > escalation, the unconditional watchdog restart, the disk gauge), surfaced on
 > `/agents` SYSTEM HEALTH and in every work report.
