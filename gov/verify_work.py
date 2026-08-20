@@ -105,6 +105,23 @@ try:
     ok2, msg2 = W.apply_patch("tests/test_calculator.py", "pwned")
     check("the tests are not writable (no exam-editing)", not ok2, msg2[:60])
 
+    # Article IX.7 applied to the ORACLE: the judge must not depend on anything the
+    # judged can write. The sandbox is the oracle's working directory, and a working
+    # directory is sys.path[0] for `python -m`. With a denylist that refused only
+    # `tests/`, writing `unittest.py` there shadowed the module the runner itself
+    # imports and the oracle reported a GREEN suite while six tests were failing.
+    truth = W.oracle()
+    for name, why in (("unittest.py", "shadows the stdlib module the runner imports"),
+                      ("sitecustomize.py", "an interpreter start-up hook"),
+                      ("helper.py", "any new file on the oracle's import path")):
+        okx, msgx = W.apply_patch(name, "import sys\nraise SystemExit(0)\n")
+        check(f"a new file in the oracle's import path is refused — {name}", not okx, why)
+    check("the oracle's verdict is unchanged by the attempt",
+          W.oracle() == truth, f"{truth['passed']}/{truth['total']} passing, "
+                               f"{truth['failed']} failing — as before")
+    check("but the module under test is still writable (real work still works)",
+          W.apply_patch("calculator.py", pristine)[0])
+
     # Article V: the network claim is TESTED, not asserted. Where the platform grants
     # namespaces we prove egress is impossible; where it doesn't we prove the system
     # says so honestly instead of claiming isolation it cannot enforce.
@@ -147,6 +164,39 @@ try:
     life = next((c for c in A.careers(50) if c["uid"] == "dev-test"), None)
     check("the worker's career records the shipped work", life is not None
           and any(e["event"] == "work" for e in life["events"]))
+
+    # ── 5. effort is not progress, and retrying is not effort ───────────────
+    print("\n5. Governance — Articles I.2 and IX.8, in the coding domain")
+    W.apply_patch("calculator.py", pristine)       # back to a failing suite
+    tasks = [t for t in W.sync_tasks() if t["status"] in ("open", "assigned")]
+    t0 = tasks[0]
+    A.config_set(f"attempts:{t0['id']}", "0")
+    base = W.oracle()
+
+    # A patch that applies, breaks nothing, and moves no test is not work. It used
+    # to be filed as `[work]` with a contribution of zero — motion recorded as
+    # productivity, the same defect the settlement committed for 12,000 turns.
+    noop = pristine + "\n# a comment changes nothing measurable\n"
+    r_noop = K.apply_and_score("dev-test", "calculator.py", noop, t0, base)
+    check("a patch that moves no test is waste, not work", r_noop["did"] == "no-op",
+          f"suite unchanged at {r_noop.get('suite')}")
+    check("it earns no contribution", r_noop.get("contribution") == 0)
+    check("and it spends an attempt from the task's budget",
+          A.counter_get(f"attempts:{t0['id']}") == 1)
+
+    # IX.8: repeated failure on one task is a loop, not effort. Exhaust the budget
+    # and the worker must stop and escalate rather than re-pick it forever.
+    for _ in range(K.MAX_ATTEMPTS):
+        A.counter_add(f"attempts:{t0['id']}", 1)
+    for t in tasks[1:]:
+        A.config_set(f"attempts:{t['id']}", str(K.MAX_ATTEMPTS))
+    stuck = K.work_cycle("dev-test")
+    check("an exhausted workboard stops instead of looping", stuck["did"] == "stuck",
+          f"every open task at {K.MAX_ATTEMPTS} attempts")
+    check("and it escalates rather than failing quietly",
+          any("WORKBOARD STUCK" in e for e in A.event_log(40)))
+    for t in tasks:                                # leave the board workable again
+        A.config_set(f"attempts:{t['id']}", "0")
 finally:
     W.apply_patch("calculator.py", pristine)       # always restore the toy repo
 

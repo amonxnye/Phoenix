@@ -19,6 +19,11 @@ Everything below is those two laws, applied.
    Work that does not move the score is waste, **and waste is counted**: every work
    report states the Vision delta, compute spent, spoilage lost and failed turns
    (`sim_console._governor_report`).
+   This holds in every domain the fleet works in, not only the settlement: a patch that
+   applies cleanly, breaks nothing and turns no test green is waste, recorded as waste,
+   and earns no contribution (`worker.apply_and_score`). A task that has failed its
+   attempt budget is not retried — repetition is not effort, and the workboard escalates
+   rather than looping (Article IX.8 in the coding domain).
    **Effort poured into a component already at 100% is waste of the costliest kind** —
    it looks like productivity, so nothing else in the system objects to it. Such
    turns are counted separately from failed turns and debited from the Governor's
@@ -110,7 +115,13 @@ Everything below is those two laws, applied.
    do harm, so its intent does not have to be judged.
 2. Credentials live only in the hand-written orchestrator, never in the sandbox.
 3. Generated code cannot edit the oracle that judges it, and cannot write outside the
-   sandbox (`workspace.apply_patch`).
+   sandbox (`workspace.apply_patch`). **The oracle's whole import path is part of the
+   oracle.** A working directory is `sys.path[0]`, so an agent that may add *any* file
+   beside the module under test can shadow what the test runner itself imports and
+   dictate its own verdict — demonstrated, not hypothesised. Writes are therefore an
+   allowlist: an existing file of the exercise may be modified, a new one may never be
+   created. Enumerating what is forbidden leaves everything else permitted, which is
+   the wrong shape for a guard on a judge (Article IX.7 applied to the oracle).
 4. **The enforcement level is measured and reported, never assumed.** Where the
    platform grants namespaces, the oracle subprocess runs in a private network
    namespace and egress is impossible; where it does not, the system says

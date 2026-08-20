@@ -235,8 +235,22 @@ def read_file(rel_path: str) -> str:
 
 
 def apply_patch(rel_path: str, content: str) -> tuple[bool, str]:
-    """Write a file inside the sandbox. Refuses anything outside it, and refuses the
-    tests directory outright — the exam cannot be edited to pass the exam."""
+    """Write a file inside the sandbox.
+
+    Article IX.7 applied to the oracle: the judge must not depend on anything the
+    judged can write. The sandbox is the oracle's working directory, and a working
+    directory is `sys.path[0]` for `python -m`, so ANY new file there is on the
+    import path of the process that grades the work.
+
+    This was a denylist (refuse `tests/`, allow the rest) and it was demonstrably
+    breakable: writing `unittest.py` into the sandbox shadowed the stdlib module the
+    runner itself imports, and the oracle reported a green suite while six tests were
+    genuinely failing. Enumerating what is forbidden always leaves the rest permitted.
+
+    It is now an allowlist. An agent may modify a file that is already part of the
+    exercise; it may not introduce one. New files are the entire attack surface, and
+    no legitimate fix to an existing module requires creating one.
+    """
     try:
         p = _safe_path(rel_path)
     except ValueError as e:
@@ -244,6 +258,13 @@ def apply_patch(rel_path: str, content: str) -> tuple[bool, str]:
     rel = os.path.relpath(p, SANDBOX)
     if rel.split(os.sep)[0] == TESTS_DIR:
         return False, "REFUSED: agents may not edit the tests — the oracle is not writable"
+    if not os.path.isfile(p):
+        return False, (f"REFUSED: {rel} does not exist — agents may modify the module "
+                       f"under test, never add a file to the oracle's import path")
+    stem = os.path.basename(rel)[:-3] if rel.endswith(".py") else ""
+    if stem in sys.stdlib_module_names:            # belt and braces, and states the intent
+        return False, (f"REFUSED: {rel} shadows the standard library module '{stem}' "
+                       f"that the test runner itself imports")
     with open(p, "w") as f:
         f.write(content)
     return True, f"wrote {rel} ({len(content)} bytes)"
