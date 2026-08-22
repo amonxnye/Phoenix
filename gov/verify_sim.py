@@ -498,31 +498,61 @@ _console_src = open(os.path.join(HERE, "sim_console.py")).read()
 # would have been invisible to it. An enforcement that only covers what its author
 # remembered to enumerate is the same defect as a liveness counter that only counts
 # turns that happen — it can never report what it was not told about.
-_text_colours = sorted({m.group(1).lower() for m in
-                        re.finditer(r"(?<![-\w])color:\s*(#[0-9a-fA-F]{6})", _console_src)})
-_bad_text = {c: round(min(_contrast(c, _PANEL), _contrast(c, _BG)), 2)
-             for c in _text_colours
-             if min(_contrast(c, _PANEL), _contrast(c, _BG)) < 4.5}
-check("every text colour in the console meets WCAG AA (4.5:1)",
-      not _bad_text, str(_bad_text) if _bad_text else
-      f"{len(_text_colours)} discovered, lowest "
-      f"{min(round(min(_contrast(c, _PANEL), _contrast(c, _BG)), 2) for c in _text_colours)}:1")
-check("the check reads the stylesheet rather than a list it was handed",
-      len(_text_colours) >= 6 and "#fca5a5" in _text_colours,
-      "colours nobody added to a fixture are still checked")
+import sim_console as _SC                           # noqa: E402  (palette is the source)
 
-_GRAPHIC = {"unheard edge": "#87704f", "still-open bar": "#567f3f"}
-_bad_gfx = {k: round(_contrast(v, _PANEL), 2)
-            for k, v in _GRAPHIC.items() if _contrast(v, _PANEL) < 3.0}
-check("every data-bearing graphic meets AA for non-text (3:1)",
+# Every token gets a ROLE, and the roles are exhaustive: adding a colour without
+# saying what it is for fails the suite. That is the whole point of a single
+# palette — you cannot slip a new value in unclassified and unchecked.
+_GROUNDS = {"bg", "panel", "line", "mine"}          # surfaces; never carry text
+_GRAPHICS = {"cold", "open"}                        # data marks; 3:1 suffices
+_unclassified = set(_SC.PALETTE) - _GROUNDS - _GRAPHICS
+check("every colour in the palette has a declared role",
+      set(_SC.PALETTE) >= _GROUNDS | _GRAPHICS,
+      f"{len(_SC.PALETTE)} tokens: {len(_GROUNDS)} grounds, {len(_GRAPHICS)} marks, "
+      f"{len(_unclassified)} text")
+
+_worst = lambda c: min(_contrast(c, _PANEL), _contrast(c, _BG))
+_bad_text = {k: round(_worst(_SC.PALETTE[k]), 2)
+             for k in _unclassified if _worst(_SC.PALETTE[k]) < 4.5}
+check("every text token meets WCAG AA (4.5:1) on both grounds",
+      not _bad_text, str(_bad_text) if _bad_text else
+      f"lowest {min(round(_worst(_SC.PALETTE[k]), 2) for k in _unclassified)}:1")
+_bad_gfx = {k: round(_contrast(_SC.PALETTE[k], _PANEL), 2)
+            for k in _GRAPHICS if _contrast(_SC.PALETTE[k], _PANEL) < 3.0}
+check("every data-bearing mark meets AA for non-text (3:1)",
       not _bad_gfx, str(_bad_gfx) if _bad_gfx else
-      f"lowest {min(round(_contrast(v, _PANEL), 2) for v in _GRAPHIC.values())}:1")
+      f"lowest {min(round(_contrast(_SC.PALETTE[k], _PANEL), 2) for k in _GRAPHICS)}:1")
+
+# And still catch anything that bypassed the palette entirely.
+_stray = sorted({m.group(1).lower() for m in
+                 re.finditer(r"(?<![-\w(])color:\s*(#[0-9a-fA-F]{6})", _console_src)}
+                - set(v.lower() for v in _SC.PALETTE.values()))
+check("no page hard-codes a text colour outside the palette",
+      not _stray, str(_stray) if _stray else "every text colour resolves to a token")
+
+_GRAPHIC = {k: _SC.PALETTE[k] for k in _GRAPHICS}
 check("no page animates against the reader's stated preference",
       _console_src.count("prefers-reduced-motion") >= 11
       and "const STILL=matchMedia" in _console_src,
       f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
 check("the graphic colours tested are ones the pages actually use",
       all(v in _console_src for v in _GRAPHIC.values()))
+
+# One palette, one definition. Ten copies had drifted into six variants, and the
+# only reason nobody noticed is that nothing checked. A token defined per page is
+# not a token; it is a convention, and conventions are what this project calls
+# wishes.
+check("the palette is defined exactly once",
+      _console_src.count("\nPALETTE = {") == 1)
+check("no page re-declares tokens inline — every one is built through _page()",
+      ":root{--" not in _console_src,
+      f"{_console_src.count('= _page(')} pages assembled from the shared palette")
+check("a page that looks different states only its difference",
+      'WORK_PAGE = _page(' in _console_src and 'bg="#0b1210"' in _console_src,
+      "the workboard's code-world green is one line, not a second copy")
+check("hand-drawn SVG reads the same palette as the stylesheet",
+      "PALETTE_JS" in _console_src and "C.gold" in _console_src,
+      "CSS custom properties cannot be read from an SVG attribute, so JS gets the object")
 # A relationship graph has to answer "who is talking to whom" without a hover, and
 # has to survive growing past a handful of members.
 check("edges declare their direction with an arrowhead",
