@@ -10,6 +10,7 @@ Run:  python3 gov/verify_sim.py
 """
 
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -488,27 +489,40 @@ def _contrast(a, b):
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
-_PANEL = "#1c150d"
-_TEXT = {"ink": "#f0e6d2", "dim": "#b09a72", "gold": "#e0b23a", "green": "#a8e086",
-         "blue": "#8ab4ff", "bad": "#e08a6a", "subtitle": "#96805c"}
+_PANEL, _BG = "#1c150d", "#120d08"
+_console_src = open(os.path.join(HERE, "sim_console.py")).read()
+
+# DISCOVER the colours, never accept a list. The first version of this check tested
+# nine hand-written hex values while the file contained fifty-one; two live text
+# colours were passing AA by luck rather than by check, and any colour added later
+# would have been invisible to it. An enforcement that only covers what its author
+# remembered to enumerate is the same defect as a liveness counter that only counts
+# turns that happen — it can never report what it was not told about.
+_text_colours = sorted({m.group(1).lower() for m in
+                        re.finditer(r"(?<![-\w])color:\s*(#[0-9a-fA-F]{6})", _console_src)})
+_bad_text = {c: round(min(_contrast(c, _PANEL), _contrast(c, _BG)), 2)
+             for c in _text_colours
+             if min(_contrast(c, _PANEL), _contrast(c, _BG)) < 4.5}
+check("every text colour in the console meets WCAG AA (4.5:1)",
+      not _bad_text, str(_bad_text) if _bad_text else
+      f"{len(_text_colours)} discovered, lowest "
+      f"{min(round(min(_contrast(c, _PANEL), _contrast(c, _BG)), 2) for c in _text_colours)}:1")
+check("the check reads the stylesheet rather than a list it was handed",
+      len(_text_colours) >= 6 and "#fca5a5" in _text_colours,
+      "colours nobody added to a fixture are still checked")
+
 _GRAPHIC = {"unheard edge": "#87704f", "still-open bar": "#567f3f"}
-_bad_text = {k: round(_contrast(v, _PANEL), 2)
-             for k, v in _TEXT.items() if _contrast(v, _PANEL) < 4.5}
 _bad_gfx = {k: round(_contrast(v, _PANEL), 2)
             for k, v in _GRAPHIC.items() if _contrast(v, _PANEL) < 3.0}
-check("every text colour meets WCAG AA (4.5:1) on the panel",
-      not _bad_text, str(_bad_text) if _bad_text else
-      f"lowest {min(round(_contrast(v, _PANEL), 2) for v in _TEXT.values())}:1")
 check("every data-bearing graphic meets AA for non-text (3:1)",
       not _bad_gfx, str(_bad_gfx) if _bad_gfx else
       f"lowest {min(round(_contrast(v, _PANEL), 2) for v in _GRAPHIC.values())}:1")
-_console_src = open(os.path.join(HERE, "sim_console.py")).read()
 check("no page animates against the reader's stated preference",
       _console_src.count("prefers-reduced-motion") >= 11
       and "const STILL=matchMedia" in _console_src,
       f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
-check("the colours the pages actually use are the ones tested",
-      all(v in _console_src for v in list(_TEXT.values()) + list(_GRAPHIC.values())))
+check("the graphic colours tested are ones the pages actually use",
+      all(v in _console_src for v in _GRAPHIC.values()))
 # A relationship graph has to answer "who is talking to whom" without a hover, and
 # has to survive growing past a handful of members.
 check("edges declare their direction with an arrowhead",
