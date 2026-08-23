@@ -228,6 +228,14 @@ Everything below is those two laws, applied.
    into dated, compressed archives beside the live files, so the record survives a
    reboot **and** stops growing without bound; an archive that cannot be taken
    safely is declined rather than attempted (`anchor.archive_night`).
+   **A recovery that requires the system to be running cannot recover a system that
+   is down.** The nightly archive needs the process alive and needs headroom to
+   compress into, so it can never rescue a volume already at the floor. Space is
+   therefore reclaimed at *boot*, as a ladder in which each rung buys the room the
+   next one needs: fold the write-ahead logs back (which is **not** free — it grows
+   the database file and fails outright at zero bytes), and failing that compact the
+   event log in place, which needs no space at all. Dropping history to stay alive is
+   permitted and is always reported; it is never silent (`anchor.reclaim`).
 5. The Board and the Governor may not report a stalled world as healthy: a report
    covering a stalled period leads with that fact, and its score is capped (VIII.5).
 6. The constitution's brakes — the cap, the gate, the quorum, the reaper — each have

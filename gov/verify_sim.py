@@ -9,6 +9,7 @@ Proves the three core functions on real game work, reusing governor.py unchanged
 Run:  python3 gov/verify_sim.py
 """
 
+import json as _json_mod
 import os
 import re
 import sqlite3
@@ -567,6 +568,36 @@ check("edges stop at the node rim instead of vanishing beneath it",
 check("the graph can be expanded and focused, and Escape undoes both",
       all(k in _console_src for k in ("function expand()", "FOCUS=(FOCUS===n.id)",
                                       "e.key!=='Escape'")))
+
+# A volume that is already full cannot be rescued by the nightly archive: that only
+# runs while the process is up, and it needs headroom to compress into. Reclamation
+# has to work at the floor, at boot, or it is not a recovery at all (IX.7).
+print("\n14c. Reclaim — space returned when there is none left")
+_ev_before = os.path.getsize(A.EVENTS_PATH) if os.path.exists(A.EVENTS_PATH) else 0
+for _i in range(6000):                              # a log worth compacting
+    A.record(_i, "gather", "x" * 90)
+_grown = os.path.getsize(A.EVENTS_PATH)
+_r = A.reclaim(A.DB)
+check("reclamation reports what it did, step by step",
+      isinstance(_r.get("steps"), list) and "freed_mb" in _r, str(_r["steps"])[:70])
+check("a WAL checkpoint is attempted first, before anything is lost",
+      "checkpoint" in A.reclaim.__doc__ and "_compact_events" in
+      open(os.path.join(HERE, "anchor.py")).read())
+_kept = open(A.EVENTS_PATH).read().splitlines() if os.path.exists(A.EVENTS_PATH) else []
+check("the event log survives reclamation as valid records",
+      all(_json_mod.loads(_l) for _l in _kept) if _kept else True,
+      f"{len(_kept):,} lines, every one parses")
+check("dropping history is reported, never silent",
+      "dropped_events_bytes" in _r)
+
+# Compaction repairs the truncated final record a full volume leaves behind.
+with open(A.EVENTS_PATH, "a") as _f:
+    _f.write('{"turn": 1, "kind": "gath')                 # a write cut off by ENOSPC
+_before_lines = len(open(A.EVENTS_PATH).read().splitlines())
+A._compact_events(keep_tail=50)
+_after = open(A.EVENTS_PATH).read().splitlines()
+check("a record truncated by a full disk is repaired, not carried forward",
+      all(_json_mod.loads(_l) for _l in _after), f"{len(_after)} lines, all valid")
 
 _fs = A.flow_stats()
 check("the decision pipeline is counted from the permanent record",

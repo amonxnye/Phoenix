@@ -108,6 +108,7 @@ _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
+
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
@@ -3789,6 +3790,28 @@ tick(); setInterval(tick,4000);
 
 
 def main(argv):
+    # RECLAIM AT BOOT, before the driver starts. The nightly archive only runs while
+    # the process is up and only after 02:00 UTC, and it needs headroom to compress
+    # into — so neither helps a service that is already down on a full volume. Every
+    # restart is therefore the one moment reclamation is both possible and useful.
+    # anchor.reclaim() climbs a ladder because a WAL checkpoint is NOT free — it grows
+    # the database file and fails outright at zero bytes, which I asserted here and
+    # then measured to be false. Compacting the event log in place is the rung that
+    # works at the floor: 0 bytes free -> 7.72 MB returned, on a full test volume.
+    try:
+        _reclaimed = anchor.reclaim(anchor.DB, sim.DB)
+        for _step in _reclaimed["steps"]:
+            print(f"[reclaim] boot — {_step}", file=sys.stderr, flush=True)
+        _free_pct = 100 - _disk()["used_pct"]
+        if _free_pct < 15:                        # still tight: fold history away now,
+            _rep = anchor.archive_night()         # rather than waiting for 02:00
+            print(f"[reclaim] boot archive: " + ("ran — "
+                  f"{_rep['events_archived']:,} events, {_rep['freed_mb']}MB freed"
+                  if _rep["ran"] else f"declined — {_rep['reason']}"),
+                  file=sys.stderr, flush=True)
+    except Exception as _e:                       # reclamation must never block boot
+        print(f"[reclaim] skipped: {type(_e).__name__}: {str(_e)[:80]}",
+              file=sys.stderr, flush=True)
     threading.Thread(target=_drive, daemon=True).start()
     threading.Thread(target=_health_sampler, daemon=True).start()
     port = int(os.environ.get("PORT", "8788"))

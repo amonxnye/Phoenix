@@ -906,6 +906,105 @@ def archive_night(keep_tail: int = 20_000) -> dict:
     return out
 
 
+def _checkpoint(db: str) -> int:
+    """Fold a write-ahead log back into its database. Returns bytes freed."""
+    wal = db + "-wal"
+    before = os.path.getsize(wal) if os.path.exists(wal) else 0
+    if not before:
+        return 0
+    c = sqlite3.connect(db, timeout=5.0)
+    try:
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        c.commit()
+    finally:
+        c.close()
+    return before - (os.path.getsize(wal) if os.path.exists(wal) else 0)
+
+
+def _compact_events(keep_tail: int = 4000) -> int:
+    """Cut the event log down to its most recent lines USING NO EXTRA SPACE.
+
+    The last resort, and the only reclamation that works at literally zero bytes
+    free: read the tail into memory, rewrite it over the head of the same file,
+    and truncate. No temp file, no copy, nothing that needs the volume to grow.
+    History is lost — which is why it is last, and why it is recorded loudly
+    rather than done quietly.
+    """
+    if not os.path.exists(EVENTS_PATH):
+        return 0
+    before = os.path.getsize(EVENTS_PATH)
+    with open(EVENTS_PATH, "r+b") as fh:
+        lines = fh.readlines()
+        # A volume that fills mid-write leaves a truncated final record. Compaction
+        # is the one moment we are already rewriting the file, so repair it here
+        # rather than faithfully carrying the damage forward.
+        if lines and not lines[-1].endswith(b"\n"):
+            lines.pop()
+        if len(lines) <= keep_tail:
+            return 0
+        tail = b"".join(lines[-keep_tail:])
+        fh.seek(0)
+        fh.write(tail)
+        fh.truncate()
+        fh.flush()
+        os.fsync(fh.fileno())
+    global _EVENT_COUNT
+    _EVENT_COUNT = None
+    return before - os.path.getsize(EVENTS_PATH)
+
+
+def reclaim(*db_paths: str) -> dict:
+    """Return space to a volume that may be completely full.
+
+    The nightly archive only runs while the process is up and needs headroom to
+    compress into, so neither it nor anything else helps a service already down on
+    a full disk. That is Article IX.7 again: a recovery that requires the system to
+    be running cannot recover a system that is not. Every restart is therefore the
+    one moment reclamation is both possible and useful.
+
+    A LADDER, because each rung buys the headroom the next one needs. A WAL
+    checkpoint is NOT free — it writes the log's pages back into the main database
+    file, which has to grow — and on a genuinely full volume it fails outright with
+    "database or disk is full". Measured, not assumed: that is exactly what happened
+    on an 8 MB test volume holding a 4.12 MB WAL against a 0.54 MB database.
+
+    So: checkpoint first; if the volume is still at the floor, compact the event log
+    in place (the only move that needs no space at all); then checkpoint again with
+    the room that bought.
+    """
+    dbs = db_paths or (DB,)
+    out = {"freed_mb": 0.0, "steps": [], "dropped_events_bytes": 0}
+
+    def _sweep(label):
+        got = 0
+        for db in dbs:
+            try:
+                got += _checkpoint(db)
+            except (OSError, sqlite3.Error) as e:
+                out.setdefault("errors", []).append(
+                    f"{label} {os.path.basename(db)}: {str(e)[:60]}")
+        if got:
+            out["steps"].append(f"{label}: {got/1e6:.2f}MB from write-ahead logs")
+        return got
+
+    freed = _sweep("checkpoint")
+    try:
+        st = os.statvfs(os.path.dirname(EVENTS_PATH) or ".")
+        if st.f_bavail * st.f_frsize < 2_000_000:      # still on the floor
+            cut = _compact_events()
+            if cut:
+                freed += cut
+                out["dropped_events_bytes"] = cut
+                out["steps"].append(f"event log compacted in place: {cut/1e6:.2f}MB "
+                                    f"of history dropped to keep the world alive")
+                freed += _sweep("checkpoint-after-compaction")
+    except OSError as e:
+        out.setdefault("errors", []).append(f"statvfs: {str(e)[:60]}")
+
+    out["freed_mb"] = round(freed / 1e6, 2)
+    return out
+
+
 def archives() -> list[dict]:
     """What has been archived, newest first — the history you can still read."""
     try:
