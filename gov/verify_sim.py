@@ -705,6 +705,21 @@ check("the board's ledger is kept on its OWN denominator",
 check("the block rate is a percentage of votes, not of all decisions",
       _br["block_pct"] == round(100 * _br["blocked"] / max(1, _br["votes"])))
 
+# Size on the graph follows RECENT traffic. A cumulative count only ever rises, so
+# anything drawn from it can grow and never shrink — a busy agent and a long-retired
+# one would look identical. The window is the whole point, so it gets a test.
+_act_now = A.comm_activity(60)
+_act_none = A.comm_activity(0)
+check("recent traffic is counted over a window, not for all time",
+      sum(_act_now["inbound"].values()) > 0 and sum(_act_none["inbound"].values()) == 0,
+      f"{sum(_act_now['inbound'].values())} inbound in 60m, "
+      f"{sum(_act_none['inbound'].values())} in a zero-length window")
+check("senders and recipients are counted separately",
+      set(_act_now) >= {"inbound", "outbound", "heard", "window_min"},
+      "offices are sized by what they send, agents by what they receive")
+check("nothing heard exceeds what was received, per agent",
+      all(_act_now["heard"].get(k, 0) <= v for k, v in _act_now["inbound"].items()))
+
 _cs = A.comm_series(24)
 check("the message series is dense — a quiet hour is data, not a gap",
       len(_cs) == 24 and all(c["heard"] <= c["n"] for c in _cs))

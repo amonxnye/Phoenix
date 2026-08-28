@@ -1283,6 +1283,36 @@ def comm_series(hours: int = 24) -> list[dict]:
         c.close()
 
 
+def comm_activity(minutes: int = 60) -> dict:
+    """Addressed traffic per participant over a RECENT WINDOW, not for all time.
+
+    Cumulative counts only ever rise, so anything drawn from them can grow and never
+    shrink — which makes a busy agent and a long-retired one look alike. A window
+    lets attention fall away when the traffic does.
+    """
+    if not _EDGE_COLS:
+        return {"window_min": minutes, "inbound": {}, "outbound": {}, "heard": {}}
+    since = time.time() - minutes * 60
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT sender, to_agent, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' AND ts IS NOT NULL AND ts >= ?",
+            (since,)).fetchall()
+    finally:
+        c.close()
+    inb: dict[str, int] = {}
+    out: dict[str, int] = {}
+    heard: dict[str, int] = {}
+    for sender, to, followed in rows:
+        frm = _edge_from(sender)
+        out[frm] = out.get(frm, 0) + 1
+        inb[to] = inb.get(to, 0) + 1
+        if followed:
+            heard[to] = heard.get(to, 0) + 1
+    return {"window_min": minutes, "inbound": inb, "outbound": out, "heard": heard}
+
+
 def comm_totals() -> dict:
     """One honest headline for the graph: how much was addressed, how much landed."""
     if not _EDGE_COLS:

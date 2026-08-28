@@ -1960,6 +1960,7 @@ class Handler(BaseHTTPRequestHandler):
                 "recent": anchor.comm_recent(40),
                 "totals": anchor.comm_totals(),
                 "series": anchor.comm_series(24),
+                "activity": anchor.comm_activity(60),
                 "turn": _S["turn"],
                 "brain": brain.brain_name(),
             }))
@@ -3551,7 +3552,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
     <svg id=net viewBox="0 0 900 560" width="100%" role=img
       aria-label="Agents ringed by influence; offices at the centre; arrows run from sender to recipient; edge brightness is the share the listener acted on"></svg>
     <div class=legend>
-      <span>&#9679; radius = contribution</span>
+      <span>&#9679; radius = messages in the last hour &mdash; it shrinks when they stop</span>
       <span>centre = standing offices (no roster seat)</span>
       <span>&#10230; arrow = sender to recipient</span>
       <span>line width = messages</span>
@@ -3593,6 +3594,11 @@ const SVGNS='http://www.w3.org/2000/svg';
 let VB={w:900,h:560}, CX=450, CY=280, R=205;
 const STILL=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let POS={},RAD={},PULSES=[],RAF=null,FOCUS=null,LAST=null;
+// RAD is where each node is drawn RIGHT NOW; TGT is where the data says it belongs.
+// Keeping them apart is what lets a node visibly swell as traffic arrives and settle
+// back when it stops — a single value would simply snap between polls.
+let TGT={},NODE_EL={},LABEL_EL={};
+const RMIN=6, RMAX=26, EASE=0.055;
 function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
   if(x!==undefined)n.textContent=x;return n}
 function showTip(e,h){const t=$('tip');t.innerHTML=h;t.style.display='block';
@@ -3641,15 +3647,25 @@ function render(d){
     ((inb[b.id]||{}).heard||0)-((inb[a.id]||{}).heard||0) ||
     ((inb[b.id]||{}).msgs||0)-((inb[a.id]||{}).msgs||0) ||
     b.contribution-a.contribution);
-  const maxC=Math.max(1,...nodes.map(n=>n.contribution));
-  POS={};RAD={};
+  // Size is RECENT traffic, not lifetime contribution. An agent swells while it is
+  // being talked to and settles back when it is not; a node that never shrinks
+  // cannot tell you who matters now, only who once did. Offices are sized by what
+  // they SEND, because an office almost never receives.
+  const act=d.activity||{inbound:{},outbound:{},window_min:60};
+  const load=n=>(n.role==='office'?(act.outbound||{})[n.id]:(act.inbound||{})[n.id])||0;
+  const maxL=Math.max(1,...nodes.map(load));
+  POS={};TGT={};NODE_EL={};LABEL_EL={};
   ring.forEach((n,i)=>{const th=(i/ring.length)*Math.PI*2-Math.PI/2;
-    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n};
-    RAD[n.id]=(big?8:6)+(big?16:12)*Math.sqrt(n.contribution/maxC)});
+    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n}});
   offices.forEach((n,i)=>{const th=(i/Math.max(1,offices.length))*Math.PI*2-Math.PI/2;
     const r=offices.length>1?R*0.28:0;
-    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true};
-    RAD[n.id]=big?17:13});
+    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true}});
+  nodes.forEach(n=>{
+    const base=big?RMIN+2:RMIN, span=(big?RMAX:RMAX-6)-base;
+    TGT[n.id]=base+span*Math.sqrt(load(n)/maxL);
+    if(RAD[n.id]===undefined)RAD[n.id]=TGT[n.id];   // first sight: no phantom growth
+  });
+  Object.keys(RAD).forEach(k=>{if(!(k in TGT))delete RAD[k]});
 
   // One arrowhead marker per colour, so DIRECTION is readable without hovering.
   // Who advises whom is the first question anyone asks of a graph like this.
@@ -3708,26 +3724,36 @@ function render(d){
       (e.from===FOCUS&&e.to===n.id)||(e.to===FOCUS&&e.from===n.id));
     const col=p.office?C.blue:n.alive?(n.tier>=2?C.gold:C.green):'#5d4b33';
     const g=el('g',{opacity:dim?0.2:1});
-    if(p.office)g.appendChild(el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
-      stroke:C.blue,'stroke-opacity':0.3,'stroke-dasharray':'3 3'}));
-    g.appendChild(el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
-      stroke:n.alive?col:C.line,'stroke-width':1.5}));
+    const halo=p.office?el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
+      stroke:C.blue,'stroke-opacity':0.3,'stroke-dasharray':'3 3'}):null;
+    if(halo)g.appendChild(halo);
+    const dot=el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
+      stroke:n.alive?col:C.line,'stroke-width':1.5});
+    g.appendChild(dot);
     const out=p.x>CX;
-    g.appendChild(el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+    const lab=el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
       y:p.y+(p.office?r+15:4),fill:n.alive?C.ink:'#7a6547','font-size':big?13:11,
-      'text-anchor':p.office?'middle':(out?'start':'end')},n.id));
+      'text-anchor':p.office?'middle':(out?'start':'end')},n.id);
+    g.appendChild(lab);
+    // Hold the pieces whose geometry follows the radius, so the animation loop can
+    // resize them in place rather than waiting for the next four-second poll.
+    NODE_EL[n.id]={dot,halo,office:p.office,out,x:p.x,y:p.y};
+    LABEL_EL[n.id]=[lab];
     // An office almost never RECEIVES, so "0/0 heard" under it would be noise
     // dressed as data. Report what each node actually does: offices are judged on
     // whether their advice was heeded, agents on what they acted upon.
-    if(big)g.appendChild(el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+    if(big){const sub=el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
       y:p.y+(p.office?r+30:19),fill:C.sub,'font-size':10,
       'text-anchor':p.office?'middle':(out?'start':'end')},
-      p.office?`${so.heard}/${so.msgs} heeded`:`${st.heard}/${st.msgs} heard`));
+      p.office?`${so.heard}/${so.msgs} heeded`:`${st.heard}/${st.msgs} heard`);
+      g.appendChild(sub); LABEL_EL[n.id].push(sub);}
     g.style.cursor='pointer';
     g.addEventListener('mousemove',ev=>showTip(ev,
       `<b>${esc(n.id)}</b><br>${esc(n.role)}${p.office?'':' &middot; tier '+n.tier}<br>`+
       (p.office?'standing office &middot; no roster seat'
               :`contribution ${N(n.contribution)}<br>${n.alive?esc(n.status):'retired'}`)+
+      `<br><span style="color:var(--sub)">size: ${N(load(n))} ${p.office?'sent':'received'} `+
+      `in the last ${act.window_min}m</span>`+
       `<br>received ${N(st.msgs)}, acted on <span style="color:var(--gold)">${N(st.heard)}</span>`+
       `<br>sent ${N(so.msgs)}, heeded <span style="color:var(--gold)">${N(so.heard)}</span>`+
       `<br><span style="color:var(--sub)">click to isolate</span>`));
@@ -3747,6 +3773,7 @@ function render(d){
   // for reduced motion get the same information as static marks at the midpoint
   // of each edge — nothing is lost, nothing moves.
   if(STILL){
+    easeSizes();                       // correct size, arrived at instantly
     PULSES.forEach(p=>{const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
       const q=at(a,ctrl(a,b,p.from,p.to),b,0.5);
       gP.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
@@ -3755,7 +3782,29 @@ function render(d){
   }
   if(!RAF)RAF=requestAnimationFrame(step);
 }
+// Ease each node toward the size its recent traffic deserves. Growth and shrink are
+// the same motion in opposite directions, so a node that goes quiet visibly settles
+// rather than vanishing at the next poll.
+function easeSizes(){
+  let moved=false;
+  for(const id in TGT){
+    const cur=RAD[id], tgt=TGT[id], e=NODE_EL[id];
+    if(cur===undefined||!e)continue;
+    const next=STILL?tgt:cur+(tgt-cur)*EASE;
+    if(Math.abs(tgt-cur)<0.05){RAD[id]=tgt}else{RAD[id]=next;moved=true}
+    const r=RAD[id];
+    e.dot.setAttribute('r',r.toFixed(2));
+    if(e.halo)e.halo.setAttribute('r',(r+7).toFixed(2));
+    (LABEL_EL[id]||[]).forEach((t,i)=>{
+      if(e.office){t.setAttribute('y',(e.y+r+(i?30:15)).toFixed(2))}
+      else{t.setAttribute('x',(e.x+(e.out?r+6:-(r+6))).toFixed(2))}
+    });
+  }
+  return moved;
+}
+
 function step(){
+  easeSizes();
   const g=$('pulses');
   if(g){g.textContent='';
     PULSES.forEach(p=>{p.t+=0.006; if(p.t>1.2)p.t=-0.1;
