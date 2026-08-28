@@ -630,6 +630,42 @@ check("so gathering more cannot raise the score",
                    _built, 0, _V.get("castle"))["progress"] == _sc["progress"],
       "ten times the wood moves the score by exactly 0 points")
 
+# Counting waste tells you the fleet converged on the wrong thing. It does not stop
+# it. A gradient-following rule with nothing left to optimise becomes a monoculture,
+# which is what produced the 14,932x surplus: "bank the best learned yield" is
+# self-reinforcing, because the resource gathered most earns the camps that keep it
+# best. Converge where there is a gradient; spread where there is not.
+_live_w = {"food": 4_999_990, "wood": 19_890_747, "gold": 4_973_412,
+           "age": "Castle Age", "pop_cap": 10}
+_short = {"house": 1, "mill": 1, "lumber_camp": 1, "mining_camp": 1, "wheelbarrow": 1}
+_sc_short = _V.scorecard({**_live_w, **_short}, _short, 0, _V.get("castle"))
+_res, _why = SC._choose_gather({**_live_w, **_short}, _sc_short)
+check("a full economy never justifies banking more surplus",
+      "bank the surplus" not in _why, _why[:66] + "…")
+check("effort is steered to the component that is actually short",
+      "developments are short" in _why and _res == "wood",
+      f"gathers {_res} for the next development, not the saturated stock")
+
+# An age already reached is a satisfied component too: this branch used to read the
+# NEXT age's cost unconditionally and invent a shortfall nobody had asked for.
+check("no work is aimed at an age the Vision has already reached",
+      _sc_short["age_pct"] == 100 and "Age-up shortfall" not in _why)
+
+_done = {**_short, "granary": 1}
+_sc_done = _V.scorecard({**_live_w, **_done}, _done, 0, _V.get("castle"))
+SC._S["recent_gathers"] = []
+_picks = []
+for _ in range(9):
+    _r, _ = SC._choose_gather({**_live_w, **_done}, _sc_done)
+    SC._note_gather(_r)
+    _picks.append(_r)
+check("with nothing short, assignments spread instead of forming a monoculture",
+      len(set(_picks)) == len(S.RESOURCES) and max(_picks.count(r) for r in set(_picks)) <= 4,
+      f"{len(set(_picks))} of {len(S.RESOURCES)} resources across 9 assignments")
+check("the diversity rule reads its own history, not chance",
+      "recent_gathers" in SC._S and len(SC._S["recent_gathers"]) == 9)
+SC._S["recent_gathers"] = []
+
 _src = open(os.path.join(HERE, "sim_console.py")).read()
 check("a turn that acts without moving the score is counted as waste",
       'waste_turns' in _src and 'waste_since_report' in _src)

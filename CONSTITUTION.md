@@ -30,15 +30,24 @@ Everything below is those two laws, applied.
    score; a stall names the component that is *short*, never merely "the roster is
    not producing", because a fleet working flat out on the wrong thing is the
    commonest way for a score to freeze (`_S["waste_turns"]`, `_binding_constraint`).
-3. The Vision is **the only** oracle: objective, cheap, and instant to read. If a goal
+3. **Converge where there is a gradient; spread where there is not.** Work is steered
+   to the component the Vision is actually short of — including translating "more
+   developments" into the resource the next one needs — and never to a component
+   already at 100%, nor to an age the Vision has already reached. Where *nothing* is
+   short there is nothing to optimise, and a greedy rule left running in that state
+   becomes a monoculture: "bank the best learned yield" is self-reinforcing, because
+   the resource gathered most earns the camps that keep it best. Assignments then
+   spread across the available work instead of deepening the rut. Counting waste
+   reports that convergence; this prevents it (`_choose_gather`, `_diverse_pick`).
+4. The Vision is **the only** oracle: objective, cheap, and instant to read. If a goal
    cannot be scored, it cannot be pursued — restate it until it can. Two disagreeing
    scores means the world has no oracle at all.
-4. **The Board may propose a new Vision** — to aim higher when the goal is met with room
+5. **The Board may propose a new Vision** — to aim higher when the goal is met with room
    to spare, or to consolidate when spend/side-effects run high. **Only the human adopts
    it.** Changing the Vision is the operator's power alone; the Board and agents advise.
-5. Adopting a Vision **re-briefs every agent downstream** — a fresh mental update that
+6. Adopting a Vision **re-briefs every agent downstream** — a fresh mental update that
    re-points the whole fleet to work harder or ease off.
-6. **A met Vision is consumed.** A vision identical to the standing one cannot be
+7. **A met Vision is consumed.** A vision identical to the standing one cannot be
    re-adopted, so success is never re-won and a re-brief is never a no-op
    (`sim_console._adopt_vision`).
 > Enforced by `vision.py`; proposed by `board.propose_vision`; adopted via the console

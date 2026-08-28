@@ -129,7 +129,7 @@ def sandbox_mode() -> str:
 def oracle() -> dict:
     """Run the acceptance suite in the sandbox with a STRIPPED environment and
     return the verdict: {passed, failed, total, failures: [test names]}.
-    This is the score — objective, cheap, and instant to read (Article I.3)."""
+    This is the score — objective, cheap, and instant to read (Article I.4)."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
            "HOME": SANDBOX, "LANG": "C.UTF-8"}     # no keys, no tokens, no proxies
     prefix, _mode = _sandbox()                     # + no network, where permitted

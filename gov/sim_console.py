@@ -178,14 +178,60 @@ else:
                     _S["born"][_c["uid"]] = _e["turn"]
 
 
-def _choose_gather(w: dict) -> tuple[str, str]:
+def _next_dev_need() -> tuple[str, str] | None:
+    """What "more developments" means in gathering terms: the resource the cheapest
+    unbuilt development is short of. Without this, "build more" is an instruction the
+    fleet has no way to act on, so it falls back to gathering whatever is easiest."""
+    unbuilt = [d for d in sim.dev_catalog() if not d["built"] and d.get("cost")]
+    if not unbuilt:
+        return None
+    d = min(unbuilt, key=lambda x: sum(x["cost"].values()))
+    res = max(d["cost"], key=lambda k: d["cost"][k])
+    return res, f"{d['name']} needs {d['cost']}"
+
+
+def _diverse_pick(w: dict) -> tuple[str, str]:
+    """No gradient to follow — so spread, instead of converging.
+
+    Adapted from the quality-diversity idea in autonomous-search systems, and aimed
+    at a failure we actually suffered: a greedy rule with nothing left to optimise
+    becomes a monoculture. "Bank the best learned yield" is self-reinforcing — the
+    resource gathered most gets the camps and the observations, so it stays "best"
+    forever. The live fleet spent 12,218 turns and 65.7% of all its activity on one
+    resource it already held at 14,932x the target.
+
+    The rule is only applied where it belongs. When a component of the Vision is
+    short there IS a gradient, and converging on it is correct; diversity is for the
+    case where nothing is short, which is exactly where the monoculture formed.
+    """
+    recent = _S.get("recent_gathers", [])
+    counts = {r: recent.count(r) for r in sim.RESOURCES}
+    pick = min(sim.RESOURCES, key=lambda r: (counts[r], w[r]))
+    return pick, (f"nothing is short, so spread rather than bank: {pick} has had "
+                  f"{counts[pick]} of the last {len(recent)} assignments")
+
+
+def _note_gather(res: str) -> None:
+    """Remember what was assigned. The diversity rule needs a memory of its own
+    choices, or it cannot tell a spread from a rut."""
+    hist = _S.setdefault("recent_gathers", [])
+    hist.append(res)
+    del hist[:-30]
+
+
+def _choose_gather(w: dict, sc: dict | None = None) -> tuple[str, str]:
     """Pick a resource AND say why — the reasoning is first-class, not implicit."""
     cost = sim.advance_cost(w["age"])
     need_food = max(0, cost["food"] - w["food"])
     need_gold = max(0, cost["gold"] - w["gold"])
     if w["wood"] < 150:
         return "wood", f"wood at {w['wood']}, below the 150 floor needed to keep building"
-    if need_food or need_gold:
+    # Only fund an age-up the Vision actually wants. This branch read the NEXT age's
+    # cost unconditionally, so a world that had already reached its target age kept
+    # manufacturing a shortfall for an advance nobody asked for — the same defect as
+    # banking surplus, one component over.
+    sc = sc or V.scorecard(w, sim.structures(), _S["side_effects"], _vision())
+    if (need_food or need_gold) and sc["age_pct"] < 100:
         r = "food" if need_food >= need_gold else "gold"
         return r, f"Age-up shortfall drives it: food short {need_food}, gold short {need_gold}"
     # Rebalance guard: "bank the best yield" is a feedback loop (the resource gathered
@@ -196,6 +242,19 @@ def _choose_gather(w: dict) -> tuple[str, str]:
     if w[hi] > 4 * max(1, w[lo]):
         return lo, (f"economy is lopsided — {hi} {w[hi]:,} vs {lo} {w[lo]:,}; "
                     f"rebalance into {lo} instead of banking more surplus")
+    # Article I.2: a component already at 100% cannot be improved, so work that only
+    # feeds it is waste. Before banking more surplus, ask what the Vision is short of.
+    sc = sc or V.scorecard(w, sim.structures(), _S["side_effects"], _vision())
+    if sc["econ_pct"] >= 100:
+        if sc["dev_pct"] < 100:
+            need = _next_dev_need()
+            if need:
+                res, detail = need
+                return res, (f"the economy is full at {sc['extra_value_pct']:,.0f}% surplus "
+                             f"and cannot move the score; developments are short at "
+                             f"{sc['dev_pct']}% — gathering {res} for {detail}")
+        # Nothing to converge on: spread rather than deepen the monoculture.
+        return _diverse_pick(w)
     br = anchor.best_known_yield()
     if br:
         return br, f"no shortages — {br} has the best learned yield, so bank the surplus there"
@@ -412,7 +471,7 @@ def _target_villagers():
 
 def _adopt_vision(key: str, actor: str = "operator"):
     """A new Vision is adopted — a fresh mental update cascades to every agent.
-    Article I.6: a met Vision is consumed; a vision identical to the standing one is
+    Article I.7: a met Vision is consumed; a vision identical to the standing one is
     rejected. Normally the human's power; IV.7 lets tacit consent exercise it."""
     if key not in V.VISIONS:
         return
@@ -801,6 +860,7 @@ def _peer_chatter():
     others = [r["agent"] for r in roster[1:]]
     receiver = others[(_S["turn"] // 5) % len(others)]      # rotate — no monologue treadmill
     res, why = _choose_gather(sim.world())
+    _note_gather(res)
     if _S.get("last_tip") == (sender, receiver, res):
         return                                    # an unfollowed tip is not repeated verbatim
     _S["last_tip"] = (sender, receiver, res)
@@ -920,6 +980,7 @@ def _one_turn():
         if bv["yes"] < len(board.GOVERNORS):      # split approvals are debates worth seeing
             _narrate_vote(bv)
         res, why = _choose_gather(w)
+        _note_gather(res)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
         economy.enlist(uid)
         _S["born"][uid] = t
@@ -1007,6 +1068,7 @@ def _one_turn():
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
+                _note_gather(res)
             did = None
             if _S.setdefault("last_res", {}).get(uid) != res:  # a CHANGE is a decision;
                 _S["last_res"][uid] = res                      # repetition is not
@@ -1053,6 +1115,7 @@ def _one_turn():
         if u.unit_id in _S["villagers"]:
             continue                              # the retask loop already covers these
         res, why = _choose_gather(sim.world())
+        _note_gather(res)
         anchor.reason_add(t, "governor", f"escalation: decide for {u.unit_id}",
                           f"human silent {int(u.age_s)}s > 5 min — governor takes "
                           f"responsibility; {why}")
