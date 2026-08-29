@@ -184,6 +184,50 @@ def think(persona: str, situation: str, task: str) -> str | None:
         return None
 
 
+def catalogue_digest(existing: list, cap: int = 24) -> tuple[str, str]:
+    """A BOUNDED, DIVERSE view of what already exists — and a warning about ruts.
+
+    Two faults, one cause. The whole catalogue was interpolated into the proposal
+    prompt, so the input cost of inventing development N grew with N: an unbounded
+    input, paid on every call, forever. Article III.3 says the check precedes the
+    commit; that applied to agent budgets but never to our own token spend.
+
+    And sending the tail of a list invites extending it. In the live world 9 of 51
+    developments were variants of one theme, because each prompt showed the model
+    eight of them and asked for another. So the sample is spread across distinct
+    families rather than being the most recent slice, and a family that has taken
+    over is named outright so it can be avoided.
+    """
+    seen: dict[str, list] = {}
+    for name in reversed(existing):                # newest first
+        seen.setdefault(str(name).split("_")[0], []).append(name)
+    # Round-robin across families, smallest first: everyone gets a first entry before
+    # anyone gets a second. Filling the remaining room newest-first would undo the whole
+    # point — the dominant family is also the most recent, so it walks straight back in.
+    # and no family may occupy more than its equal share of the room, so a catalogue
+    # of 21 themes shows 21 themes rather than one theme nine times.
+    share = max(1, cap // max(1, len(seen)))
+    queues = [q[:share] for _, q in sorted(seen.items(), key=lambda kv: len(kv[1]))]
+    spread = []
+    while queues and len(spread) < cap:
+        for q in queues:
+            if q:
+                spread.append(q.pop(0))
+                if len(spread) >= cap:
+                    break
+        queues = [q for q in queues if q]
+    sample = ", ".join(spread)
+    if len(existing) > len(spread):
+        sample += f" (+{len(existing) - len(spread)} more)"
+    avoid = ""
+    if existing:
+        fam, n = max(((f, len(q)) for f, q in seen.items()), key=lambda kv: kv[1])
+        if n >= 3 and n / len(existing) >= 0.15:
+            avoid = (f" The catalogue already has {n} '{fam}_*' developments — do NOT "
+                     f"invent another variant of that theme; pick an unexplored one.")
+    return sample, avoid
+
+
 def propose_development(situation: str, knowledge: list, existing: list) -> dict | None:
     """The Governor invents a new development using ingested knowledge. Returns
     {name, cost:{food,wood,gold}, kind, value, resource, rank, why} constrained to the
@@ -193,11 +237,13 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
         return None
     import json as _json
     facts = "; ".join(f"{k['topic']}: {k['fact']}" for k in knowledge[:5]) or "none yet"
+    sample, avoid = catalogue_digest(existing)
     prompt = (
         f"Situation: {situation}\nKnowledge the settlement has ingested: {facts}\n"
-        f"Existing developments: {', '.join(existing)}\n\n"
+        f"Existing developments: {sample}\n\n"
         "Invent ONE new Age-of-Empires-style development (building or technology) that this "
-        "settlement could adopt, inspired by the knowledge if relevant. Reply with STRICT JSON "
+        f"settlement could adopt, inspired by the knowledge if relevant.{avoid} "
+        "Reply with STRICT JSON "
         "only, no prose: {\"name\": str (snake_case, new, not in existing), "
         "\"cost\": {\"food\": int, \"wood\": int, \"gold\": int}, "
         "\"kind\": one of [\"yield_pct\",\"all_yield_pct\",\"pop_cap\"], "

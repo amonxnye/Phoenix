@@ -666,6 +666,34 @@ check("the diversity rule reads its own history, not chance",
       "recent_gathers" in SC._S and len(SC._S["recent_gathers"]) == 9)
 SC._S["recent_gathers"] = []
 
+# The same rut, in the invention domain — and an unbounded prompt alongside it.
+# The whole development catalogue was interpolated into every proposal, so the input
+# cost of inventing item N grew with N; and showing the model the tail of a list
+# invited it to extend the tail. In the live world 9 of 51 developments were variants
+# of one theme. Article III.3 — the check precedes the commit — had never been
+# applied to our own token spend.
+_varied = ["granary_store", "mill_race", "toll_gate", "cider_press", "horse_collar",
+           "root_cellar", "fish_trap", "heavy_plow", "guild_charter", "royal_mint",
+           "compost_pit", "watermill_weir", "forest_charter", "seed_drill",
+           "cattle_post", "tithe_barn", "salt_pan", "hop_yard", "kiln_works",
+           "ropewalk_shed"]
+_cat = [f"stablecoin_{n}" for n in
+        ("reserve", "peg", "insurance", "treasury", "audit", "swap", "vault",
+         "bridge", "oracle")] + _varied
+_sample, _avoid = B.catalogue_digest(_cat)
+check("the proposal prompt is bounded, however long the catalogue grows",
+      len(B.catalogue_digest([f"dev_{i}" for i in range(1000)])[0]) < 3 * len(_sample),
+      "1000 entries costs about what 51 does")
+check("the sample spreads across families instead of showing a rut",
+      _sample.count("stablecoin") <= 2, f"9 in the catalogue, {_sample.count('stablecoin')} shown")
+check("a family that has taken over is named so it can be avoided",
+      "stablecoin" in _avoid and "do NOT" in _avoid, _avoid.strip()[:64] + "…")
+check("a varied catalogue draws no spurious warning",
+      B.catalogue_digest(_varied)[1] == "",
+      f"{len(_varied)} distinct families, no family dominant")
+check("an empty catalogue is handled without inventing a rule",
+      B.catalogue_digest([]) == ("", ""))
+
 _src = open(os.path.join(HERE, "sim_console.py")).read()
 check("a turn that acts without moving the score is counted as waste",
       'waste_turns' in _src and 'waste_since_report' in _src)
