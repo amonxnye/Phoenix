@@ -115,6 +115,11 @@ def _world_init(c: sqlite3.Connection) -> None:
     # and scales its effect. Lives with the world — a new world starts fresh.
     c.execute("CREATE TABLE IF NOT EXISTS conditions("
               "name TEXT PRIMARY KEY, condition INT DEFAULT 100)")
+    # Every built thing has a PLACE: one tile per built instance, assigned at build
+    # time, spiralling out from the town centre. The map is a projection of world
+    # state — it never gates or blocks the economy.
+    c.execute("CREATE TABLE IF NOT EXISTS placements("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, x INT, y INT)")
     c.commit()
 
 
@@ -153,6 +158,11 @@ def effective_yield(resource: str, w: dict | None = None) -> int:
             y *= 1 + (d["value"] / 100) * eff
         elif d["kind"] == "all_yield_pct":
             y *= 1 + (d["value"] / 100) * eff
+    # Location pays: each camp placed on the ring around its resource ground works
+    # the ground directly. The ring is finite, so the bonus is a portfolio decision.
+    near = proximity_camps(resource)
+    if near:
+        y *= 1 + (PROXIMITY_PCT / 100) * near
     return int(y)
 
 
@@ -337,6 +347,7 @@ def build_development(name: str) -> tuple[bool, str]:
         c.execute("UPDATE custom_devs SET built=built+1 WHERE name=?", (name,))
         c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
                   "ON CONFLICT(name) DO UPDATE SET condition=100", (name,))
+        _place(c, name)
         c.commit()
         return True, f"built {name} ({_custom_effect_text(d)})"
     finally:
@@ -371,8 +382,121 @@ def build_structure(kind: str) -> tuple[bool, str]:
         c.execute(f"UPDATE world SET {sets}, {bump} WHERE id=1")
         c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
                   "ON CONFLICT(name) DO UPDATE SET condition=100", (kind,))
+        _place(c, kind)
         c.commit()
         return True, f"built {kind} ({STRUCTURES[kind]['effect']})"
+    finally:
+        c.close()
+
+
+# ── the map — every built thing has a place, and the place matters ───────────
+
+MAP_W, MAP_H = 24, 16
+TOWN_CENTER = (MAP_W // 2, MAP_H // 2)
+# Where each resource lies on the land. Camps placed within PROXIMITY_RADIUS tiles
+# of their ground work it directly: each one adds PROXIMITY_PCT% to that resource's
+# yield. Location is real economics — the ring around a ground is finite, so late
+# camps land outside it and earn no bonus.
+GROUNDS = {"food": (3, 4), "wood": (20, 3), "gold": (20, 12)}
+PROXIMITY_RADIUS = 3
+PROXIMITY_PCT = 15
+
+
+def _ground_for(name: str) -> tuple[int, int] | None:
+    """The ground a development wants to sit near: camps and custom yield
+    developments seek their resource; everything else grows from the town."""
+    for res, camp in CAMP_FOR.items():
+        if name == camp:
+            return GROUNDS[res]
+    d = next((x for x in custom_devs() if x["name"] == name), None)
+    if d and d["kind"] == "yield_pct":
+        return GROUNDS.get(d["resource"])
+    return None
+
+
+def _spiral(limit: int = 4 * MAP_W * MAP_H):
+    """Square-spiral offsets out from (0,0): the town grows ring by ring."""
+    x, y, dx, dy = 0, 0, 0, -1
+    for _ in range(limit):
+        yield x, y
+        if x == y or (x < 0 and x == -y) or (x > 0 and x == 1 - y):
+            dx, dy = -dy, dx
+        x, y = x + dx, y + dy
+
+
+def _next_tile(c: sqlite3.Connection, near: tuple[int, int] | None = None) -> tuple[int, int] | None:
+    """First free tile spiralling out from `near` (default: the town centre). The
+    town centre and the resource grounds are never built on. None when the map is
+    full — the build still succeeds (a missing tile never blocks the economy)."""
+    taken = ({TOWN_CENTER} | set(GROUNDS.values())
+             | set(c.execute("SELECT x, y FROM placements").fetchall()))
+    cx, cy = near or TOWN_CENTER
+    for ox, oy in _spiral():
+        x, y = cx + ox, cy + oy
+        if 0 <= x < MAP_W and 0 <= y < MAP_H and (x, y) not in taken:
+            return x, y
+    return None
+
+
+def _place(c: sqlite3.Connection, name: str) -> tuple[int, int] | None:
+    t = _next_tile(c, _ground_for(name))
+    if t:
+        c.execute("INSERT INTO placements(name, x, y) VALUES(?,?,?)", (name, t[0], t[1]))
+    return t
+
+
+def proximity_camps(resource: str) -> int:
+    """How many of this resource's camps sit within PROXIMITY_RADIUS (Chebyshev)
+    of its ground — each one earns the settlement +PROXIMITY_PCT% on that yield."""
+    gx, gy = GROUNDS[resource]
+    c = _conn()
+    try:
+        rows = c.execute("SELECT x, y FROM placements WHERE name=?",
+                         (CAMP_FOR[resource],)).fetchall()
+    finally:
+        c.close()
+    return sum(1 for x, y in rows if max(abs(x - gx), abs(y - gy)) <= PROXIMITY_RADIUS)
+
+
+def _sync_placements(c: sqlite3.Connection) -> None:
+    """Reconcile placements with what is actually built. Backfills tiles for worlds
+    that predate the map, and drops the newest tiles for anything no longer built
+    (a demolition, a world reset) — counts in the world table stay the oracle."""
+    counts = {d["name"]: d["built"] for d in dev_catalog() if d["built"]}
+    have = dict(c.execute("SELECT name, COUNT(*) FROM placements GROUP BY name").fetchall())
+    for name, n in have.items():
+        extra = n - counts.get(name, 0)
+        if extra > 0:
+            c.execute("DELETE FROM placements WHERE id IN ("
+                      "SELECT id FROM placements WHERE name=? ORDER BY id DESC LIMIT ?)",
+                      (name, extra))
+    for name, n in counts.items():
+        for _ in range(n - have.get(name, 0)):
+            _place(c, name)
+    c.commit()
+
+
+def map_state() -> dict:
+    """The settlement as a place: grid size, the town centre, the resource grounds,
+    and one tile per built development with its live condition. A camp inside its
+    ground's ring is marked `near` — that is the tile earning the proximity bonus."""
+    camp_res = {camp: res for res, camp in CAMP_FOR.items()}
+    c = _conn()
+    try:
+        _sync_placements(c)
+        cond = conditions()
+        rows = c.execute("SELECT name, x, y FROM placements ORDER BY id").fetchall()
+        out = []
+        for n, x, y in rows:
+            res = camp_res.get(n)
+            gx, gy = GROUNDS.get(res, (None, None)) if res else (None, None)
+            out.append({"name": n, "x": x, "y": y, "condition": cond.get(n, 100),
+                        "near": bool(res) and max(abs(x - gx), abs(y - gy)) <= PROXIMITY_RADIUS})
+        return {"w": MAP_W, "h": MAP_H, "town": list(TOWN_CENTER),
+                "grounds": {r: list(t) for r, t in GROUNDS.items()},
+                "proximity": {"radius": PROXIMITY_RADIUS, "pct": PROXIMITY_PCT,
+                              "camps": {r: proximity_camps(r) for r in RESOURCES}},
+                "placements": out}
     finally:
         c.close()
 

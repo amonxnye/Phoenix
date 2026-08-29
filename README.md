@@ -135,7 +135,7 @@ pip install -r requirements.txt
 
 # the acceptance suites (CI runs all four on every push)
 python3 gov/verify.py          # 16 — runtime, gate, governor, durability
-python3 gov/verify_sim.py      # 36 — economy, upkeep, permanence, lineage, governance
+python3 gov/verify_sim.py      # 44 — economy, upkeep, permanence, lineage, governance, the map
 python3 gov/verify_work.py     # 12 — real-work oracle, sandbox guards, worker loop
 python3 gov/console_smoke.py   # headless console API smoke
 
@@ -163,6 +163,7 @@ Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console re
 | Page | What you govern there |
 |---|---|
 | `/` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
+| `/map` | **The settlement as a place** — a live canvas of the town: every built development on its own tile (placed at build time), condition bars on worn assets, villagers afield, the herald at the gate. **Place matters**: camps seek the finite ring around their resource ground, and each one inside it adds +15% to that yield |
 | `/agents` | System health (stalls, burn, value per 1k compute), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent ever, permanently, with downloadable careers & health telemetry |
 | `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, a button that sends a live agent to fix the code — oracle-scored, auto-reverting |
 | `/chats` | Talk to any agent, the board, or the Chief Governor; watch votes narrated with live evidence (runway, momentum, affordability) |
