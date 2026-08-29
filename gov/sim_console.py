@@ -2898,19 +2898,22 @@ canvas{display:block;width:100%;height:auto}
       <span><i class=sw style="background:#8ab4ff"></i>adopted development</span>
       <span><i class=sw style="background:#e05a5a;border-radius:50%"></i>villager (colour = resource)</span>
       <span><i class=sw style="background:#e0b23a;border-radius:50%"></i>herald</span>
+      <span><i class=sw style="border:1.5px dashed #5a8a3a;background:none;border-radius:50%"></i>proximity ring — camps inside earn +yield</span>
       <span id=mapcount style="margin-left:auto"></span>
     </div>
   </div>
-  <div class=foot>The map is a projection of world state — placements are assigned at build time
-  and live in the same database as the economy. It never gates or blocks anything.</div>
+  <div class=foot>Placements are assigned at build time and live in the same database as the economy.
+  <b>Place matters</b>: a camp inside the dashed ring around its resource ground works it directly
+  and adds to that yield — the ring is finite, so late camps land outside it and earn nothing extra.
+  A full map never blocks a build.</div>
 </main>
 <script>
 const cv=document.getElementById('cv'),g=cv.getContext('2d');
 let D=null;                                   // latest snapshot
 const hash=(x,y)=>{let h=(x*374761393+y*668265263)^(x*y*2246822519);h=(h^(h>>13))*1274126177;return ((h^(h>>16))>>>0)/4294967296};
 const uhash=s=>{let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0)/4294967296};
-// fixed resource grounds villagers work near — decorative anchors, not state
-const GROUNDS={food:{x:3.5,y:4},wood:{x:20,y:3},gold:{x:20,y:12.5}};
+// resource grounds come from world state (sim.GROUNDS); fallback for old snapshots
+let GROUNDS={food:{x:3.5,y:4.5},wood:{x:20.5,y:3.5},gold:{x:20.5,y:12.5}};
 function drawBuilding(kind,px,py,T){
   const s=T*0.62,x=px-s/2,y=py-s/2;
   if(kind==='house'){g.fillStyle='#8b5a2b';g.fillRect(x,y+s*0.35,s,s*0.65);
@@ -2946,6 +2949,13 @@ function draw(){
   g.strokeStyle='rgba(58,44,24,.45)';g.lineWidth=1;   // grid
   for(let x=0;x<=W;x++){g.beginPath();g.moveTo(x*T,0);g.lineTo(x*T,cssH);g.stroke();}
   for(let y=0;y<=H;y++){g.beginPath();g.moveTo(0,y*T);g.lineTo(cssW,y*T);g.stroke();}
+  if(m.grounds)GROUNDS=Object.fromEntries(Object.entries(m.grounds).map(([r,[gx,gy]])=>[r,{x:gx+0.5,y:gy+0.5}]));
+  // proximity rings: camps inside a ground's ring work it directly (+yield)
+  if(m.proximity){const R=(m.proximity.radius+0.5)*T;
+    for(const [r,a] of Object.entries(GROUNDS)){
+      g.strokeStyle=r==='food'?'rgba(224,90,90,.25)':r==='wood'?'rgba(90,138,58,.3)':'rgba(224,178,58,.25)';
+      g.setLineDash([4,5]);g.lineWidth=1.5;
+      g.beginPath();g.arc(a.x*T,a.y*T,R,0,7);g.stroke();g.setLineDash([]);}}
   // resource grounds (decorative): berries, forest, gold seam — golden-angle scatter
   const scatter=(a,i)=>{const rad=0.45+(i%3)*0.55,ang=i*2.39996+uhash(a.x+':'+i)*0.8;
     return [(a.x+Math.cos(ang)*rad)*T,(a.y+Math.sin(ang)*rad*0.8)*T]};
@@ -2966,6 +2976,9 @@ function draw(){
   for(const p of m.placements){
     const px=(p.x+0.5)*T,py=(p.y+0.5)*T;
     drawBuilding(p.name,px,py,T);
+    if(p.near&&m.proximity){g.fillStyle='#a8e086';g.textAlign='center';
+      g.font=`${Math.max(8,T*0.22)}px ui-monospace,Menlo,monospace`;
+      g.fillText('+'+m.proximity.pct+'%',px,py-T*0.42);}
     if(p.condition<100){
       g.fillStyle='#0e0a05';g.fillRect(px-T*0.35,py+T*0.36,T*0.7,T*0.1);
       g.fillStyle=p.condition>50?'#22c55e':'#ef4444';

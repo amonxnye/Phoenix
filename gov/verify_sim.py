@@ -265,5 +265,24 @@ check("a world that predates the map backfills placements from built counts",
       len(m2["placements"]) == sum(built_counts.values())
       and {p["name"] for p in m2["placements"]} == set(built_counts))
 
+print("\n11. Proximity — place matters: a camp on its ground's ring yields more")
+mill_tile = next(p for p in m2["placements"] if p["name"] == "mill")
+gfx, gfy = S.GROUNDS["food"]
+check("a camp seeks the ring around its resource ground",
+      max(abs(mill_tile["x"] - gfx), abs(mill_tile["y"] - gfy)) <= S.PROXIMITY_RADIUS
+      and mill_tile["near"], f"mill at ({mill_tile['x']},{mill_tile['y']}), ground ({gfx},{gfy})")
+house_tile = next(p for p in m2["placements"] if p["name"] == "house")
+tcx, tcy = S.TOWN_CENTER
+check("everything else grows from the town centre",
+      max(abs(house_tile["x"] - tcx), abs(house_tile["y"] - tcy)) <= 2,
+      f"house at ({house_tile['x']},{house_tile['y']})")
+y_near = S.effective_yield("food")
+expect_near = int(S.BASE["food"] * 1.5 * (1 + S.PROXIMITY_PCT / 100))
+check("the proximate camp pays its bonus on the yield",
+      y_near == expect_near, f"yield {y_near} (mill 1.5x · ring +{S.PROXIMITY_PCT}%)")
+taken_tiles = {(p["x"], p["y"]) for p in m2["placements"]}
+check("grounds and the town centre are never built on",
+      not (taken_tiles & ({tuple(S.TOWN_CENTER)} | set(S.GROUNDS.values()))))
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
