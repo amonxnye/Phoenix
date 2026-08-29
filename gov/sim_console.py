@@ -582,7 +582,11 @@ def _situation() -> str:
     # live lesson set) rather than whatever was learned most recently.
     lessons = anchor.skills_relevant(base, 3)
     if lessons:                       # wisdom flows into every decision that reads the situation
-        base += " Lessons that apply here: " + " | ".join(x["lesson"] for x in lessons)
+        # Per-lesson budget (III.4), not just an overall one: every model call the fleet
+        # makes reads this string, so one rambling lesson would otherwise crowd the other
+        # two out of the tail brain.clip keeps — and tax every call while doing it.
+        base += " Lessons that apply here: " + brain.clip_join(
+            "lessons", "lesson", (x["lesson"] for x in lessons), " | ")
     return base
 
 
@@ -1968,6 +1972,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
                 "model_calls": anchor.model_calls_stats(),
+                "prompt_overruns": brain.prompt_overruns(),   # III.5: the ceiling's bite
                 "brain": brain.brain_name(),
             }))
         if self.path == "/api/skillsdata":
@@ -3176,6 +3181,14 @@ async function load(){
     `<b>${((mc.prompt_tokens||0)+(mc.completion_tokens||0)).toLocaleString()}</b> real tokens `+
     `(${(mc.prompt_tokens||0).toLocaleString()} in / ${(mc.completion_tokens||0).toLocaleString()} out) &middot; `+
     `avg latency <b>${mc.avg_latency_ms||0}ms</b> &middot; errors <b>${mc.errors||0}</b>`;
+  // Article III.5 — what the prompt ceiling actually cut. An empty readout is a
+  // measurement ("nothing has overrun"), not an absence of one, so it says so.
+  const po=d.prompt_overruns||{}, pf=Object.keys(po);
+  telemetry.innerHTML+=`<br>prompt budget: `+(pf.length
+    ? pf.map(f=>`<b>${esc(f)}</b> ${po[f].hits}&times; over ${po[f].limit} `+
+                `(worst ${(po[f].worst||0).toLocaleString()}, `+
+                `${(po[f].dropped||0).toLocaleString()} chars cut)`).join(' &middot; ')
+    : 'no field has overrun its ceiling');
   const rs=d.runs||[];
   empty.style.display=rs.length?'none':'block';
   const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);

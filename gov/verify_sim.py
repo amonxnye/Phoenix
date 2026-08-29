@@ -30,7 +30,9 @@ results = []
 
 
 def check(name, ok, detail=""):
-    results.append(ok)
+    results.append(bool(ok))          # a truthy non-bool would print PASS and then
+                                      # crash the tally — the reporting path must not
+                                      # depend on the shape of what it reports (IX.7)
     print(f"  [{PASS if ok else FAIL}] {name}" + (f"  — {detail}" if detail else ""))
 
 
@@ -693,6 +695,70 @@ check("a varied catalogue draws no spurious warning",
       f"{len(_varied)} distinct families, no family dominant")
 check("an empty catalogue is handled without inventing a rule",
       B.catalogue_digest([]) == ("", ""))
+
+# Article III.4/III.5 — the general form. Bounding one call site fixes one call site;
+# the class of defect is text reaching a prompt with no ceiling, and the live system had
+# eight such paths, three of them straight from an HTTP body. So this check DISCOVERS its
+# subject: it walks every public entry point in brain.py, feeds each one pathological
+# input, and inspects the turn that would have gone to the provider. A prompt builder
+# added next month is covered the day it is added, without anyone remembering to.
+# It patches the TRANSPORT, never _chat itself — patching out the choke point would test
+# the test (Article IX.7: a safeguard must not route through what it guards).
+import inspect as _inspect
+_BIG = "x" * 40_000
+_sent: list = []
+_saved = {n: getattr(B, n) for n in ("provider", "_deepseek_available", "_anthropic_chat")}
+B.provider = lambda: {"kind": "anthropic", "base_url": "t", "model": "t", "key": "t"}
+B._deepseek_available = lambda: True
+B._anthropic_chat = lambda p, messages, mt, tp: (_sent.extend(messages), ("{}", None))[1]
+_probed, _over = [], 0
+try:
+    for _name, _fn in sorted(vars(B).items()):
+        if _name.startswith("_") or not _inspect.isfunction(_fn) or _fn.__module__ != B.__name__:
+            continue
+        _args = []
+        for _p in _inspect.signature(_fn).parameters.values():
+            if _p.default is not _inspect.Parameter.empty:
+                continue                            # only what the caller must supply
+            _ann = getattr(_p.annotation, "__name__", str(_p.annotation))
+            _args.append({"str": _BIG, "int": 0,
+                          "list": [{"topic": _BIG, "fact": _BIG, "lesson": _BIG}] * 6,
+                          "dict": {"food": _BIG, "wood": _BIG, "gold": _BIG}}.get(_ann, _BIG))
+        _before = len(_sent)
+        try:
+            _fn(*_args)
+        except Exception:
+            pass                                    # a builder may reject junk; that is fine
+        if len(_sent) > _before:
+            _probed.append(_name)
+    _over = max([len(m["content"]) for m in _sent], default=0)
+finally:
+    for _n, _v in _saved.items():
+        setattr(B, _n, _v)
+check("every prompt builder in brain.py was actually exercised",
+      len(_probed) >= 5 and bool(_sent), f"{len(_probed)} entry points reached the provider: "
+      + ", ".join(_probed))
+check("no entry point can be made to send an unbounded prompt",
+      0 < _over <= B.PROMPT_LIMITS["prompt"],
+      f"40,000 chars into every field → worst turn {_over} chars, ceiling "
+      f"{B.PROMPT_LIMITS['prompt']}")
+check("the ceiling is applied under _chat, so a new caller inherits it",
+      "clip(\"prompt\"" in open(os.path.join(HERE, "brain.py")).read().split("def _chat")[1][:900],
+      "the choke point clips, not only the individual builders")
+check("what the ceiling cut is counted, not silently dropped (III.5)",
+      bool(B.prompt_overruns()) and all(v["hits"] > 0 and v["worst"] >= v["limit"]
+                                        for v in B.prompt_overruns().values()),
+      f"{len(B.prompt_overruns())} fields recorded an overrun")
+check("a list is bounded per item as well as in total",
+      len(B.clip_join("facts", "fact", [_BIG] * 6)) <= B.PROMPT_LIMITS["facts"]
+      and B.prompt_overruns().get("fact", {}).get("hits", 0) > 0,
+      "one 40,000-char fact cannot crowd out the other four")
+check("an input inside its budget is passed through untouched",
+      B.clip("situation", "food 40, wood 12") == "food 40, wood 12",
+      "the clamp bites only where it must")
+check("every declared limit leaves room for the marker it appends",
+      all(len(B.clip(f, _BIG)) <= lim for f, lim in B.PROMPT_LIMITS.items()),
+      f"{len(B.PROMPT_LIMITS)} fields, none overshoot their own ceiling")
 
 _src = open(os.path.join(HERE, "sim_console.py")).read()
 check("a turn that acts without moving the score is counted as waste",

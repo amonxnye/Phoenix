@@ -27,7 +27,9 @@ results = []
 
 
 def check(name, ok, detail=""):
-    results.append(ok)
+    results.append(bool(ok))          # a truthy non-bool would print PASS and then
+                                      # crash the tally — the reporting path must not
+                                      # depend on the shape of what it reports (IX.7)
     print(f"  [{PASS if ok else FAIL}] {name}" + (f"  — {detail}" if detail else ""))
 
 

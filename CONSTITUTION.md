@@ -87,7 +87,18 @@ Everything below is those two laws, applied.
    precedes the commit**: an agent is retired before the turn that would overshoot its
    budget, not after. The cap has a single writer that logs its caller and accepts one
    mutation per turn (`sim_console._set_cap`).
-> Enforced by `governor.py`, `sim.py` and `sim_console.py`.
+4. **No unbounded prompt.** An input whose size grows with the state it describes is a
+   defect, not an inefficiency: it is paid on every call, forever, and nobody sees it.
+   Every field reaching a model has a declared ceiling in chars, applied where prompts
+   are assembled (`brain.PROMPT_LIMITS`, `brain.clip`) — not at the boundary the text
+   arrived through, which the next caller will not use. Lists are bounded twice, per
+   item and in total: five facts of 200 chars is a budget, one fact of 40,000 is the
+   same defect wearing a smaller number.
+5. **What the ceiling cuts is counted.** Silent truncation trades an unbounded bill for
+   an invisible one. Every overrun records its field, its frequency, the worst case seen
+   and the volume dropped (`brain.prompt_overruns`), because a limit whose bite is
+   unmeasured cannot be told from a limit that never binds.
+> Enforced by `governor.py`, `sim.py`, `sim_console.py` and `brain.py`.
 
 ## Article IV — Irreversible actions stop at the gate
 
