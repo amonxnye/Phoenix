@@ -439,13 +439,24 @@ RES_COLOR = {"food": "#e05a5a", "wood": "#b5793a", "gold": "#e0b23a"}
 
 def render_registry() -> dict:
     """RENDER plus an entry for every adopted custom development (diamond, coloured
-    by the resource it boosts) — the client draws only what this registry names."""
-    reg = {k: dict(v) for k, v in RENDER.items()}
+    by the resource it boosts) — the client draws only what this registry names.
+    Each entry carries the development's rank (grander works draw bigger) and its
+    effect text (the hover tooltip), so the client never needs its own catalog."""
+    cat = {d["name"]: d for d in dev_catalog()}
+    reg = {}
+    for name, spec in RENDER.items():
+        e = dict(spec)
+        if name in cat:
+            e["rank"], e["effect"] = cat[name]["rank"], cat[name]["effect"]
+        reg[name] = e
     for d in custom_devs():
-        reg.setdefault(d["name"], {
+        if d["name"] in reg:
+            continue
+        reg[d["name"]] = {
             "shape": "diamond", "layer": 2,
+            "rank": d["rank"], "effect": _custom_effect_text(d),
             "color": RES_COLOR.get(d["resource"], "#8ab4ff")
-            if d["kind"] == "yield_pct" else "#8ab4ff"})
+            if d["kind"] == "yield_pct" else "#8ab4ff"}
     return reg
 
 

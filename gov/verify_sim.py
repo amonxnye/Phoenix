@@ -314,8 +314,11 @@ S.terrain_deplete("wood", amount=S.TERRAIN_STOCK)        # work one tile to noth
 check("worked-out land stops paying",
       S.terrain_bonus_tiles("wood") == tbw - 1 and S.effective_yield("wood") < y_wood,
       f"yield {y_wood} → {S.effective_yield('wood')}")
-check("the paint registry covers everything built",
-      {d["name"] for d in S.dev_catalog() if d["built"]} <= set(S.render_registry()))
+_reg = S.render_registry()
+_built_kinds = {d["name"] for d in S.dev_catalog() if d["built"]}
+check("the paint registry covers everything built, with rank and effect",
+      _built_kinds <= set(_reg)
+      and all("rank" in _reg[n] and _reg[n].get("effect") for n in _built_kinds))
 check("water is never built on",
       not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 

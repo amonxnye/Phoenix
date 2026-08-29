@@ -2910,7 +2910,10 @@ canvas{display:block;width:100%;height:auto}
 </main>
 <script>
 const cv=document.getElementById('cv'),g=cv.getContext('2d');
-let D=null;                                   // latest snapshot
+let D=null,mouse=null;                        // latest snapshot, hover position
+cv.addEventListener('mousemove',ev=>{const r=cv.getBoundingClientRect();
+  mouse={x:ev.clientX-r.left,y:ev.clientY-r.top}});
+cv.addEventListener('mouseleave',()=>{mouse=null});
 const hash=(x,y)=>{let h=(x*374761393+y*668265263)^(x*y*2246822519);h=(h^(h>>13))*1274126177;return ((h^(h>>16))>>>0)/4294967296};
 const uhash=s=>{let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0)/4294967296};
 // resource grounds come from world state (sim.GROUNDS); fallback for old snapshots
@@ -2922,28 +2925,67 @@ const srand=seed=>{let a=(seed*2654435761)>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|
 const shade=(hex,d)=>{const n=parseInt(hex.slice(1),16),r=Math.min(255,Math.max(0,(n>>16)+d)),
   gg=Math.min(255,Math.max(0,((n>>8)&255)+d)),b=Math.min(255,Math.max(0,(n&255)+d));
   return `rgb(${r},${gg},${b})`};
-// registry-driven sprites: the server names shape/color/layer per kind (m.registry)
+// registry-driven sprites: the server names shape/color/layer/rank per kind
+// (m.registry). Grander works (higher rank) draw bigger; worn assets fade; every
+// building sits on a ground shadow with a dark outline so it reads against terrain.
+const OUTLINE='rgba(10,7,3,.75)';
+function outlineRect(x,y,w,h,col){g.fillStyle=col;g.fillRect(x,y,w,h);
+  g.strokeStyle=OUTLINE;g.lineWidth=1;g.strokeRect(x+0.5,y+0.5,w-1,h-1);}
+function outlinePath(col){g.fillStyle=col;g.fill();
+  g.strokeStyle=OUTLINE;g.lineWidth=1;g.stroke();}
 function drawBuilding(p,reg,T){
   const e=(reg&&reg[p.name])||{shape:'diamond',color:'#8ab4ff'};
-  const R=srand((p.id||1)+7),v=R(),v2=R(),px=(p.x+0.5)*T,py=(p.y+0.5)*T,
-    s=T*(0.56+v*0.12),x=px-s/2,y=py-s/2,col=shade(e.color,Math.round((v2-0.5)*36));
-  if(e.shape==='house'){g.fillStyle=col;g.fillRect(x,y+s*0.35,s,s*0.65);
-    g.fillStyle=shade('#5a3a1a',Math.round((v-0.5)*28));g.beginPath();
-    if(v2>0.5){g.moveTo(x-s*0.1,y+s*0.4);g.lineTo(px,y-s*0.15);g.lineTo(x+s*1.1,y+s*0.4);}
-    else{g.moveTo(x-s*0.08,y+s*0.42);g.lineTo(x+s*0.35,y+s*0.02);g.lineTo(x+s*1.08,y+s*0.42);}
-    g.fill();}
-  else if(e.shape==='mill'){g.fillStyle=col;g.fillRect(x+s*0.25,y+s*0.3,s*0.5,s*0.7);
-    g.strokeStyle='#f0e6d2';g.lineWidth=2;const a=performance.now()/(800+v*400)+v2*6;
-    for(let i=0;i<4;i++){g.beginPath();g.moveTo(px,y+s*0.3);
-      g.lineTo(px+Math.cos(a+i*Math.PI/2)*s*0.55,y+s*0.3+Math.sin(a+i*Math.PI/2)*s*0.55);g.stroke();}}
-  else if(e.shape==='camp'){g.fillStyle=col;g.fillRect(x,y+s*0.5,s,s*0.5);
-    g.fillStyle=e.accent||'#b5793a';const n=2+Math.floor(v*3);
-    for(let i=0;i<n;i++){g.beginPath();g.arc(x+s*(0.18+(n>1?i*0.64/(n-1):0.3)),y+s*0.35,s*0.12,0,7);g.fill();}}
-  else if(e.shape==='tech'){g.strokeStyle=col;g.lineWidth=2;
-    g.beginPath();g.arc(px-s*0.2,py+s*0.25,s*0.2,0,7);g.stroke();
-    g.beginPath();g.moveTo(px-s*0.2,py+s*0.05);g.lineTo(px+s*0.45,py-s*0.25);g.stroke();}
-  else{g.fillStyle=e.color;const d=s*(0.42+v*0.16);g.beginPath();
-    g.moveTo(px,py-d);g.lineTo(px+d,py);g.lineTo(px,py+d);g.lineTo(px-d,py);g.fill();}
+  const R=srand((p.id||1)+7),v=R(),v2=R(),v3=R(),
+    px=(p.x+0.5)*T,py=(p.y+0.5)*T,rk=Math.min(4,e.rank||2),
+    s=T*(0.58+0.07*rk+v*0.08),x=px-s/2,y=py-s/2,
+    col=shade(e.color,Math.round((v2-0.5)*36)),
+    worn=Math.max(0.45,(p.condition==null?100:p.condition)/100);
+  g.fillStyle='rgba(0,0,0,.35)';g.beginPath();               // ground shadow
+  g.ellipse(px,py+s*0.44,s*0.55,s*0.15,0,0,7);g.fill();
+  g.globalAlpha=worn;
+  if(e.shape==='house'){
+    outlineRect(x,y+s*0.35,s,s*0.62,col);
+    g.beginPath();                                            // two roof lines
+    if(v2>0.5){g.moveTo(x-s*0.1,y+s*0.4);g.lineTo(px,y-s*0.12);g.lineTo(x+s*1.1,y+s*0.4);}
+    else{g.moveTo(x-s*0.08,y+s*0.42);g.lineTo(x+s*0.35,y+s*0.04);g.lineTo(x+s*1.08,y+s*0.42);}
+    g.closePath();outlinePath(shade('#5a3a1a',Math.round((v-0.5)*28)));
+    outlineRect(px-s*0.12+((v3-0.5)*s*0.3),y+s*0.62,s*0.24,s*0.35,'#2a1a0c'); // door
+    g.fillStyle='#e0b23a';g.fillRect(x+s*(v3>0.5?0.14:0.66),y+s*0.48,s*0.13,s*0.13);} // lit window
+  else if(e.shape==='mill'){
+    g.beginPath();g.moveTo(x+s*0.18,y+s*1.0);g.lineTo(x+s*0.3,y+s*0.22); // tapered tower
+    g.lineTo(x+s*0.7,y+s*0.22);g.lineTo(x+s*0.82,y+s*1.0);g.closePath();outlinePath(col);
+    g.beginPath();g.moveTo(x+s*0.24,y+s*0.24);g.lineTo(px,y-s*0.02);     // cap
+    g.lineTo(x+s*0.76,y+s*0.24);g.closePath();outlinePath('#5a3a1a');
+    outlineRect(px-s*0.1,y+s*0.72,s*0.2,s*0.28,'#2a1a0c');               // door
+    g.strokeStyle='#f0e6d2';g.lineWidth=Math.max(1.5,T*0.045);
+    const a=performance.now()/(800+v*400)+v2*6;                          // blades
+    for(let i=0;i<4;i++){g.beginPath();g.moveTo(px,y+s*0.2);
+      g.lineTo(px+Math.cos(a+i*Math.PI/2)*s*0.5,y+s*0.2+Math.sin(a+i*Math.PI/2)*s*0.5);g.stroke();}
+    g.fillStyle='#f0e6d2';g.beginPath();g.arc(px,y+s*0.2,s*0.06,0,7);g.fill();}
+  else if(e.shape==='camp'){
+    outlineRect(x,y+s*0.45,s,s*0.5,col);                                 // hut
+    g.beginPath();g.moveTo(x-s*0.06,y+s*0.5);g.lineTo(px,y+s*0.12);      // roof
+    g.lineTo(x+s*1.06,y+s*0.5);g.closePath();outlinePath('#4a331a');
+    g.fillStyle=e.accent||'#b5793a';const n=2+Math.floor(v*3);           // stock pile
+    for(let i=0;i<n;i++){g.beginPath();
+      g.arc(x+s*(0.2+(n>1?i*0.6/(n-1):0.3)),y+s*1.0,s*0.11,0,7);g.fill();
+      g.strokeStyle=OUTLINE;g.lineWidth=1;g.stroke();}}
+  else if(e.shape==='tech'){
+    g.fillStyle='rgba(36,26,5,.9)';g.beginPath();                        // badge chip
+    g.arc(px,py,s*0.42,0,7);g.fill();
+    g.strokeStyle='#e0b23a';g.lineWidth=1;g.stroke();
+    g.strokeStyle=col;g.lineWidth=Math.max(1.5,T*0.04);
+    g.beginPath();g.arc(px-s*0.12,py+s*0.14,s*0.15,0,7);g.stroke();      // wheel
+    g.beginPath();g.moveTo(px-s*0.12,py-s*0.02);g.lineTo(px+s*0.3,py-s*0.2);g.stroke();}
+  else{const d=s*(0.4+v*0.14);                                           // gem
+    g.beginPath();g.moveTo(px,py-d);g.lineTo(px+d,py);g.lineTo(px,py+d);
+    g.lineTo(px-d,py);g.closePath();outlinePath(e.color);
+    g.beginPath();g.moveTo(px,py-d);g.lineTo(px+d*0.5,py-d*0.35);        // top facet
+    g.lineTo(px-d*0.5,py-d*0.35);g.closePath();g.fillStyle='rgba(240,230,210,.35)';g.fill();}
+  g.globalAlpha=1;
+  g.fillStyle='rgba(176,154,114,.8)';g.textAlign='center';               // name label
+  g.font=`${Math.max(7,T*0.19)}px ui-monospace,Menlo,monospace`;
+  g.fillText(p.name.replace(/_/g,' '),px,py+s*0.78);
 }
 function draw(){
   requestAnimationFrame(draw);
@@ -3037,6 +3079,31 @@ function draw(){
     g.fillStyle='#b09a72';g.textAlign='center';
     g.font=`${Math.max(8,T*0.24)}px ui-monospace,Menlo,monospace`;
     g.fillText(a.uid,vx,vy+T*0.5);
+  }
+  // hover: name the tile under the cursor — building (effect, condition, bonus)
+  // or land (class, remaining stock). All data comes from the served snapshot.
+  if(mouse){
+    const mx=Math.floor(mouse.x/T),my=Math.floor(mouse.y/T);
+    let lines=null;
+    const p=m.placements.find(q=>q.x===mx&&q.y===my);
+    if(p){const e=reg[p.name]||{};
+      lines=[p.name.replace(/_/g,' ').toUpperCase(),e.effect||''];
+      lines.push('condition '+(p.condition==null?100:p.condition)+'%');
+      if(p.near&&m.proximity)lines.push('on its ground\\u2019s ring \\u2014 +'+m.proximity.pct+'% yield');
+    }else if(mx===tc[0]&&my===tc[1]){lines=['TOWN CENTRE','where the settlement grows from'];}
+    else{const tl2=(m.terrain||[]).find(q=>q.x===mx&&q.y===my);
+      if(tl2)lines=tl2.cls==='water'?['WATER','never built on']:
+        [tl2.cls.replace(/_/g,' ').toUpperCase(),
+         tl2.stock>0?('stock '+tl2.stock+'/'+maxStock):'worked out \\u2014 pays nothing'];}
+    if(lines){lines=lines.filter(Boolean);
+      g.font=`${Math.max(9,T*0.24)}px ui-monospace,Menlo,monospace`;g.textAlign='left';
+      const pad=8,lh=Math.max(12,T*0.32),
+        w2=Math.max(...lines.map(l=>g.measureText(l).width))+pad*2,h2=lines.length*lh+pad*1.5,
+        bx=Math.min(cssW-w2-4,mouse.x+14),by=Math.max(4,mouse.y-h2-10);
+      g.fillStyle='rgba(18,13,8,.94)';g.beginPath();g.roundRect(bx,by,w2,h2,6);g.fill();
+      g.strokeStyle='#e0b23a';g.lineWidth=1;g.stroke();
+      lines.forEach((l,i)=>{g.fillStyle=i?'#b09a72':'#e0b23a';
+        g.fillText(l,bx+pad,by+pad*0.75+lh*(i+0.72));});}
   }
 }
 async function load(){
