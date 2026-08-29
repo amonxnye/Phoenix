@@ -277,12 +277,47 @@ check("everything else grows from the town centre",
       max(abs(house_tile["x"] - tcx), abs(house_tile["y"] - tcy)) <= 2,
       f"house at ({house_tile['x']},{house_tile['y']})")
 y_near = S.effective_yield("food")
-expect_near = int(S.BASE["food"] * 1.5 * (1 + S.PROXIMITY_PCT / 100))
+exp = S.BASE["food"] * (1 + 0.5)
+exp *= 1 + S.PROXIMITY_PCT / 100
+tbf = S.terrain_bonus_tiles("food")
+exp *= 1 + S.TERRAIN_PCT / 100 * tbf
 check("the proximate camp pays its bonus on the yield",
-      y_near == expect_near, f"yield {y_near} (mill 1.5x · ring +{S.PROXIMITY_PCT}%)")
+      y_near == int(exp),
+      f"yield {y_near} (mill 1.5x · ring +{S.PROXIMITY_PCT}% · {tbf} live berry tiles)")
 taken_tiles = {(p["x"], p["y"]) for p in m2["placements"]}
 check("grounds and the town centre are never built on",
       not (taken_tiles & ({tuple(S.TOWN_CENTER)} | set(S.GROUNDS.values()))))
+
+print("\n12. The land — deterministic terrain that feeds, and wears out under, the economy")
+t0 = S.terrain()
+_c = S._conn()
+_c.execute("DELETE FROM terrain")
+S._terrain_init(_c)
+_c.commit()
+_c.close()
+check("the land is founded deterministically (same seed, same world)",
+      S.terrain() == t0 and len(t0) > 10, f"{len(t0)} tiles")
+check("every ground grows its class nearby, and the pond exists",
+      all(any(tl["cls"] == S.TERRAIN_KIND[r] for tl in t0) for r in S.RESOURCES)
+      and any(tl["cls"] == "water" for tl in t0))
+S._world_add("wood", 500)
+ok_lc, _ = S.build_structure("lumber_camp")
+tbw = S.terrain_bonus_tiles("wood")
+y_wood = S.effective_yield("wood")
+exp_w = S.BASE["wood"] * (1 + 0.5)
+exp_w *= 1 + S.PROXIMITY_PCT / 100
+exp_w *= 1 + S.TERRAIN_PCT / 100 * tbw
+check("a camp works the live tiles around it into the yield",
+      ok_lc and tbw > 0 and y_wood == int(exp_w),
+      f"{tbw} live forest tiles → wood yield {y_wood}")
+S.terrain_deplete("wood", amount=S.TERRAIN_STOCK)        # work one tile to nothing
+check("worked-out land stops paying",
+      S.terrain_bonus_tiles("wood") == tbw - 1 and S.effective_yield("wood") < y_wood,
+      f"yield {y_wood} → {S.effective_yield('wood')}")
+check("the paint registry covers everything built",
+      {d["name"] for d in S.dev_catalog() if d["built"]} <= set(S.render_registry()))
+check("water is never built on",
+      not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
