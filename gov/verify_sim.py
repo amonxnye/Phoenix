@@ -236,5 +236,34 @@ check("stale lessons stop steering (bounded live set)", len(live) <= 30,
       f"{len(live)} live lessons")
 check("pruned lessons remain on the record (never deleted)", A.skills_count() > 30)
 
+print("\n10. The map — every built thing has a place (the canvas projection)")
+S._world_add("wood", 1_000)
+before = len(S.map_state()["placements"])
+ok_h, _ = S.build_structure("house")
+ok_m2, _ = S.build_structure("mill")
+m = S.map_state()
+check("building assigns a tile on the map",
+      ok_h and ok_m2 and len(m["placements"]) == before + 2,
+      f"{len(m['placements'])} placements")
+tiles = [(p["x"], p["y"]) for p in m["placements"]]
+check("every placement is a unique in-bounds tile, never the town centre",
+      len(set(tiles)) == len(tiles)
+      and all(0 <= x < S.MAP_W and 0 <= y < S.MAP_H for x, y in tiles)
+      and tuple(S.TOWN_CENTER) not in tiles)
+placed = {}
+for p in m["placements"]:
+    placed[p["name"]] = placed.get(p["name"], 0) + 1
+built_counts = {d["name"]: d["built"] for d in S.dev_catalog() if d["built"]}
+check("the map mirrors the world's built counts (counts stay the oracle)",
+      placed == built_counts, f"{placed}")
+_c = S._conn()
+_c.execute("DELETE FROM placements")
+_c.commit()
+_c.close()
+m2 = S.map_state()
+check("a world that predates the map backfills placements from built counts",
+      len(m2["placements"]) == sum(built_counts.values())
+      and {p["name"] for p in m2["placements"]} == set(built_counts))
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

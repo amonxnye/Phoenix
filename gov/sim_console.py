@@ -1455,6 +1455,7 @@ def _snapshot_build(now: float) -> dict:
             },
             "world": sim.world(),
             "structures": sim.structures(),
+            "map": sim.map_state(),
             "buildable": list(sim.STRUCTURES.keys()),
             "dev_catalog": sim.dev_catalog(),
             "dev_total_built": sum(d["built"] for d in sim.dev_catalog()),
@@ -1603,6 +1604,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/work":
             self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/map":
+            self._count_view()
+            return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
@@ -2085,6 +2089,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   </div>
   <div class=vmeta id=vmeta></div>
   <div class=ops>
+    <a class=navlink href="/map">World Map &rarr;</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -2852,6 +2857,155 @@ async function runWorker(){
   runbtn.disabled=false; load();
 }
 load(); setInterval(load,4000);
+</script>
+</html>"""
+
+
+MAP_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>World Map — the settlement</title>
+<style>
+:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;
+--food:#e05a5a;--wood:#b5793a;--gold:#e0b23a;--green:#5a8a3a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:linear-gradient(180deg,#241a0f,#1c150d)}
+h1{font-size:15px;margin:0;letter-spacing:1px}
+a{color:var(--gold);text-decoration:none}
+.age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
+.meta{color:var(--dim);font-size:12px;margin-left:auto;display:flex;gap:14px;flex-wrap:wrap}
+.meta b.f{color:var(--food)}.meta b.w{color:var(--wood)}.meta b.g{color:var(--gold)}
+main{max-width:1150px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+canvas{display:block;width:100%;height:auto}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+.legend span{display:inline-flex;gap:6px;align-items:center}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+.foot{color:var(--dim);font-size:11px;text-align:center;padding:12px}
+</style>
+<header><h1>&#9670; WORLD MAP</h1>
+  <span class=age id=age>&mdash;</span>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  <span class=meta id=meta></span></header>
+<main>
+  <div class=card>
+    <canvas id=cv></canvas>
+    <div class=legend>
+      <span><i class=sw style="background:#8b5a2b"></i>house</span>
+      <span><i class=sw style="background:#c9b98f"></i>mill</span>
+      <span><i class=sw style="background:#5a8a3a"></i>lumber camp</span>
+      <span><i class=sw style="background:#e0b23a"></i>mining camp</span>
+      <span><i class=sw style="background:#8ab4ff"></i>adopted development</span>
+      <span><i class=sw style="background:#e05a5a;border-radius:50%"></i>villager (colour = resource)</span>
+      <span><i class=sw style="background:#e0b23a;border-radius:50%"></i>herald</span>
+      <span id=mapcount style="margin-left:auto"></span>
+    </div>
+  </div>
+  <div class=foot>The map is a projection of world state — placements are assigned at build time
+  and live in the same database as the economy. It never gates or blocks anything.</div>
+</main>
+<script>
+const cv=document.getElementById('cv'),g=cv.getContext('2d');
+let D=null;                                   // latest snapshot
+const hash=(x,y)=>{let h=(x*374761393+y*668265263)^(x*y*2246822519);h=(h^(h>>13))*1274126177;return ((h^(h>>16))>>>0)/4294967296};
+const uhash=s=>{let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0)/4294967296};
+// fixed resource grounds villagers work near — decorative anchors, not state
+const GROUNDS={food:{x:3.5,y:4},wood:{x:20,y:3},gold:{x:20,y:12.5}};
+function drawBuilding(kind,px,py,T){
+  const s=T*0.62,x=px-s/2,y=py-s/2;
+  if(kind==='house'){g.fillStyle='#8b5a2b';g.fillRect(x,y+s*0.35,s,s*0.65);
+    g.fillStyle='#5a3a1a';g.beginPath();g.moveTo(x-s*0.1,y+s*0.4);g.lineTo(px,y-s*0.15);g.lineTo(x+s*1.1,y+s*0.4);g.fill();}
+  else if(kind==='mill'){g.fillStyle='#c9b98f';g.fillRect(x+s*0.25,y+s*0.3,s*0.5,s*0.7);
+    g.strokeStyle='#f0e6d2';g.lineWidth=2;const a=performance.now()/900;
+    for(let i=0;i<4;i++){g.beginPath();g.moveTo(px,y+s*0.3);
+      g.lineTo(px+Math.cos(a+i*Math.PI/2)*s*0.55,y+s*0.3+Math.sin(a+i*Math.PI/2)*s*0.55);g.stroke();}}
+  else if(kind==='lumber_camp'){g.fillStyle='#5a8a3a';g.fillRect(x,y+s*0.5,s,s*0.5);
+    g.fillStyle='#b5793a';for(let i=0;i<3;i++){g.beginPath();g.arc(x+s*(0.25+i*0.25),y+s*0.35,s*0.14,0,7);g.fill();}}
+  else if(kind==='mining_camp'){g.fillStyle='#3a2c18';g.fillRect(x,y+s*0.25,s,s*0.75);
+    g.fillStyle='#e0b23a';g.beginPath();g.arc(px,y+s*0.62,s*0.16,0,7);g.fill();}
+  else if(kind==='wheelbarrow'){g.strokeStyle='#c9b98f';g.lineWidth=2;
+    g.beginPath();g.arc(px-s*0.2,py+s*0.25,s*0.2,0,7);g.stroke();
+    g.beginPath();g.moveTo(px-s*0.2,py+s*0.05);g.lineTo(px+s*0.45,py-s*0.25);g.stroke();}
+  else{g.fillStyle='#8ab4ff';g.beginPath();g.moveTo(px,y);g.lineTo(x+s,py);g.lineTo(px,y+s);g.lineTo(x,py);g.fill();}
+}
+function draw(){
+  requestAnimationFrame(draw);
+  if(!D||!D.map)return;
+  const m=D.map,W=m.w,H=m.h;
+  const cssW=cv.parentElement.clientWidth,T=cssW/W,cssH=T*H,dpr=window.devicePixelRatio||1;
+  if(cv.width!==Math.round(cssW*dpr)){cv.width=Math.round(cssW*dpr);cv.height=Math.round(cssH*dpr);}
+  cv.style.height=cssH+'px';
+  g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,cssW,cssH);
+  const t=performance.now()/1000;
+  for(let x=0;x<W;x++)for(let y=0;y<H;y++){          // terrain
+    const h=hash(x,y);
+    g.fillStyle=h<0.5?'#171107':'#1a130a';
+    g.fillRect(x*T,y*T,T,T);
+    if(h>0.87){g.fillStyle='#20180c';g.fillRect(x*T+T*0.3,y*T+T*0.55,T*0.12,T*0.12);} // tufts
+  }
+  g.strokeStyle='rgba(58,44,24,.45)';g.lineWidth=1;   // grid
+  for(let x=0;x<=W;x++){g.beginPath();g.moveTo(x*T,0);g.lineTo(x*T,cssH);g.stroke();}
+  for(let y=0;y<=H;y++){g.beginPath();g.moveTo(0,y*T);g.lineTo(cssW,y*T);g.stroke();}
+  // resource grounds (decorative): berries, forest, gold seam — golden-angle scatter
+  const scatter=(a,i)=>{const rad=0.45+(i%3)*0.55,ang=i*2.39996+uhash(a.x+':'+i)*0.8;
+    return [(a.x+Math.cos(ang)*rad)*T,(a.y+Math.sin(ang)*rad*0.8)*T]};
+  for(let i=0;i<5;i++){const [bx,by]=scatter(GROUNDS.food,i);
+    g.fillStyle='#a03a3a';g.beginPath();g.arc(bx,by,T*0.13,0,7);g.fill();}
+  for(let i=0;i<8;i++){const [tx2,ty2]=scatter(GROUNDS.wood,i);
+    g.fillStyle='#2c4a1c';g.beginPath();g.moveTo(tx2,ty2-T*0.32);g.lineTo(tx2+T*0.2,ty2+T*0.16);g.lineTo(tx2-T*0.2,ty2+T*0.16);g.fill();
+    g.fillStyle='#4a331a';g.fillRect(tx2-T*0.04,ty2+T*0.16,T*0.08,T*0.12);}
+  for(let i=0;i<4;i++){const [gx,gy]=scatter(GROUNDS.gold,i);
+    g.fillStyle='#e0b23a';g.beginPath();g.moveTo(gx,gy-T*0.14);g.lineTo(gx+T*0.14,gy);g.lineTo(gx,gy+T*0.14);g.lineTo(gx-T*0.14,gy);g.fill();}
+  // town centre
+  const tc=m.town,tx=(tc[0]+0.5)*T,ty=(tc[1]+0.5)*T;
+  g.fillStyle='#241a05';g.fillRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
+  g.strokeStyle='#e0b23a';g.lineWidth=2;g.strokeRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
+  g.fillStyle='#e0b23a';g.font=`${Math.max(9,T*0.32)}px ui-monospace,Menlo,monospace`;
+  g.textAlign='center';g.fillText('TOWN',tx,ty+T*0.1);
+  // placements — one tile per built development, condition shown when worn
+  for(const p of m.placements){
+    const px=(p.x+0.5)*T,py=(p.y+0.5)*T;
+    drawBuilding(p.name,px,py,T);
+    if(p.condition<100){
+      g.fillStyle='#0e0a05';g.fillRect(px-T*0.35,py+T*0.36,T*0.7,T*0.1);
+      g.fillStyle=p.condition>50?'#22c55e':'#ef4444';
+      g.fillRect(px-T*0.35,py+T*0.36,T*0.7*p.condition/100,T*0.1);}
+  }
+  // agents: villagers drift around the ground they work; the herald holds the town
+  const afield={};
+  for(const a of (D.agents||[])){
+    const res=(a.task||'').split(' ')[1]||'food';
+    if(a.role==='herald'){
+      const hx=tx+T*1.1,hy=ty;
+      g.fillStyle='#e0b23a';g.beginPath();g.arc(hx,hy,T*0.16,0,7);g.fill();
+      if(a.pending){g.strokeStyle='#f59e0b';g.lineWidth=2;
+        g.beginPath();g.arc(hx,hy,T*(0.26+0.08*Math.sin(t*4)),0,7);g.stroke();}
+      g.fillStyle='#b09a72';g.font=`${Math.max(8,T*0.24)}px ui-monospace,Menlo,monospace`;
+      g.fillText(a.uid,hx,hy+T*0.55);continue;}
+    const gr=GROUNDS[res]||GROUNDS.food,r=uhash(a.uid),
+      k=(afield[res]=(afield[res]||0)+1),
+      wob=a.status==='running'?0.35:0.05,ang=k*2.39996+r*0.9,rad=0.9+((k*0.37+r)%1)*1.3,
+      vx=(gr.x+Math.cos(ang+t*wob)*rad)*T,vy=(gr.y+Math.sin(ang+t*wob)*rad*0.8)*T,
+      col=res==='food'?'#e05a5a':res==='wood'?'#b5793a':'#e0b23a';
+    if(a.status==='running'){g.fillStyle=col;g.beginPath();g.arc(vx,vy,T*0.14,0,7);g.fill();}
+    else{g.strokeStyle=col;g.lineWidth=2;g.beginPath();g.arc(vx,vy,T*0.13,0,7);g.stroke();}
+    g.fillStyle='#b09a72';g.textAlign='center';
+    g.font=`${Math.max(8,T*0.24)}px ui-monospace,Menlo,monospace`;
+    g.fillText(a.uid,vx,vy+T*0.5);
+  }
+}
+async function load(){
+  try{D=await (await fetch('/api/state')).json()}catch(e){return}
+  document.getElementById('age').textContent=D.world.age+' · turn '+D.turn;
+  document.getElementById('meta').innerHTML=
+    `<span>food <b class=f>${D.world.food.toLocaleString()}</b></span>`+
+    `<span>wood <b class=w>${D.world.wood.toLocaleString()}</b></span>`+
+    `<span>gold <b class=g>${D.world.gold.toLocaleString()}</b></span>`+
+    `<span>pop cap <b>${D.world.pop_cap}</b></span>`;
+  document.getElementById('mapcount').textContent=
+    `${D.map.placements.length} placed · ${(D.agents||[]).length} agents afield`;
+}
+load();setInterval(load,2000);requestAnimationFrame(draw);
 </script>
 </html>"""
 

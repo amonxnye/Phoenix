@@ -115,6 +115,11 @@ def _world_init(c: sqlite3.Connection) -> None:
     # and scales its effect. Lives with the world — a new world starts fresh.
     c.execute("CREATE TABLE IF NOT EXISTS conditions("
               "name TEXT PRIMARY KEY, condition INT DEFAULT 100)")
+    # Every built thing has a PLACE: one tile per built instance, assigned at build
+    # time, spiralling out from the town centre. The map is a projection of world
+    # state — it never gates or blocks the economy.
+    c.execute("CREATE TABLE IF NOT EXISTS placements("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, x INT, y INT)")
     c.commit()
 
 
@@ -337,6 +342,7 @@ def build_development(name: str) -> tuple[bool, str]:
         c.execute("UPDATE custom_devs SET built=built+1 WHERE name=?", (name,))
         c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
                   "ON CONFLICT(name) DO UPDATE SET condition=100", (name,))
+        _place(c, name)
         c.commit()
         return True, f"built {name} ({_custom_effect_text(d)})"
     finally:
@@ -371,8 +377,77 @@ def build_structure(kind: str) -> tuple[bool, str]:
         c.execute(f"UPDATE world SET {sets}, {bump} WHERE id=1")
         c.execute("INSERT INTO conditions(name, condition) VALUES(?, 100) "
                   "ON CONFLICT(name) DO UPDATE SET condition=100", (kind,))
+        _place(c, kind)
         c.commit()
         return True, f"built {kind} ({STRUCTURES[kind]['effect']})"
+    finally:
+        c.close()
+
+
+# ── the map — every built thing has a place (a projection, never a gate) ─────
+
+MAP_W, MAP_H = 24, 16
+TOWN_CENTER = (MAP_W // 2, MAP_H // 2)
+
+
+def _spiral(limit: int = 4 * MAP_W * MAP_H):
+    """Square-spiral offsets out from (0,0): the town grows ring by ring."""
+    x, y, dx, dy = 0, 0, 0, -1
+    for _ in range(limit):
+        yield x, y
+        if x == y or (x < 0 and x == -y) or (x > 0 and x == 1 - y):
+            dx, dy = -dy, dx
+        x, y = x + dx, y + dy
+
+
+def _next_tile(c: sqlite3.Connection) -> tuple[int, int] | None:
+    """First free tile spiralling out from the town centre. None when the map is
+    full — the build still succeeds (the map projects, it never blocks)."""
+    taken = {TOWN_CENTER} | set(c.execute("SELECT x, y FROM placements").fetchall())
+    cx, cy = TOWN_CENTER
+    for ox, oy in _spiral():
+        x, y = cx + ox, cy + oy
+        if 0 <= x < MAP_W and 0 <= y < MAP_H and (x, y) not in taken:
+            return x, y
+    return None
+
+
+def _place(c: sqlite3.Connection, name: str) -> tuple[int, int] | None:
+    t = _next_tile(c)
+    if t:
+        c.execute("INSERT INTO placements(name, x, y) VALUES(?,?,?)", (name, t[0], t[1]))
+    return t
+
+
+def _sync_placements(c: sqlite3.Connection) -> None:
+    """Reconcile placements with what is actually built. Backfills tiles for worlds
+    that predate the map, and drops the newest tiles for anything no longer built
+    (a demolition, a world reset) — counts in the world table stay the oracle."""
+    counts = {d["name"]: d["built"] for d in dev_catalog() if d["built"]}
+    have = dict(c.execute("SELECT name, COUNT(*) FROM placements GROUP BY name").fetchall())
+    for name, n in have.items():
+        extra = n - counts.get(name, 0)
+        if extra > 0:
+            c.execute("DELETE FROM placements WHERE id IN ("
+                      "SELECT id FROM placements WHERE name=? ORDER BY id DESC LIMIT ?)",
+                      (name, extra))
+    for name, n in counts.items():
+        for _ in range(n - have.get(name, 0)):
+            _place(c, name)
+    c.commit()
+
+
+def map_state() -> dict:
+    """The settlement as a place: grid size, the town centre, and one tile per built
+    development with its live condition. Read-only from the economy's point of view."""
+    c = _conn()
+    try:
+        _sync_placements(c)
+        cond = conditions()
+        rows = c.execute("SELECT name, x, y FROM placements ORDER BY id").fetchall()
+        return {"w": MAP_W, "h": MAP_H, "town": list(TOWN_CENTER),
+                "placements": [{"name": n, "x": x, "y": y,
+                                "condition": cond.get(n, 100)} for n, x, y in rows]}
     finally:
         c.close()
 
