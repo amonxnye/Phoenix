@@ -120,6 +120,12 @@ def _world_init(c: sqlite3.Connection) -> None:
     # state — it never gates or blocks the economy.
     c.execute("CREATE TABLE IF NOT EXISTS placements("
               "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, x INT, y INT)")
+    # The land itself: one class per tile (forest, berries, gold seam, water), with a
+    # STOCK that gathering wears down. Generated once, deterministically — the same
+    # world founds the same land every time.
+    c.execute("CREATE TABLE IF NOT EXISTS terrain("
+              "x INT, y INT, cls TEXT, stock INT, PRIMARY KEY(x, y))")
+    _terrain_init(c)
     c.commit()
 
 
@@ -163,6 +169,11 @@ def effective_yield(resource: str, w: dict | None = None) -> int:
     near = proximity_camps(resource)
     if near:
         y *= 1 + (PROXIMITY_PCT / 100) * near
+    # The land pays too — and wears out: every live terrain tile the camps work
+    # adds its cut, and gathering depletes those same tiles (terrain_deplete).
+    tb = terrain_bonus_tiles(resource)
+    if tb:
+        y *= 1 + (TERRAIN_PCT / 100) * tb
     return int(y)
 
 
@@ -401,6 +412,127 @@ GROUNDS = {"food": (3, 4), "wood": (20, 3), "gold": (20, 12)}
 PROXIMITY_RADIUS = 3
 PROXIMITY_PCT = 15
 
+# ── terrain — the land feeds the economy, and wears out ──────────────────────
+# Around each ground the land carries its resource: forest, berry bushes, a gold
+# seam. A camp works every LIVE tile of its class within TERRAIN_RADIUS: each adds
+# TERRAIN_PCT% to that yield. Gathering depletes the worked tiles' stock — worked-out
+# land pays nothing until (a future) regrowth, so the land is a wasting asset.
+TERRAIN_KIND = {"food": "berries", "wood": "forest", "gold": "gold_seam"}
+TERRAIN_SPREAD = 3       # how far a ground's class scatters around it
+TERRAIN_RADIUS = 2       # how far a camp reaches to work live tiles
+TERRAIN_PCT = 3          # yield % per live tile a camp works
+TERRAIN_STOCK = 100      # a fresh tile's stock; gathering wears it down
+WATER = {(7, 12), (8, 12), (7, 13), (8, 13)}    # the pond — never built on
+
+# Paint registry — how each development kind renders on the canvas, served to the
+# client in map_state() so new kinds never need client changes. layer orders the
+# paint (terrain 0 → grounds 1 → buildings 2); shape names a client-side sprite.
+RENDER = {
+    "house":       {"shape": "house", "color": "#8b5a2b", "layer": 2},
+    "mill":        {"shape": "mill",  "color": "#c9b98f", "layer": 2},
+    "lumber_camp": {"shape": "camp",  "color": "#5a8a3a", "accent": "#b5793a", "layer": 2},
+    "mining_camp": {"shape": "camp",  "color": "#3a2c18", "accent": "#e0b23a", "layer": 2},
+    "wheelbarrow": {"shape": "tech",  "color": "#c9b98f", "layer": 2},
+}
+RES_COLOR = {"food": "#e05a5a", "wood": "#b5793a", "gold": "#e0b23a"}
+
+
+def render_registry() -> dict:
+    """RENDER plus an entry for every adopted custom development (diamond, coloured
+    by the resource it boosts) — the client draws only what this registry names.
+    Each entry carries the development's rank (grander works draw bigger) and its
+    effect text (the hover tooltip), so the client never needs its own catalog."""
+    cat = {d["name"]: d for d in dev_catalog()}
+    reg = {}
+    for name, spec in RENDER.items():
+        e = dict(spec)
+        if name in cat:
+            e["rank"], e["effect"] = cat[name]["rank"], cat[name]["effect"]
+        reg[name] = e
+    for d in custom_devs():
+        if d["name"] in reg:
+            continue
+        reg[d["name"]] = {
+            "shape": "diamond", "layer": 2,
+            "rank": d["rank"], "effect": _custom_effect_text(d),
+            "color": RES_COLOR.get(d["resource"], "#8ab4ff")
+            if d["kind"] == "yield_pct" else "#8ab4ff"}
+    return reg
+
+
+def _thash(x: int, y: int) -> float:
+    """Deterministic per-tile hash in [0,1) — the land's one and only seed."""
+    h = (x * 374761393 + y * 668265263) ^ (x * y * 2246822519 + 1)
+    h = (h ^ (h >> 13)) * 1274126177
+    return ((h ^ (h >> 16)) & 0xFFFFFFFF) / 4294967296
+
+
+def _terrain_init(c: sqlite3.Connection) -> None:
+    """Found the land once: water, then each resource's class scattered around its
+    ground by the tile hash. Pure function of the constants — every fresh world (and
+    every re-init after a wipe) lays the exact same land."""
+    if c.execute("SELECT COUNT(*) FROM terrain").fetchone()[0]:
+        return
+    tiles = {(x, y): ("water", 0) for x, y in WATER}
+    for res, (gx, gy) in GROUNDS.items():
+        for dx in range(-TERRAIN_SPREAD, TERRAIN_SPREAD + 1):
+            for dy in range(-TERRAIN_SPREAD, TERRAIN_SPREAD + 1):
+                x, y = gx + dx, gy + dy
+                if not (0 <= x < MAP_W and 0 <= y < MAP_H):
+                    continue
+                if (x, y) in tiles or (x, y) == TOWN_CENTER:
+                    continue
+                if _thash(x, y) > 0.45:
+                    tiles[(x, y)] = (TERRAIN_KIND[res], TERRAIN_STOCK)
+    c.executemany("INSERT INTO terrain(x, y, cls, stock) VALUES(?,?,?,?)",
+                  [(x, y, cls, st) for (x, y), (cls, st) in tiles.items()])
+
+
+def terrain() -> list[dict]:
+    c = _conn()
+    try:
+        return [{"x": x, "y": y, "cls": cls, "stock": st} for x, y, cls, st in
+                c.execute("SELECT x, y, cls, stock FROM terrain ORDER BY x, y")]
+    finally:
+        c.close()
+
+
+def _worked_tiles(resource: str) -> list[tuple[int, int, int]]:
+    """The live tiles of this resource's class within TERRAIN_RADIUS of any of its
+    camps — the land the settlement is actually working. [(x, y, stock), ...]"""
+    c = _conn()
+    try:
+        camps = c.execute("SELECT x, y FROM placements WHERE name=?",
+                          (CAMP_FOR[resource],)).fetchall()
+        if not camps:
+            return []
+        rows = c.execute("SELECT x, y, stock FROM terrain WHERE cls=? AND stock>0",
+                         (TERRAIN_KIND[resource],)).fetchall()
+    finally:
+        c.close()
+    return [(x, y, st) for x, y, st in rows
+            if any(max(abs(x - cx), abs(y - cy)) <= TERRAIN_RADIUS for cx, cy in camps)]
+
+
+def terrain_bonus_tiles(resource: str) -> int:
+    return len(_worked_tiles(resource))
+
+
+def terrain_deplete(resource: str, amount: int = 1) -> None:
+    """Gathering wears the land: take `amount` stock off the richest tile the camps
+    are working. No camp, no worked land — nothing depletes."""
+    worked = _worked_tiles(resource)
+    if not worked:
+        return
+    x, y, _ = max(worked, key=lambda t: t[2])
+    c = _conn()
+    try:
+        c.execute("UPDATE terrain SET stock=MAX(0, stock-?) WHERE x=? AND y=?",
+                  (amount, x, y))
+        c.commit()
+    finally:
+        c.close()
+
 
 def _ground_for(name: str) -> tuple[int, int] | None:
     """The ground a development wants to sit near: camps and custom yield
@@ -428,7 +560,7 @@ def _next_tile(c: sqlite3.Connection, near: tuple[int, int] | None = None) -> tu
     """First free tile spiralling out from `near` (default: the town centre). The
     town centre and the resource grounds are never built on. None when the map is
     full — the build still succeeds (a missing tile never blocks the economy)."""
-    taken = ({TOWN_CENTER} | set(GROUNDS.values())
+    taken = ({TOWN_CENTER} | set(GROUNDS.values()) | WATER
              | set(c.execute("SELECT x, y FROM placements").fetchall()))
     cx, cy = near or TOWN_CENTER
     for ox, oy in _spiral():
@@ -485,17 +617,21 @@ def map_state() -> dict:
     try:
         _sync_placements(c)
         cond = conditions()
-        rows = c.execute("SELECT name, x, y FROM placements ORDER BY id").fetchall()
+        rows = c.execute("SELECT id, name, x, y FROM placements ORDER BY id").fetchall()
         out = []
-        for n, x, y in rows:
+        for pid, n, x, y in rows:
             res = camp_res.get(n)
             gx, gy = GROUNDS.get(res, (None, None)) if res else (None, None)
-            out.append({"name": n, "x": x, "y": y, "condition": cond.get(n, 100),
+            out.append({"id": pid, "name": n, "x": x, "y": y, "condition": cond.get(n, 100),
                         "near": bool(res) and max(abs(x - gx), abs(y - gy)) <= PROXIMITY_RADIUS})
         return {"w": MAP_W, "h": MAP_H, "town": list(TOWN_CENTER),
                 "grounds": {r: list(t) for r, t in GROUNDS.items()},
                 "proximity": {"radius": PROXIMITY_RADIUS, "pct": PROXIMITY_PCT,
                               "camps": {r: proximity_camps(r) for r in RESOURCES}},
+                "terrain": terrain(),
+                "terrain_bonus": {"pct": TERRAIN_PCT, "stock": TERRAIN_STOCK,
+                                  "tiles": {r: terrain_bonus_tiles(r) for r in RESOURCES}},
+                "registry": render_registry(),
                 "placements": out}
     finally:
         c.close()
@@ -536,6 +672,7 @@ def gather(state: Unit) -> dict:
     time.sleep(0.02)
     got = effective_yield(state["resource"])
     _world_add(state["resource"], got)
+    terrain_deplete(state["resource"])       # working the land wears the land
     return {"steps": state["steps"] + 1, "tokens": state["tokens"] + 3000,
             "log": [f"gathered {got} {state['resource']} (round {state['steps'] + 1})"]}
 
