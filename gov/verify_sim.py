@@ -826,6 +826,91 @@ check("heard can never exceed addressed",
 check("addressed and broadcast are counted separately, never conflated",
       _ct["broadcast"] > 0 and _ct["addressed"] > 0,
       f"{_ct['addressed']} addressed, {_ct['broadcast']} broadcast")
+print("\n17. The map — every built thing has a place (the canvas projection)")
+S._world_add("wood", 1_000)
+before = len(S.map_state()["placements"])
+ok_h, _ = S.build_structure("house")
+ok_m2, _ = S.build_structure("mill")
+m = S.map_state()
+check("building assigns a tile on the map",
+      ok_h and ok_m2 and len(m["placements"]) == before + 2,
+      f"{len(m['placements'])} placements")
+tiles = [(p["x"], p["y"]) for p in m["placements"]]
+check("every placement is a unique in-bounds tile, never the town centre",
+      len(set(tiles)) == len(tiles)
+      and all(0 <= x < S.MAP_W and 0 <= y < S.MAP_H for x, y in tiles)
+      and tuple(S.TOWN_CENTER) not in tiles)
+placed = {}
+for p in m["placements"]:
+    placed[p["name"]] = placed.get(p["name"], 0) + 1
+built_counts = {d["name"]: d["built"] for d in S.dev_catalog() if d["built"]}
+check("the map mirrors the world's built counts (counts stay the oracle)",
+      placed == built_counts, f"{placed}")
+_c = S._conn()
+_c.execute("DELETE FROM placements")
+_c.commit()
+_c.close()
+m2 = S.map_state()
+check("a world that predates the map backfills placements from built counts",
+      len(m2["placements"]) == sum(built_counts.values())
+      and {p["name"] for p in m2["placements"]} == set(built_counts))
+
+print("\n18. Proximity — place matters: a camp on its ground's ring yields more")
+mill_tile = next(p for p in m2["placements"] if p["name"] == "mill")
+gfx, gfy = S.GROUNDS["food"]
+check("a camp seeks the ring around its resource ground",
+      max(abs(mill_tile["x"] - gfx), abs(mill_tile["y"] - gfy)) <= S.PROXIMITY_RADIUS
+      and mill_tile["near"], f"mill at ({mill_tile['x']},{mill_tile['y']}), ground ({gfx},{gfy})")
+house_tile = next(p for p in m2["placements"] if p["name"] == "house")
+tcx, tcy = S.TOWN_CENTER
+check("everything else grows from the town centre",
+      max(abs(house_tile["x"] - tcx), abs(house_tile["y"] - tcy)) <= 2,
+      f"house at ({house_tile['x']},{house_tile['y']})")
+y_near = S.effective_yield("food")
+exp = S.BASE["food"] * (1 + 0.5)
+exp *= 1 + S.PROXIMITY_PCT / 100
+tbf = S.terrain_bonus_tiles("food")
+exp *= 1 + S.TERRAIN_PCT / 100 * tbf
+check("the proximate camp pays its bonus on the yield",
+      y_near == int(exp),
+      f"yield {y_near} (mill 1.5x · ring +{S.PROXIMITY_PCT}% · {tbf} live berry tiles)")
+taken_tiles = {(p["x"], p["y"]) for p in m2["placements"]}
+check("grounds and the town centre are never built on",
+      not (taken_tiles & ({tuple(S.TOWN_CENTER)} | set(S.GROUNDS.values()))))
+
+print("\n19. The land — deterministic terrain that feeds, and wears out under, the economy")
+t0 = S.terrain()
+_c = S._conn()
+_c.execute("DELETE FROM terrain")
+S._terrain_init(_c)
+_c.commit()
+_c.close()
+check("the land is founded deterministically (same seed, same world)",
+      S.terrain() == t0 and len(t0) > 10, f"{len(t0)} tiles")
+check("every ground grows its class nearby, and the pond exists",
+      all(any(tl["cls"] == S.TERRAIN_KIND[r] for tl in t0) for r in S.RESOURCES)
+      and any(tl["cls"] == "water" for tl in t0))
+S._world_add("wood", 500)
+ok_lc, _ = S.build_structure("lumber_camp")
+tbw = S.terrain_bonus_tiles("wood")
+y_wood = S.effective_yield("wood")
+exp_w = S.BASE["wood"] * (1 + 0.5)
+exp_w *= 1 + S.PROXIMITY_PCT / 100
+exp_w *= 1 + S.TERRAIN_PCT / 100 * tbw
+check("a camp works the live tiles around it into the yield",
+      ok_lc and tbw > 0 and y_wood == int(exp_w),
+      f"{tbw} live forest tiles → wood yield {y_wood}")
+S.terrain_deplete("wood", amount=S.TERRAIN_STOCK)        # work one tile to nothing
+check("worked-out land stops paying",
+      S.terrain_bonus_tiles("wood") == tbw - 1 and S.effective_yield("wood") < y_wood,
+      f"yield {y_wood} → {S.effective_yield('wood')}")
+_reg = S.render_registry()
+_built_kinds = {d["name"] for d in S.dev_catalog() if d["built"]}
+check("the paint registry covers everything built, with rank and effect",
+      _built_kinds <= set(_reg)
+      and all("rank" in _reg[n] and _reg[n].get("effect") for n in _built_kinds))
+check("water is never built on",
+      not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

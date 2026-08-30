@@ -1744,6 +1744,7 @@ def _snapshot_build(now: float) -> dict:
             },
             "world": sim.world(),
             "structures": sim.structures(),
+            "map": sim.map_state(),
             "buildable": list(sim.STRUCTURES.keys()),
             "dev_catalog": sim.dev_catalog(),
             "dev_total_built": sum(d["built"] for d in sim.dev_catalog()),
@@ -1904,6 +1905,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/network":
             self._count_view()
             return self._send(200, NETWORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/map":
+            self._count_view()
+            return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
@@ -2497,6 +2501,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
   </div>
   <div class=vmeta id=vmeta></div>
   <div class=ops>
+    <a class=navlink href="/map">World Map &rarr;</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -3910,6 +3915,266 @@ async function tick(){
     : '<div class=empty>Nothing addressed yet.</div>';
 }
 tick(); setInterval(tick,4000);
+</script>
+</html>""")
+
+
+MAP_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>World Map — the settlement</title>
+<style>
+/*TOKENS*/
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:linear-gradient(180deg,#241a0f,#1c150d)}
+h1{font-size:15px;margin:0;letter-spacing:1px}
+a{color:var(--gold);text-decoration:none}
+.age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
+.meta{color:var(--dim);font-size:12px;margin-left:auto;display:flex;gap:14px;flex-wrap:wrap}
+.meta b.f{color:var(--food)}.meta b.w{color:var(--wood)}.meta b.g{color:var(--gold)}
+main{max-width:1150px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+canvas{display:block;width:100%;height:auto}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+.legend span{display:inline-flex;gap:6px;align-items:center}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+.foot{color:var(--dim);font-size:11px;text-align:center;padding:12px}
+</style>
+<header><h1>&#9670; WORLD MAP</h1>
+  <span class=age id=age>&mdash;</span>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  <span class=meta id=meta></span></header>
+<main>
+  <div class=card>
+    <canvas id=cv></canvas>
+    <div class=legend>
+      <span><i class=sw style="background:#8b5a2b"></i>house</span>
+      <span><i class=sw style="background:#c9b98f"></i>mill</span>
+      <span><i class=sw style="background:#5a8a3a"></i>lumber camp</span>
+      <span><i class=sw style="background:#e0b23a"></i>mining camp</span>
+      <span><i class=sw style="background:#8ab4ff"></i>adopted development</span>
+      <span><i class=sw style="background:#e05a5a;border-radius:50%"></i>villager (colour = resource)</span>
+      <span><i class=sw style="background:#e0b23a;border-radius:50%"></i>herald</span>
+      <span><i class=sw style="border:1.5px dashed #5a8a3a;background:none;border-radius:50%"></i>proximity ring — camps inside earn +yield</span>
+      <span id=mapcount style="margin-left:auto"></span>
+    </div>
+  </div>
+  <div class=foot>Placements are assigned at build time and live in the same database as the economy.
+  <b>Place matters</b>: a camp inside the dashed ring around its resource ground works it directly
+  and adds to that yield — the ring is finite, so late camps land outside it and earn nothing extra.
+  <b>The land wears out</b>: forest, berries and the gold seam are stock the camps work down —
+  worked-out tiles fade and pay nothing. A full map never blocks a build.</div>
+</main>
+<script>
+const cv=document.getElementById('cv'),g=cv.getContext('2d');
+let D=null,mouse=null;                        // latest snapshot, hover position
+cv.addEventListener('mousemove',ev=>{const r=cv.getBoundingClientRect();
+  mouse={x:ev.clientX-r.left,y:ev.clientY-r.top}});
+cv.addEventListener('mouseleave',()=>{mouse=null});
+const hash=(x,y)=>{let h=(x*374761393+y*668265263)^(x*y*2246822519);h=(h^(h>>13))*1274126177;return ((h^(h>>16))>>>0)/4294967296};
+const uhash=s=>{let h=2166136261;for(const ch of String(s)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0)/4294967296};
+// resource grounds come from world state (sim.GROUNDS); fallback for old snapshots
+let GROUNDS={food:{x:3.5,y:4.5},wood:{x:20.5,y:3.5},gold:{x:20.5,y:12.5}};
+// entity-seeded PRNG: every placement draws with variety seeded by its DB id, so
+// the same building renders identically on every run and every viewer's screen
+const srand=seed=>{let a=(seed*2654435761)>>>0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296}};
+const shade=(hex,d)=>{const n=parseInt(hex.slice(1),16),r=Math.min(255,Math.max(0,(n>>16)+d)),
+  gg=Math.min(255,Math.max(0,((n>>8)&255)+d)),b=Math.min(255,Math.max(0,(n&255)+d));
+  return `rgb(${r},${gg},${b})`};
+// registry-driven sprites: the server names shape/color/layer/rank per kind
+// (m.registry). Grander works (higher rank) draw bigger; worn assets fade; every
+// building sits on a ground shadow with a dark outline so it reads against terrain.
+const OUTLINE='rgba(10,7,3,.75)';
+function outlineRect(x,y,w,h,col){g.fillStyle=col;g.fillRect(x,y,w,h);
+  g.strokeStyle=OUTLINE;g.lineWidth=1;g.strokeRect(x+0.5,y+0.5,w-1,h-1);}
+function outlinePath(col){g.fillStyle=col;g.fill();
+  g.strokeStyle=OUTLINE;g.lineWidth=1;g.stroke();}
+function drawBuilding(p,reg,T){
+  const e=(reg&&reg[p.name])||{shape:'diamond',color:'#8ab4ff'};
+  const R=srand((p.id||1)+7),v=R(),v2=R(),v3=R(),
+    px=(p.x+0.5)*T,py=(p.y+0.5)*T,rk=Math.min(4,e.rank||2),
+    s=T*(0.58+0.07*rk+v*0.08),x=px-s/2,y=py-s/2,
+    col=shade(e.color,Math.round((v2-0.5)*36)),
+    worn=Math.max(0.45,(p.condition==null?100:p.condition)/100);
+  g.fillStyle='rgba(0,0,0,.35)';g.beginPath();               // ground shadow
+  g.ellipse(px,py+s*0.44,s*0.55,s*0.15,0,0,7);g.fill();
+  g.globalAlpha=worn;
+  if(e.shape==='house'){
+    outlineRect(x,y+s*0.35,s,s*0.62,col);
+    g.beginPath();                                            // two roof lines
+    if(v2>0.5){g.moveTo(x-s*0.1,y+s*0.4);g.lineTo(px,y-s*0.12);g.lineTo(x+s*1.1,y+s*0.4);}
+    else{g.moveTo(x-s*0.08,y+s*0.42);g.lineTo(x+s*0.35,y+s*0.04);g.lineTo(x+s*1.08,y+s*0.42);}
+    g.closePath();outlinePath(shade('#5a3a1a',Math.round((v-0.5)*28)));
+    outlineRect(px-s*0.12+((v3-0.5)*s*0.3),y+s*0.62,s*0.24,s*0.35,'#2a1a0c'); // door
+    g.fillStyle='#e0b23a';g.fillRect(x+s*(v3>0.5?0.14:0.66),y+s*0.48,s*0.13,s*0.13);} // lit window
+  else if(e.shape==='mill'){
+    g.beginPath();g.moveTo(x+s*0.18,y+s*1.0);g.lineTo(x+s*0.3,y+s*0.22); // tapered tower
+    g.lineTo(x+s*0.7,y+s*0.22);g.lineTo(x+s*0.82,y+s*1.0);g.closePath();outlinePath(col);
+    g.beginPath();g.moveTo(x+s*0.24,y+s*0.24);g.lineTo(px,y-s*0.02);     // cap
+    g.lineTo(x+s*0.76,y+s*0.24);g.closePath();outlinePath('#5a3a1a');
+    outlineRect(px-s*0.1,y+s*0.72,s*0.2,s*0.28,'#2a1a0c');               // door
+    g.strokeStyle='#f0e6d2';g.lineWidth=Math.max(1.5,T*0.045);
+    const a=performance.now()/(800+v*400)+v2*6;                          // blades
+    for(let i=0;i<4;i++){g.beginPath();g.moveTo(px,y+s*0.2);
+      g.lineTo(px+Math.cos(a+i*Math.PI/2)*s*0.5,y+s*0.2+Math.sin(a+i*Math.PI/2)*s*0.5);g.stroke();}
+    g.fillStyle='#f0e6d2';g.beginPath();g.arc(px,y+s*0.2,s*0.06,0,7);g.fill();}
+  else if(e.shape==='camp'){
+    outlineRect(x,y+s*0.45,s,s*0.5,col);                                 // hut
+    g.beginPath();g.moveTo(x-s*0.06,y+s*0.5);g.lineTo(px,y+s*0.12);      // roof
+    g.lineTo(x+s*1.06,y+s*0.5);g.closePath();outlinePath('#4a331a');
+    g.fillStyle=e.accent||'#b5793a';const n=2+Math.floor(v*3);           // stock pile
+    for(let i=0;i<n;i++){g.beginPath();
+      g.arc(x+s*(0.2+(n>1?i*0.6/(n-1):0.3)),y+s*1.0,s*0.11,0,7);g.fill();
+      g.strokeStyle=OUTLINE;g.lineWidth=1;g.stroke();}}
+  else if(e.shape==='tech'){
+    g.fillStyle='rgba(36,26,5,.9)';g.beginPath();                        // badge chip
+    g.arc(px,py,s*0.42,0,7);g.fill();
+    g.strokeStyle='#e0b23a';g.lineWidth=1;g.stroke();
+    g.strokeStyle=col;g.lineWidth=Math.max(1.5,T*0.04);
+    g.beginPath();g.arc(px-s*0.12,py+s*0.14,s*0.15,0,7);g.stroke();      // wheel
+    g.beginPath();g.moveTo(px-s*0.12,py-s*0.02);g.lineTo(px+s*0.3,py-s*0.2);g.stroke();}
+  else{const d=s*(0.4+v*0.14);                                           // gem
+    g.beginPath();g.moveTo(px,py-d);g.lineTo(px+d,py);g.lineTo(px,py+d);
+    g.lineTo(px-d,py);g.closePath();outlinePath(e.color);
+    g.beginPath();g.moveTo(px,py-d);g.lineTo(px+d*0.5,py-d*0.35);        // top facet
+    g.lineTo(px-d*0.5,py-d*0.35);g.closePath();g.fillStyle='rgba(240,230,210,.35)';g.fill();}
+  g.globalAlpha=1;
+  g.fillStyle='rgba(176,154,114,.8)';g.textAlign='center';               // name label
+  g.font=`${Math.max(7,T*0.19)}px ui-monospace,Menlo,monospace`;
+  g.fillText(p.name.replace(/_/g,' '),px,py+s*0.78);
+}
+function draw(){
+  requestAnimationFrame(draw);
+  if(!D||!D.map)return;
+  const m=D.map,W=m.w,H=m.h;
+  const cssW=cv.parentElement.clientWidth,T=cssW/W,cssH=T*H,dpr=window.devicePixelRatio||1;
+  if(cv.width!==Math.round(cssW*dpr)){cv.width=Math.round(cssW*dpr);cv.height=Math.round(cssH*dpr);}
+  cv.style.height=cssH+'px';
+  g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,cssW,cssH);
+  const t=performance.now()/1000;
+  for(let x=0;x<W;x++)for(let y=0;y<H;y++){          // terrain
+    const h=hash(x,y);
+    g.fillStyle=h<0.5?'#171107':'#1a130a';
+    g.fillRect(x*T,y*T,T,T);
+    if(h>0.87){g.fillStyle='#20180c';g.fillRect(x*T+T*0.3,y*T+T*0.55,T*0.12,T*0.12);} // tufts
+  }
+  g.strokeStyle='rgba(58,44,24,.45)';g.lineWidth=1;   // grid
+  for(let x=0;x<=W;x++){g.beginPath();g.moveTo(x*T,0);g.lineTo(x*T,cssH);g.stroke();}
+  for(let y=0;y<=H;y++){g.beginPath();g.moveTo(0,y*T);g.lineTo(cssW,y*T);g.stroke();}
+  if(m.grounds)GROUNDS=Object.fromEntries(Object.entries(m.grounds).map(([r,[gx,gy]])=>[r,{x:gx+0.5,y:gy+0.5}]));
+  // proximity rings: camps inside a ground's ring work it directly (+yield)
+  if(m.proximity){const R=(m.proximity.radius+0.5)*T;
+    for(const [r,a] of Object.entries(GROUNDS)){
+      g.strokeStyle=r==='food'?'rgba(224,90,90,.25)':r==='wood'?'rgba(90,138,58,.3)':'rgba(224,178,58,.25)';
+      g.setLineDash([4,5]);g.lineWidth=1.5;
+      g.beginPath();g.arc(a.x*T,a.y*T,R,0,7);g.stroke();g.setLineDash([]);}}
+  // the land itself, from world state: forest, berries, gold seam, water — each
+  // tile fades as its stock is worked down (worked-out land is nearly gone)
+  const maxStock=(m.terrain_bonus&&m.terrain_bonus.stock)||100;
+  for(const tl of (m.terrain||[])){
+    const cx=(tl.x+0.5)*T,cy=(tl.y+0.5)*T,hh=hash(tl.x,tl.y),
+      life=tl.cls==='water'?1:Math.max(0.15,tl.stock/maxStock);
+    if(tl.cls==='water'){g.fillStyle='#16303a';g.fillRect(tl.x*T+1,tl.y*T+1,T-2,T-2);
+      g.strokeStyle='rgba(138,180,255,.3)';g.lineWidth=1;
+      g.beginPath();g.moveTo(cx-T*0.25,cy+Math.sin(t*1.5+tl.x*2)*2);
+      g.lineTo(cx+T*0.25,cy+Math.sin(t*1.5+tl.x*2)*2);g.stroke();continue;}
+    g.globalAlpha=life;
+    if(tl.cls==='forest'){const n=1+Math.floor(hh*3);
+      for(let i=0;i<n;i++){const tx2=cx+(hash(tl.x+i+1,tl.y)-0.5)*T*0.6,
+        ty2=cy+(hash(tl.x,tl.y+i+1)-0.5)*T*0.5;
+        g.fillStyle='#2c4a1c';g.beginPath();g.moveTo(tx2,ty2-T*0.26);
+        g.lineTo(tx2+T*0.16,ty2+T*0.12);g.lineTo(tx2-T*0.16,ty2+T*0.12);g.fill();
+        g.fillStyle='#4a331a';g.fillRect(tx2-T*0.03,ty2+T*0.12,T*0.06,T*0.1);}}
+    else if(tl.cls==='berries'){g.fillStyle='#a03a3a';
+      for(let i=0;i<2+Math.floor(hh*2);i++){g.beginPath();
+        g.arc(cx+(hash(tl.x+9+i,tl.y)-0.5)*T*0.5,cy+(hash(tl.x,tl.y+9+i)-0.5)*T*0.5,T*0.1,0,7);g.fill();}}
+    else if(tl.cls==='gold_seam'){g.fillStyle='#e0b23a';
+      const gx2=cx+(hh-0.5)*T*0.4;
+      g.beginPath();g.moveTo(gx2,cy-T*0.12);g.lineTo(gx2+T*0.12,cy);
+      g.lineTo(gx2,cy+T*0.12);g.lineTo(gx2-T*0.12,cy);g.fill();}
+    g.globalAlpha=1;
+  }
+  // town centre
+  const tc=m.town,tx=(tc[0]+0.5)*T,ty=(tc[1]+0.5)*T;
+  g.fillStyle='#241a05';g.fillRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
+  g.strokeStyle='#e0b23a';g.lineWidth=2;g.strokeRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
+  g.fillStyle='#e0b23a';g.font=`${Math.max(9,T*0.32)}px ui-monospace,Menlo,monospace`;
+  g.textAlign='center';g.fillText('TOWN',tx,ty+T*0.1);
+  // placements — one tile per built development, condition shown when worn
+  const reg=m.registry||{},
+    byLayer=[...m.placements].sort((a,b)=>((reg[a.name]||{}).layer||2)-((reg[b.name]||{}).layer||2)||a.y-b.y);
+  for(const p of byLayer){
+    const px=(p.x+0.5)*T,py=(p.y+0.5)*T;
+    drawBuilding(p,reg,T);
+    if(p.near&&m.proximity){g.fillStyle='#a8e086';g.textAlign='center';
+      g.font=`${Math.max(8,T*0.22)}px ui-monospace,Menlo,monospace`;
+      g.fillText('+'+m.proximity.pct+'%',px,py-T*0.42);}
+    if(p.condition<100){
+      g.fillStyle='#0e0a05';g.fillRect(px-T*0.35,py+T*0.36,T*0.7,T*0.1);
+      g.fillStyle=p.condition>50?'#22c55e':'#ef4444';
+      g.fillRect(px-T*0.35,py+T*0.36,T*0.7*p.condition/100,T*0.1);}
+  }
+  // agents: villagers drift around the ground they work; the herald holds the town
+  const afield={};
+  for(const a of (D.agents||[])){
+    const res=(a.task||'').split(' ')[1]||'food';
+    if(a.role==='herald'){
+      const hx=tx+T*1.1,hy=ty;
+      g.fillStyle='#e0b23a';g.beginPath();g.arc(hx,hy,T*0.16,0,7);g.fill();
+      if(a.pending){g.strokeStyle='#f59e0b';g.lineWidth=2;
+        g.beginPath();g.arc(hx,hy,T*(0.26+0.08*Math.sin(t*4)),0,7);g.stroke();}
+      g.fillStyle='#b09a72';g.font=`${Math.max(8,T*0.24)}px ui-monospace,Menlo,monospace`;
+      g.fillText(a.uid,hx,hy+T*0.55);continue;}
+    const gr=GROUNDS[res]||GROUNDS.food,r=uhash(a.uid),
+      k=(afield[res]=(afield[res]||0)+1),
+      wob=a.status==='running'?0.35:0.05,ang=k*2.39996+r*0.9,rad=0.9+((k*0.37+r)%1)*1.3,
+      vx=(gr.x+Math.cos(ang+t*wob)*rad)*T,vy=(gr.y+Math.sin(ang+t*wob)*rad*0.8)*T,
+      col=res==='food'?'#e05a5a':res==='wood'?'#b5793a':'#e0b23a';
+    if(a.status==='running'){g.fillStyle=col;g.beginPath();g.arc(vx,vy,T*0.14,0,7);g.fill();}
+    else{g.strokeStyle=col;g.lineWidth=2;g.beginPath();g.arc(vx,vy,T*0.13,0,7);g.stroke();}
+    g.fillStyle='#b09a72';g.textAlign='center';
+    g.font=`${Math.max(8,T*0.24)}px ui-monospace,Menlo,monospace`;
+    g.fillText(a.uid,vx,vy+T*0.5);
+  }
+  // hover: name the tile under the cursor — building (effect, condition, bonus)
+  // or land (class, remaining stock). All data comes from the served snapshot.
+  if(mouse){
+    const mx=Math.floor(mouse.x/T),my=Math.floor(mouse.y/T);
+    let lines=null;
+    const p=m.placements.find(q=>q.x===mx&&q.y===my);
+    if(p){const e=reg[p.name]||{};
+      lines=[p.name.replace(/_/g,' ').toUpperCase(),e.effect||''];
+      lines.push('condition '+(p.condition==null?100:p.condition)+'%');
+      if(p.near&&m.proximity)lines.push('on its ground\\u2019s ring \\u2014 +'+m.proximity.pct+'% yield');
+    }else if(mx===tc[0]&&my===tc[1]){lines=['TOWN CENTRE','where the settlement grows from'];}
+    else{const tl2=(m.terrain||[]).find(q=>q.x===mx&&q.y===my);
+      if(tl2)lines=tl2.cls==='water'?['WATER','never built on']:
+        [tl2.cls.replace(/_/g,' ').toUpperCase(),
+         tl2.stock>0?('stock '+tl2.stock+'/'+maxStock):'worked out \\u2014 pays nothing'];}
+    if(lines){lines=lines.filter(Boolean);
+      g.font=`${Math.max(9,T*0.24)}px ui-monospace,Menlo,monospace`;g.textAlign='left';
+      const pad=8,lh=Math.max(12,T*0.32),
+        w2=Math.max(...lines.map(l=>g.measureText(l).width))+pad*2,h2=lines.length*lh+pad*1.5,
+        bx=Math.min(cssW-w2-4,mouse.x+14),by=Math.max(4,mouse.y-h2-10);
+      g.fillStyle='rgba(18,13,8,.94)';g.beginPath();g.roundRect(bx,by,w2,h2,6);g.fill();
+      g.strokeStyle='#e0b23a';g.lineWidth=1;g.stroke();
+      lines.forEach((l,i)=>{g.fillStyle=i?'#b09a72':'#e0b23a';
+        g.fillText(l,bx+pad,by+pad*0.75+lh*(i+0.72));});}
+  }
+}
+async function load(){
+  try{D=await (await fetch('/api/state')).json()}catch(e){return}
+  document.getElementById('age').textContent=D.world.age+' · turn '+D.turn;
+  document.getElementById('meta').innerHTML=
+    `<span>food <b class=f>${D.world.food.toLocaleString()}</b></span>`+
+    `<span>wood <b class=w>${D.world.wood.toLocaleString()}</b></span>`+
+    `<span>gold <b class=g>${D.world.gold.toLocaleString()}</b></span>`+
+    `<span>pop cap <b>${D.world.pop_cap}</b></span>`;
+  document.getElementById('mapcount').textContent=
+    `${D.map.placements.length} placed · ${(D.agents||[]).length} agents afield`;
+}
+load();setInterval(load,2000);requestAnimationFrame(draw);
 </script>
 </html>""")
 
