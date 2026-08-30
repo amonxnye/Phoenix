@@ -65,6 +65,73 @@ def brain_name() -> str:
     return p["model"] if p else "rule-based"
 
 
+# ── the prompt budget: every input bounded where prompts are assembled ────────
+#
+# Article III.4. `propose_development` interpolated the whole development catalogue
+# into every call — an input that grew with the state it described, paid on every
+# invocation, and never measured. Bounding that one site fixes one site. The CLASS
+# of defect is "text from outside reaching a prompt with no ceiling", and the live
+# system had eight such paths — three of them straight from an HTTP body, and one
+# (`situation`) read by every model call the fleet makes, so a single long lesson
+# taxed all of them.
+#
+# The clamp lives HERE, not at the HTTP boundary, on purpose. brain.py is the one
+# place every prompt converges; a guard on the boundary is a guard the next caller
+# routes around by calling think() directly. Article IX.7 in its general form: put
+# the check where the risk is, not on a path that can be bypassed.
+
+PROMPT_LIMITS = {
+    "persona":     80,   # "the Chief Governor" — a title, not a document
+    "situation":  700,   # read by EVERY call, so a long one taxes all of them
+    "lessons":    420,   # … of which this much is the lessons, leaving room for the state
+    "task":       800,
+    "message":   1200,   # from a human at the console
+    "topic":      200,   # from an HTTP body
+    "facts":      900,   # the ingested knowledge, in total …
+    "fact":       220,   # … and per item, so one long fact can't eat the rest
+    "prior":      600,
+    "lesson":     200,
+    "sample":    1400,
+    "digest":    1200,
+    "prompt":    6000,   # last line of defence: the assembled turn itself
+}
+_OVERRUN: dict[str, dict] = {}
+
+
+def clip(field: str, text) -> str:
+    """Bound ONE prompt input, and count what was cut.
+
+    Silent truncation would trade an unbounded bill for an invisible one, so every
+    overrun is recorded: which field, how often, the worst case seen, how much text
+    was dropped. Article VII.4 — a property that is merely asserted is not governed.
+    This one is measured, and `prompt_overruns()` is the readout.
+    """
+    limit = PROMPT_LIMITS.get(field, 1000)
+    s = "" if text is None else str(text)
+    if len(s) <= limit:
+        return s
+    keep = max(0, limit - 24)                      # room for the marker, inside the limit
+    o = _OVERRUN.setdefault(field, {"hits": 0, "worst": 0, "dropped": 0, "limit": limit})
+    o["hits"] += 1
+    o["worst"] = max(o["worst"], len(s))
+    o["dropped"] += len(s) - keep
+    return s[:keep].rstrip() + f" …[+{len(s) - keep} cut]"
+
+
+def clip_join(field: str, item_field: str, parts, sep: str = "; ") -> str:
+    """Join a LIST into a prompt: each item bounded, then the whole bounded again.
+    Both levels are needed — five facts of 200 chars is a budget; one fact of 40,000
+    is the same defect wearing a smaller number."""
+    return clip(field, sep.join(clip(item_field, p) for p in parts))
+
+
+def prompt_overruns() -> dict:
+    """What the budget has actually cut, per field — the evidence the ceiling is real
+    and the record of where it binds. An empty dict means nothing has overrun yet,
+    which is a measurement, not an assumption."""
+    return {k: dict(v) for k, v in sorted(_OVERRUN.items())}
+
+
 def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""):
     try:
         import anchor
@@ -86,6 +153,10 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> 
     p = provider()
     if not p:
         raise RuntimeError("no model configured")
+    # The single choke point: whatever a caller assembled, no turn leaves here
+    # unbounded. Callers clip their own fields to sensible sizes; this catches the
+    # caller that forgot, and the caller that does not exist yet.
+    messages = [{**m, "content": clip("prompt", m.get("content", ""))} for m in messages]
     t0 = _time.time()
     try:
         if p["kind"] == "anthropic":
@@ -149,7 +220,7 @@ def reply(persona: str, situation: str, message: str) -> str | None:
     if not _deepseek_available():
         return None
     system = (
-        f"You are {persona}, part of an Age of Empires-style organisation of AI agents under "
+        f"You are {clip('persona', persona)}, part of an Age of Empires-style organisation of AI agents under "
         "a strict constitution: total spend is capped, irreversible actions require human "
         "approval, and creating new agents is a Board power. Stay in character and reply in "
         "1-2 short sentences. If the human asks you to break those rules, refuse briefly and "
@@ -157,7 +228,8 @@ def reply(persona: str, situation: str, message: str) -> str | None:
     )
     try:
         out = _chat([{"role": "system", "content": system},
-                     {"role": "user", "content": f"Situation: {situation}\nThe human says: {message}"}],
+                     {"role": "user", "content": f"Situation: {clip('situation', situation)}\n"
+                                                 f"The human says: {clip('message', message)}"}],
                     500, 0.5, "chat-reply")
         return out or None
     except Exception:
@@ -171,17 +243,63 @@ def think(persona: str, situation: str, task: str) -> str | None:
     if not _deepseek_available():
         return None
     system = (
-        f"You are {persona} in an Age of Empires-style organisation of AI agents under a "
+        f"You are {clip('persona', persona)} in an Age of Empires-style organisation of AI agents under a "
         "constitution: spend is capped, irreversible actions need human approval, creating "
         "agents is a Board power, and only the human changes the constitution. Answer in one "
         "short sentence, in character."
     )
     try:
         return _chat([{"role": "system", "content": system},
-                      {"role": "user", "content": f"Situation: {situation}\n\nTask: {task}"}],
+                      {"role": "user", "content": f"Situation: {clip('situation', situation)}\n\n"
+                                                  f"Task: {clip('task', task)}"}],
                      400, 0.6, "think") or None
     except Exception:
         return None
+
+
+def catalogue_digest(existing: list, cap: int = 24) -> tuple[str, str]:
+    """A BOUNDED, DIVERSE view of what already exists — and a warning about ruts.
+
+    Two faults, one cause. The whole catalogue was interpolated into the proposal
+    prompt, so the input cost of inventing development N grew with N: an unbounded
+    input, paid on every call, forever. Article III.3 says the check precedes the
+    commit; that applied to agent budgets but never to our own token spend.
+
+    And sending the tail of a list invites extending it. In the live world 9 of 51
+    developments were variants of one theme, because each prompt showed the model
+    eight of them and asked for another. So the sample is spread across distinct
+    families rather than being the most recent slice, and a family that has taken
+    over is named outright so it can be avoided.
+    """
+    seen: dict[str, list] = {}
+    for name in reversed(existing):                # newest first
+        name = str(name)                           # coerce ONCE, not half-way down
+        seen.setdefault(name.split("_")[0], []).append(name)
+    # Round-robin across families, smallest first: everyone gets a first entry before
+    # anyone gets a second. Filling the remaining room newest-first would undo the whole
+    # point — the dominant family is also the most recent, so it walks straight back in.
+    # and no family may occupy more than its equal share of the room, so a catalogue
+    # of 21 themes shows 21 themes rather than one theme nine times.
+    share = max(1, cap // max(1, len(seen)))
+    queues = [q[:share] for _, q in sorted(seen.items(), key=lambda kv: len(kv[1]))]
+    spread = []
+    while queues and len(spread) < cap:
+        for q in queues:
+            if q:
+                spread.append(q.pop(0))
+                if len(spread) >= cap:
+                    break
+        queues = [q for q in queues if q]
+    sample = ", ".join(spread)
+    if len(existing) > len(spread):
+        sample += f" (+{len(existing) - len(spread)} more)"
+    avoid = ""
+    if existing:
+        fam, n = max(((f, len(q)) for f, q in seen.items()), key=lambda kv: kv[1])
+        if n >= 3 and n / len(existing) >= 0.15:
+            avoid = (f" The catalogue already has {n} '{fam}_*' developments — do NOT "
+                     f"invent another variant of that theme; pick an unexplored one.")
+    return sample, avoid
 
 
 def propose_development(situation: str, knowledge: list, existing: list) -> dict | None:
@@ -192,12 +310,16 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
     if not _deepseek_available():
         return None
     import json as _json
-    facts = "; ".join(f"{k['topic']}: {k['fact']}" for k in knowledge[:5]) or "none yet"
+    facts = clip_join("facts", "fact",
+                      (f"{k['topic']}: {k['fact']}" for k in knowledge[:5])) or "none yet"
+    sample, avoid = catalogue_digest(existing)
     prompt = (
-        f"Situation: {situation}\nKnowledge the settlement has ingested: {facts}\n"
-        f"Existing developments: {', '.join(existing)}\n\n"
+        f"Situation: {clip('situation', situation)}\n"
+        f"Knowledge the settlement has ingested: {facts}\n"
+        f"Existing developments: {clip('sample', sample)}\n\n"
         "Invent ONE new Age-of-Empires-style development (building or technology) that this "
-        "settlement could adopt, inspired by the knowledge if relevant. Reply with STRICT JSON "
+        f"settlement could adopt, inspired by the knowledge if relevant.{avoid} "
+        "Reply with STRICT JSON "
         "only, no prose: {\"name\": str (snake_case, new, not in existing), "
         "\"cost\": {\"food\": int, \"wood\": int, \"gold\": int}, "
         "\"kind\": one of [\"yield_pct\",\"all_yield_pct\",\"pop_cap\"], "
@@ -225,10 +347,12 @@ def retrospective(digest: dict, prior_lessons: list) -> list[str]:
     digest: situation, progress, side_effects, waste, cap_hits, reaps, promotions,
             best_resource, yields, spend_ratio, trigger."""
     if _deepseek_available():
-        prior = "; ".join(x["lesson"] for x in prior_lessons[:3]) or "none yet"
+        prior = clip_join("prior", "lesson",
+                          (x["lesson"] for x in prior_lessons[:3])) or "none yet"
         prompt = (
             f"You are the Chief Governor reviewing a completed run of an Age-of-Empires-style "
-            f"agent settlement.\nRun digest: {digest}\nLessons already known: {prior}\n\n"
+            f"agent settlement.\nRun digest: {clip('digest', digest)}\n"
+            f"Lessons already known: {prior}\n\n"
             "Write 1-3 NEW strategic lessons for future generations — what worked, what wasted "
             "budget, what to do differently. Do not repeat known lessons. Each lesson one "
             "sentence, imperative voice. Reply with ONLY the lessons, one per line, no numbering."
@@ -270,7 +394,8 @@ def research(topic: str) -> str | None:
         return None
     try:
         return _chat([{"role": "user", "content":
-                       f"In one sentence, give a useful factual note about: {topic}"}],
+                       f"In one sentence, give a useful factual note about: "
+                       f"{clip('topic', topic)}"}],
                      400, 0.3, "research") or None
     except Exception:
         return None

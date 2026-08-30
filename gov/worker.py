@@ -25,15 +25,36 @@ import economy
 import workspace as W
 
 CREDIT_PER_TEST = 100        # contribution for each test turned green
+MAX_ATTEMPTS = 3             # IX.8: repeated failure on one task is a loop, not effort
+
+
+def _attempts(task_id) -> int:
+    return anchor.counter_get(f"attempts:{task_id}")
 
 
 def work_cycle(agent: str, module: str = "calculator.py") -> dict:
     """One full cycle for one agent. Returns what happened, measured by the oracle."""
     W.init()
     before = W.oracle()
-    open_tasks = [t for t in W.sync_tasks() if t["status"] in ("open", "assigned")]
-    if not open_tasks:
+    tasks = [t for t in W.sync_tasks() if t["status"] in ("open", "assigned")]
+    if not tasks:
+        # Undetected inaction, coding edition: a worker that does nothing must not
+        # do it silently, or a dead loop is indistinguishable from a finished one.
+        anchor.record(-1, "idle", f"{agent} ran with no open task — suite is green")
         return {"agent": agent, "did": "nothing", "reason": "no open tasks — suite is green"}
+
+    # IX.8: the recovery must be bounded. Without this the worker re-picks the same
+    # unsolvable task forever, burning budget and calling it effort — the coding-domain
+    # twin of a watchdog restarting into a full disk.
+    open_tasks = [t for t in tasks if _attempts(t["id"]) < MAX_ATTEMPTS]
+    if not open_tasks:
+        stuck = ", ".join(f"{t['test']} ({_attempts(t['id'])} tries)" for t in tasks)
+        anchor.record(-1, "escalation",
+                      f"WORKBOARD STUCK — every open task has failed {MAX_ATTEMPTS}x: {stuck}")
+        anchor.msg_send("chief", "Chief Governor",
+                        f"Work is stalled: {stuck}. Retrying will not help — the task or "
+                        f"the model needs to change.")
+        return {"agent": agent, "did": "stuck", "reason": stuck, "attempts": MAX_ATTEMPTS}
     task = open_tasks[0]
     W.assign(task["id"], agent)
 
@@ -65,6 +86,7 @@ def apply_and_score(agent: str, module: str, content: str,
     old = W.read_file(module)
     ok, msg = W.apply_patch(module, content)
     if not ok:
+        anchor.counter_add(f"attempts:{task['id']}", 1)
         anchor.record(-1, "waste", f"{agent} patch refused: {msg}")
         return {"agent": agent, "did": "refused", "reason": msg}
     after = W.oracle()
@@ -72,10 +94,27 @@ def apply_and_score(agent: str, module: str, content: str,
     broke = sorted(set(after["failures"]) - set(before["failures"]))
     if broke or after["passed"] < before["passed"]:
         W.apply_patch(module, old)                 # a patch that breaks tests reverts
+        anchor.counter_add(f"attempts:{task['id']}", 1)
         anchor.record(-1, "waste", f"{agent} patch reverted — broke {', '.join(broke)}")
         anchor.career_add(agent, -1, "retask", f"patch reverted: broke {', '.join(broke)}")
         return {"agent": agent, "did": "reverted", "broke": broke}
 
+    # Article I.2 in the coding domain: a patch that applies cleanly, breaks nothing,
+    # and turns NOTHING green is not work. It was previously recorded as `[work]` with
+    # a contribution of zero — motion filed as productivity, which is exactly the
+    # failure the settlement spent 12,000 turns committing. Effort is not progress.
+    if not newly:
+        anchor.counter_add(f"attempts:{task['id']}", 1)
+        anchor.record(-1, "waste",
+                      f"{agent} patch changed {module} but moved no test — suite still "
+                      f"{after['passed']}/{after['total']} (attempt "
+                      f"{_attempts(task['id'])} of {MAX_ATTEMPTS})")
+        anchor.career_add(agent, -1, "retask",
+                          f"patched {module} with no measured effect — no contribution")
+        return {"agent": agent, "did": "no-op", "suite": f"{after['passed']}/{after['total']}",
+                "attempts": _attempts(task["id"]), "contribution": 0}
+
+    anchor.config_set(f"attempts:{task['id']}", "0")  # progress clears the budget
     economy.enlist(agent)
     got = CREDIT_PER_TEST * len(newly)
     if got:

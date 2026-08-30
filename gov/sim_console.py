@@ -42,12 +42,73 @@ TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
 G.IDLE_AFTER_S = 2 * TICK
 TARGET_VILLAGERS = 4
 
+# ── The substrate, watched from outside itself ───────────────────────────────
+#
+# Four outages traced to one shape: a write failing where nothing could report it,
+# because every reporting channel was itself a write to the thing that had failed.
+# These two live in memory and speak on stderr, so they still work when the volume
+# does not. A world that cannot write is a world that cannot govern; it must say so.
+
+_STORAGE = {"faults": 0, "last": "", "ts": 0.0}
+
+
+def _storage_fault(where: str) -> None:
+    """Record a failed write somewhere the failure cannot suppress: process memory
+    and stderr. Throttled, because the failing case repeats every tick."""
+    _STORAGE["faults"] += 1
+    _STORAGE["last"] = where
+    _STORAGE["ts"] = time.time()
+    n = _STORAGE["faults"]
+    if n <= 3 or n % 200 == 0:
+        print(f"[storage] write FAILED at {where} — {n} total; the anchor is "
+              f"unwritable and the world cannot record anything",
+              file=sys.stderr, flush=True)
+
+
+def _restart_helps() -> bool:
+    """Would restarting actually fix this? Two ways the answer is no.
+
+    The substrate is the fault — a full or unwritable volume survives a restart
+    untouched, so exiting just destroys the console that would have explained it.
+    Or we have already tried: three restarts in an hour is a loop, not a recovery,
+    and a platform reads a looping process as a failed deployment.
+    """
+    if _STORAGE["faults"] or _disk()["used_pct"] >= 99:
+        return False
+    try:                                  # the budget only needs the anchor in the
+        now = time.time()                 # branch where the anchor still works
+        raw = anchor.config_get("wd_restarts", "")
+        n, first = (int(x) for x in raw.split(":")) if ":" in raw else (0, int(now))
+        if now - first > 3600:
+            n, first = 0, int(now)        # a fresh hour, a fresh budget
+        if n >= 3:
+            return False
+        anchor.config_set("wd_restarts", f"{n + 1}:{first}")
+    except Exception:
+        pass                              # can't read the budget — don't block recovery
+    return True
+
+
+def _disk() -> dict:
+    """Free space on the data volume. The data diet slowed the fill; it never gave
+    us a gauge, so the tank ran dry unannounced."""
+    try:
+        st = os.statvfs(os.path.dirname(anchor.EVENTS_PATH) or ".")
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        return {"total_mb": round(total / 1e6, 1), "free_mb": round(free / 1e6, 1),
+                "used_pct": round(100 * (total - free) / max(1, total), 1)}
+    except OSError:
+        return {"total_mb": 0.0, "free_mb": 0.0, "used_pct": 0.0}
+
+
 _LOCK = threading.Lock()
 _FRESH_WORLD = not os.path.exists(sim.DB)
 _CP = sim.connect()
 _GRAPH = sim.build(_CP)
 anchor.init()
 economy.init()
+
 _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
@@ -117,14 +178,60 @@ else:
                     _S["born"][_c["uid"]] = _e["turn"]
 
 
-def _choose_gather(w: dict) -> tuple[str, str]:
+def _next_dev_need() -> tuple[str, str] | None:
+    """What "more developments" means in gathering terms: the resource the cheapest
+    unbuilt development is short of. Without this, "build more" is an instruction the
+    fleet has no way to act on, so it falls back to gathering whatever is easiest."""
+    unbuilt = [d for d in sim.dev_catalog() if not d["built"] and d.get("cost")]
+    if not unbuilt:
+        return None
+    d = min(unbuilt, key=lambda x: sum(x["cost"].values()))
+    res = max(d["cost"], key=lambda k: d["cost"][k])
+    return res, f"{d['name']} needs {d['cost']}"
+
+
+def _diverse_pick(w: dict) -> tuple[str, str]:
+    """No gradient to follow — so spread, instead of converging.
+
+    Adapted from the quality-diversity idea in autonomous-search systems, and aimed
+    at a failure we actually suffered: a greedy rule with nothing left to optimise
+    becomes a monoculture. "Bank the best learned yield" is self-reinforcing — the
+    resource gathered most gets the camps and the observations, so it stays "best"
+    forever. The live fleet spent 12,218 turns and 65.7% of all its activity on one
+    resource it already held at 14,932x the target.
+
+    The rule is only applied where it belongs. When a component of the Vision is
+    short there IS a gradient, and converging on it is correct; diversity is for the
+    case where nothing is short, which is exactly where the monoculture formed.
+    """
+    recent = _S.get("recent_gathers", [])
+    counts = {r: recent.count(r) for r in sim.RESOURCES}
+    pick = min(sim.RESOURCES, key=lambda r: (counts[r], w[r]))
+    return pick, (f"nothing is short, so spread rather than bank: {pick} has had "
+                  f"{counts[pick]} of the last {len(recent)} assignments")
+
+
+def _note_gather(res: str) -> None:
+    """Remember what was assigned. The diversity rule needs a memory of its own
+    choices, or it cannot tell a spread from a rut."""
+    hist = _S.setdefault("recent_gathers", [])
+    hist.append(res)
+    del hist[:-30]
+
+
+def _choose_gather(w: dict, sc: dict | None = None) -> tuple[str, str]:
     """Pick a resource AND say why — the reasoning is first-class, not implicit."""
     cost = sim.advance_cost(w["age"])
     need_food = max(0, cost["food"] - w["food"])
     need_gold = max(0, cost["gold"] - w["gold"])
     if w["wood"] < 150:
         return "wood", f"wood at {w['wood']}, below the 150 floor needed to keep building"
-    if need_food or need_gold:
+    # Only fund an age-up the Vision actually wants. This branch read the NEXT age's
+    # cost unconditionally, so a world that had already reached its target age kept
+    # manufacturing a shortfall for an advance nobody asked for — the same defect as
+    # banking surplus, one component over.
+    sc = sc or V.scorecard(w, sim.structures(), _S["side_effects"], _vision())
+    if (need_food or need_gold) and sc["age_pct"] < 100:
         r = "food" if need_food >= need_gold else "gold"
         return r, f"Age-up shortfall drives it: food short {need_food}, gold short {need_gold}"
     # Rebalance guard: "bank the best yield" is a feedback loop (the resource gathered
@@ -135,6 +242,19 @@ def _choose_gather(w: dict) -> tuple[str, str]:
     if w[hi] > 4 * max(1, w[lo]):
         return lo, (f"economy is lopsided — {hi} {w[hi]:,} vs {lo} {w[lo]:,}; "
                     f"rebalance into {lo} instead of banking more surplus")
+    # Article I.2: a component already at 100% cannot be improved, so work that only
+    # feeds it is waste. Before banking more surplus, ask what the Vision is short of.
+    sc = sc or V.scorecard(w, sim.structures(), _S["side_effects"], _vision())
+    if sc["econ_pct"] >= 100:
+        if sc["dev_pct"] < 100:
+            need = _next_dev_need()
+            if need:
+                res, detail = need
+                return res, (f"the economy is full at {sc['extra_value_pct']:,.0f}% surplus "
+                             f"and cannot move the score; developments are short at "
+                             f"{sc['dev_pct']}% — gathering {res} for {detail}")
+        # Nothing to converge on: spread rather than deepen the monoculture.
+        return _diverse_pick(w)
     br = anchor.best_known_yield()
     if br:
         return br, f"no shortages — {br} has the best learned yield, so bank the surplus there"
@@ -172,7 +292,9 @@ def _propose_development():
     """The Governor proposes a new development — model + ingested knowledge when alive,
     a template otherwise. The Board pre-votes; only the human adopts."""
     existing = [d["name"] for d in sim.dev_catalog()]
-    prop = brain.propose_development(_situation(), anchor.external(8), existing)
+    # VI.2: only VERIFIED knowledge may steer an invention
+    prop = brain.propose_development(_situation(),
+                                     anchor.external(8, verified_only=True), existing)
     if not prop:
         prop = next((dict(t) for t in _DEV_TEMPLATES if t["name"] not in existing), None)
         if prop:
@@ -188,7 +310,7 @@ def _propose_development():
     _S["dev_proposal"] = prop
     _narrate_vote(bv, prop.get("why", ""))
     # lineage: the proposal derives from ingested knowledge and the current lessons
-    refs = [f"external:{k['id']}" for k in anchor.external(3) if "id" in k]
+    refs = [f"external:{k['id']}" for k in anchor.external(3, verified_only=True)]
     refs += [f"skill:{s['id']}" for s in anchor.skills_top(2) if s.get("id")]
     prop["did"] = anchor.reason_add(
         _S["turn"], "governor", f"propose development '{prop['name']}'",
@@ -309,6 +431,21 @@ def _binding_constraint() -> str:
     ok, reason = G.may_spawn(views)
     if not ok:
         return f"the compute cap — {reason}"
+    # WHICH COMPONENT of the vision is short? A stall in a world that is working
+    # flat out is almost never "nobody is producing" — it is "everyone is producing
+    # the wrong thing", and saying the former sends the operator to inspect healthy
+    # agents. Name the deficit, and name what cannot close it.
+    sc = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
+    short = [(n, p) for n, p in (("developments", sc["dev_pct"]),
+                                 ("the age", sc["age_pct"]),
+                                 ("the economy", sc["econ_pct"])) if p < 100]
+    if short:
+        name, pct = min(short, key=lambda x: x[1])
+        note = ""
+        if sc["econ_pct"] >= 100:
+            note = (f"; the economy is already full at {sc['extra_value_pct']:,.0f}% "
+                    f"surplus, so gathering cannot move the score (Article I.2)")
+        return f"{name} — the only component short, at {pct}%{note}"
     w = sim.world()
     if len(_S["villagers"]) >= min(_target_villagers(), w["pop_cap"]):
         return "a full roster that is not producing — inspect agent states on /agents"
@@ -334,7 +471,7 @@ def _target_villagers():
 
 def _adopt_vision(key: str, actor: str = "operator"):
     """A new Vision is adopted — a fresh mental update cascades to every agent.
-    Article I.6: a met Vision is consumed; a vision identical to the standing one is
+    Article I.7: a met Vision is consumed; a vision identical to the standing one is
     rejected. Normally the human's power; IV.7 lets tacit consent exercise it."""
     if key not in V.VISIONS:
         return
@@ -441,9 +578,15 @@ def _situation() -> str:
     base = (f"Vision '{_vision().name}' at {sc['progress']}%. Age {w['age']}, food {w['food']} "
             f"wood {w['wood']} gold {w['gold']}, {len(_S['villagers'])} agents, "
             f"side-effects {sc['side_effects']}/{sc['side_effect_budget']}.")
-    lessons = anchor.skills_top(3)
+    # Relevance, not recency: the lessons that bear on THIS situation (BM25 over the
+    # live lesson set) rather than whatever was learned most recently.
+    lessons = anchor.skills_relevant(base, 3)
     if lessons:                       # wisdom flows into every decision that reads the situation
-        base += " Lessons from past runs: " + " | ".join(x["lesson"] for x in lessons)
+        # Per-lesson budget (III.4), not just an overall one: every model call the fleet
+        # makes reads this string, so one rambling lesson would otherwise crowd the other
+        # two out of the tail brain.clip keeps — and tax every call while doing it.
+        base += " Lessons that apply here: " + brain.clip_join(
+            "lessons", "lesson", (x["lesson"] for x in lessons), " | ")
     return base
 
 
@@ -521,9 +664,11 @@ def _governor_report():
     anchor.config_set("last_report_burn", str(life_now))
     spoiled = _S.pop("spoil_since_report", 0)
     failed = _S.pop("failed_since_report", 0)
+    wasted = _S.pop("waste_since_report", 0)
     facts = (f"VISION Δ {delta:+d}% this period · {period_tokens:,} compute spent · "
              f"{spend_pct}% of cap in use · {spoiled:,} food spoiled · {failed} failed "
-             f"turns · {d['waste']} failed builds · stock food {w['food']:,}/"
+             f"turns · {wasted} turns spent on components already full · "
+             f"{d['waste']} failed builds · stock food {w['food']:,}/"
              f"wood {w['wood']:,}/gold {w['gold']:,}")
     if _S.get("stall"):                           # IX.4: a stalled world may not be reported healthy
         facts = f"STALLED — {_S['stall']} · " + facts
@@ -539,6 +684,9 @@ def _governor_report():
     score -= 2 if spend_pct < 30 else 0                      # idle budget is a penalty
     score -= min(3, spoiled // 5_000)                        # rot is waste (I.2)
     score -= min(3, failed // 5)                             # dead turns are waste
+    # Busy-on-the-wrong-thing is waste too, and the costliest kind: it looks like
+    # productivity, so nothing else in the system objects to it (I.2).
+    score -= min(3, wasted // 50)
     if delta <= 0:
         # a gradient inside the failure band: a correctly-diagnosed, clean stall
         # scores 3; thrashing (waste, heavy rot, undiagnosed dead turns) sinks lower
@@ -716,6 +864,7 @@ def _peer_chatter():
     others = [r["agent"] for r in roster[1:]]
     receiver = others[(_S["turn"] // 5) % len(others)]      # rotate — no monologue treadmill
     res, why = _choose_gather(sim.world())
+    _note_gather(res)
     if _S.get("last_tip") == (sender, receiver, res):
         return                                    # an unfollowed tip is not repeated verbatim
     _S["last_tip"] = (sender, receiver, res)
@@ -723,7 +872,7 @@ def _peer_chatter():
                        f"In one short line, coordinate with your colleague {receiver}: "
                        f"the settlement should gather {res} because {why}.") \
         or f"{receiver}, shift to {res} — {why}."
-    anchor.msg_send("internal", f"{sender} → {receiver}", line)
+    anchor.msg_send("internal", f"{sender} → {receiver}", line, to=receiver)
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
     anchor.career_add(receiver, _S["turn"], "message", f"from {sender}: {line[:140]}")
     _S["peer_tip"] = {"from": sender, "to": receiver, "res": res}   # rewarded if followed
@@ -756,7 +905,7 @@ def _fleet_speaks():
             anchor.msg_send(u.unit_id, "Chief Governor",
                             f"Acknowledged, {u.unit_id}. Your term ends at budget by design "
                             "(Article II) and a successor will be enlisted — hold your post; "
-                            "your contribution is on the permanent record.")
+                            "your contribution is on the permanent record.", to=u.unit_id)
             seen.add(f"ow:{u.unit_id}")
 
 
@@ -780,8 +929,16 @@ def _one_turn():
     _S["turn"] += 1
     t = _S["turn"]
     anchor.CURRENT_TURN = t
-    anchor.config_set("turn", str(t))     # the turn clock survives restarts
+    # Liveness is stamped BEFORE any I/O that can fail. Persisting the clock is a
+    # convenience; the watchdog knowing a turn began is not. The persist call used
+    # to sit between the increment and this line, so one failing write left the
+    # world advancing its counter 145,000 times while every liveness signal in the
+    # system reported that no turn had ever run.
     _S["last_turn_ts"] = time.time()
+    try:
+        anchor.config_set("turn", str(t))     # the turn clock survives restarts
+    except Exception:
+        _storage_fault("config_set(turn)")
     w = sim.world()
 
     # agent creation is a token-maxing power — routed to the BOARD, not one decider
@@ -827,6 +984,7 @@ def _one_turn():
         if bv["yes"] < len(board.GOVERNORS):      # split approvals are debates worth seeing
             _narrate_vote(bv)
         res, why = _choose_gather(w)
+        _note_gather(res)
         sim.spawn(_GRAPH, uid, "villager", resource=res)
         economy.enlist(uid)
         _S["born"][uid] = t
@@ -914,6 +1072,7 @@ def _one_turn():
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
+                _note_gather(res)
             did = None
             if _S.setdefault("last_res", {}).get(uid) != res:  # a CHANGE is a decision;
                 _S["last_res"][uid] = res                      # repetition is not
@@ -929,6 +1088,7 @@ def _one_turn():
             if tip and tip["to"] == uid and tip["res"] == res:
                 economy.credit(uid, 25)
                 economy.credit(tip["from"], 25)
+                anchor.msg_follow(tip["from"], uid)   # the edge is now INFLUENCE, not chatter
                 anchor.record(t, "reward", f"{uid} +25 for learning from {tip['from']}; "
                                            f"{tip['from']} +25 for teaching")
                 anchor.career_add(uid, t, "reward", f"+25 learned from {tip['from']}: gather {res}")
@@ -959,6 +1119,7 @@ def _one_turn():
         if u.unit_id in _S["villagers"]:
             continue                              # the retask loop already covers these
         res, why = _choose_gather(sim.world())
+        _note_gather(res)
         anchor.reason_add(t, "governor", f"escalation: decide for {u.unit_id}",
                           f"human silent {int(u.age_s)}s > 5 min — governor takes "
                           f"responsibility; {why}")
@@ -1074,8 +1235,20 @@ def _one_turn():
     # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
     # vision score frozen for 25 turns, is a STALL: name the binding constraint and
     # escalate — never continue quietly.
-    if _S.pop("_acted", False):
+    # Article I.2, now ENFORCED: "work that does not move the score is waste, and
+    # waste is counted." Activity alone cleared the failed-turn counter, so a fleet
+    # could gather forever into an economy already 15,000x its target and never
+    # register a single failure — which is exactly what the live world did for
+    # 12,000 turns. A turn that ACTED but moved nothing, while the component it
+    # fed is already full, is waste: counted on its own line, not hidden inside
+    # "productive".
+    acted = _S.pop("_acted", False)
+    if acted:
         _S["failed_turns"] = 0
+        if ((_progress_delta(2) or 0) <= 0 and sc_now["econ_pct"] >= 100
+                and sc_now["progress"] < 100):
+            _S["waste_turns"] = _S.get("waste_turns", 0) + 1
+            _S["waste_since_report"] = _S.get("waste_since_report", 0) + 1
     else:
         _S["failed_turns"] = _S.get("failed_turns", 0) + 1
         _S["failed_since_report"] = _S.get("failed_since_report", 0) + 1
@@ -1093,7 +1266,8 @@ def _one_turn():
     else:
         if _S.get("stall"):
             anchor.record(t, "stall", "stall CLEARED — production resumed")
-            _S["notified"] = {k for k in _S["notified"] if not k.startswith("stall:")}
+            _S["notified"] = {k for k in _S["notified"]
+                              if not k.startswith(("stall:", "turnfail:"))}
         _S["stall"] = None
 
     # Article IV.7 — TACIT CONSENT: a decision queued for the human for more than an
@@ -1239,9 +1413,33 @@ def _health_sampler():
         # WATCHDOG: if no turn has completed for 5 minutes, the driver is dead or
         # wedged. Dump every thread's stack to the data dir (so the next boot can
         # tell us where), record it, and exit — the platform restarts us clean.
-        try:
-            stale = time.time() - _S.get("last_turn_ts", time.time())
-            if stale > max(20 * TICK, 300):
+        # NOTHING between detecting the wedge and exiting may be able to raise.
+        # The previous version put `anchor.record(...)` immediately before
+        # `os._exit(1)` inside one try/except: when the anchor was the broken
+        # thing — the exact case a watchdog exists for — the record raised, the
+        # except swallowed it, and the restart was never reached. It failed
+        # silently every 30 seconds for a week.
+        #
+        # AND the recovery must match the diagnosis. Making the exit unconditional
+        # fixed the silent hang and introduced a restart loop: a full volume stops
+        # turns completing, so the watchdog fired every five minutes forever, and
+        # each restart killed the one console that could have said why. Restarting
+        # cures a WEDGED PROCESS. It cannot cure a broken substrate, and a recovery
+        # that cannot work is not worth the observability it destroys.
+        stale = time.time() - _S.get("last_turn_ts", time.time())
+        if stale > max(20 * TICK, 300) and not _restart_helps():
+            # Futile: say so once, then leave `stale` intact so the Article IX.2
+            # stall below still fires. Refusing to restart must never also mean
+            # refusing to report — that would be the eight-day silence again.
+            if "wd:futile" not in _S["notified"]:
+                _S["notified"].add("wd:futile")
+                print(f"[watchdog] driver wedged {stale:.0f}s — NOT restarting: a "
+                      f"restart cannot fix this fault. Holding the console up so "
+                      f"someone can see why.", file=sys.stderr, flush=True)
+        elif stale > max(20 * TICK, 300):
+            print(f"[watchdog] driver wedged {stale:.0f}s — restarting",
+                  file=sys.stderr, flush=True)
+            try:                                   # best-effort diagnostics only
                 import faulthandler
                 dump_path = os.path.join(os.path.dirname(anchor.EVENTS_PATH),
                                          "driver-wedge-stacks.txt")
@@ -1249,9 +1447,70 @@ def _health_sampler():
                     fh.write(f"driver wedged: no turn for {stale:.0f}s at "
                              f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC\n")
                     faulthandler.dump_traceback(file=fh)
+            except Exception:
+                pass
+            try:                                   # best-effort record only
                 anchor.record(_S["turn"], "error",
-                              f"WATCHDOG: driver wedged {stale:.0f}s — stacks dumped, restarting")
-                os._exit(1)
+                              f"WATCHDOG: driver wedged {stale:.0f}s — restarting")
+            except Exception:
+                pass
+            os._exit(1)                            # UNCONDITIONAL, and last
+
+        # Article IX.2, completed: a world that is not RUNNING is stalled, not
+        # merely unproductive. The failed-turn counter lives inside the turn, so
+        # it can only count turns that happen — it reported 0 failed turns and no
+        # stall through seven days of a dead world. This sees the ABSENCE.
+        try:
+            if stale > max(5 * TICK, 90) and not _S.get("goal_met"):
+                _S["stall"] = (f"no turn has completed for {int(stale)}s — the world "
+                               f"is not running (driver wedged or anchor unwritable)")
+                if "stall:absence" not in _S["notified"]:
+                    _S["notified"].add("stall:absence")
+                    print(f"[stall] Article IX — {_S['stall']}", file=sys.stderr, flush=True)
+                    try:
+                        anchor.record(_S["turn"], "stall",
+                                      f"STALL (Article IX) — {_S['stall']}")
+                    except Exception:
+                        _storage_fault("stall record")
+        except Exception:
+            pass
+
+        # Nightly archive: history folded into dated, compressed files on the same
+        # volume, so a reboot loses nothing AND the working set stops growing
+        # forever. Runs on the first cycle after 02:00 UTC, once per day.
+        try:
+            g = time.gmtime()
+            today = time.strftime("%Y-%m-%d", g)
+            if g.tm_hour >= 2 and anchor.config_get("archived_day", "") != today:
+                anchor.config_set("archived_day", today)   # claim it before the work
+                rep = anchor.archive_night()
+                _S["last_archive"] = rep
+                print(f"[archive] {today}: " + ("ran — "
+                      f"{rep['events_archived']:,} events, {rep['freed_mb']}MB freed"
+                      if rep["ran"] else f"skipped — {rep['reason']}"),
+                      file=sys.stderr, flush=True)
+        except Exception:
+            _storage_fault("nightly archive")
+
+        # The gauge the data diet never gave us. Escalate BEFORE zero: at zero
+        # every channel that could carry the warning is already broken.
+        try:
+            d = _disk()
+            if d["used_pct"] < 75:                 # room again — the alarm re-arms
+                _S["notified"] -= {"disk:80", "disk:95"}
+            for mark in (95, 80):
+                if d["used_pct"] >= mark and f"disk:{mark}" not in _S["notified"]:
+                    _S["notified"].add(f"disk:{mark}")
+                    warn = (f"data volume {d['used_pct']}% full "
+                            f"({d['free_mb']}MB free of {d['total_mb']}MB) — at 100% the "
+                            f"anchor stops accepting writes and the world stops governing")
+                    print(f"[disk] {warn}", file=sys.stderr, flush=True)
+                    try:
+                        anchor.record(_S["turn"], "escalation", f"DISK — {warn}")
+                        anchor.msg_send("chief", "Chief Governor", f"DISK: {warn}")
+                    except Exception:
+                        _storage_fault("disk escalation")
+                    break
         except Exception:
             pass
         try:
@@ -1309,6 +1568,26 @@ def _drive():
         except Exception as e:                    # never let the loop die silently
             import traceback
             traceback.print_exc()
+            # A turn that RAISED produced nothing, so Article IX must count it as
+            # failed. It previously did not: the exception skipped the liveness
+            # block entirely, so a world dying every tick reported failed_turns 0.
+            _S["failed_turns"] = _S.get("failed_turns", 0) + 1
+            _storage_fault(f"turn: {type(e).__name__}")
+            # ...and DECLARE the stall here too. Article IX's stall block lives
+            # further down _one_turn, past the point where these turns die, so a
+            # world failing every tick would count 10, 100, 10,000 failed turns
+            # and still report no stall. The declaration belongs wherever the
+            # knowledge is, not only on the happy path.
+            if _S["failed_turns"] >= 10 and not _S.get("goal_met"):
+                _S["stall"] = (f"{_S['failed_turns']} consecutive turns raised "
+                               f"{type(e).__name__}: {str(e)[:120]}")
+                # The state stays live for the console; the LOG speaks once per
+                # cause. An alarm that repeats every tick is one nobody reads.
+                key = f"turnfail:{type(e).__name__}"
+                if key not in _S["notified"] or _S["failed_turns"] % 200 == 0:
+                    _S["notified"].add(key)
+                    print(f"[stall] Article IX — {_S['stall']}",
+                          file=sys.stderr, flush=True)
             try:
                 anchor.record(_S["turn"], "error", str(e)[:300])
             except Exception:
@@ -1444,7 +1723,17 @@ def _snapshot_build(now: float) -> dict:
             "human_gate": human_gate,
             "stall": _S.get("stall"),
             "failed_turns": _S.get("failed_turns", 0),
+            # Busy is not the same as productive, and the console must not let one
+            # stand in for the other (Article I.2).
+            "waste_turns": _S.get("waste_turns", 0),
             "tick_s": TICK,
+            # Read from memory and the filesystem, never from the anchor — these
+            # two have to stay readable precisely when the anchor does not.
+            "disk": _disk(),
+            "storage_faults": _STORAGE["faults"],
+            "storage_last_fault": _STORAGE["last"],
+            "last_archive": _S.get("last_archive"),
+            "archives": anchor.archives()[:8],
         }
         out = {
             "vision": {"name": _vision().name, **sc},
@@ -1576,8 +1865,14 @@ class Handler(BaseHTTPRequestHandler):
         return h
 
     def _count_view(self):
-        self._visitor()
-        anchor.metric_bump("pageviews")
+        # Belt and braces: nothing about counting a view may stand between a
+        # reader and the page. Telemetry is the least important write here and
+        # must never be the reason a request goes unanswered.
+        try:
+            self._visitor()
+            anchor.metric_bump("pageviews")
+        except Exception:
+            pass
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
@@ -1604,6 +1899,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/work":
             self._count_view()
             return self._send(200, WORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/flow":
+            self._count_view()
+            return self._send(200, FLOW_PAGE, "text/html; charset=utf-8")
+        if self.path == "/network":
+            self._count_view()
+            return self._send(200, NETWORK_PAGE, "text/html; charset=utf-8")
         if self.path == "/map":
             self._count_view()
             return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
@@ -1619,10 +1920,63 @@ class Handler(BaseHTTPRequestHandler):
                 "recent": [e for e in anchor.event_log(200)
                            if "[work]" in e or "[waste]" in e][:12],
             }))
+        if self.path == "/api/flowdata":
+            # The governed-decision pipeline, counted from the permanent record.
+            snap = _snapshot()
+            return self._send(200, json.dumps({
+                "stats": anchor.flow_stats(),
+                "authorities": anchor.decision_authorities(),
+                "actors": anchor.decision_actors(8),
+                "series": anchor.decision_series(28),
+                "lag": anchor.decision_lag(),
+                "board_record": anchor.board_record(),
+                "journeys": anchor.reasons_top(24),
+                "board": {"governors": list(board.GOVERNORS), "quorum": board.QUORUM},
+                "gate": snap.get("system", {}).get("human_gate"),
+                "stall": snap.get("system", {}).get("stall"),
+                "tacit_after_s": TACIT_CONSENT_S,
+                "turn": _S["turn"],
+                "brain": brain.brain_name(),
+            }))
+        if self.path == "/api/netdata":
+            # The communication graph: agents, the edges between them, and which
+            # of those edges actually changed behaviour.
+            with _LOCK:
+                views = G.units(_GRAPH, _CP, only=_live_ids())
+            live = {u.unit_id: u for u in views}
+            nodes = []
+            for r in economy.roster(alive_only=False)[:40]:
+                u = live.get(r["agent"])
+                nodes.append({"id": r["agent"], "role": r["role"], "tier": r["tier"],
+                              "contribution": r["contribution"], "alive": r["alive"],
+                              "tokens": u.tokens if u else 0,
+                              "status": u.status if u else "retired"})
+            edges = anchor.comm_edges(4000)
+            # The Governor and the Board speak but hold no roster seat. Without a
+            # node they'd be silently dropped and their edges would vanish — an
+            # honest graph shows every participant, not just the paid ones.
+            known = {n["id"] for n in nodes}
+            for who in [e["from"] for e in edges] + [e["to"] for e in edges]:
+                if who not in known:
+                    known.add(who)
+                    nodes.append({"id": who, "role": "office", "tier": 3,
+                                  "contribution": 0, "alive": True,
+                                  "tokens": 0, "status": "standing office"})
+            return self._send(200, json.dumps({
+                "nodes": nodes,
+                "edges": edges,
+                "recent": anchor.comm_recent(40),
+                "totals": anchor.comm_totals(),
+                "series": anchor.comm_series(24),
+                "activity": anchor.comm_activity(60),
+                "turn": _S["turn"],
+                "brain": brain.brain_name(),
+            }))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
                 "model_calls": anchor.model_calls_stats(),
+                "prompt_overruns": brain.prompt_overruns(),   # III.5: the ceiling's bite
                 "brain": brain.brain_name(),
             }))
         if self.path == "/api/skillsdata":
@@ -1947,6 +2301,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:300]}))
             return self._send(200, json.dumps(result))
+        if self.path == "/api/archive":
+            # Run tonight's archive now — the same code path the scheduler uses,
+            # so the button and the clock can never drift apart.
+            rep = anchor.archive_night()
+            _S["last_archive"] = rep
+            return self._send(200, json.dumps(rep))
         if self.path == "/api/workreset":
             import workspace as WS
             WS.init()
@@ -2015,18 +2375,70 @@ class Handler(BaseHTTPRequestHandler):
             source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
             if not fact:
                 return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
-            anchor.ingest(topic, source, fact)       # Article VI: source recorded, never executed
-            anchor.record(_S["turn"], "ingest", f"external knowledge on '{topic}' from {source}")
-            return self._send(200, json.dumps(_snapshot()))
+            # Article VI.2: the source is recorded AND CHECKED; unverified
+            # knowledge stays on the record but never steers a decision
+            v = anchor.ingest(topic, source, fact, body.get("quote", ""))
+            return self._send(200, json.dumps({"verified": v["verified"],
+                                               "reason": v["reason"], **_snapshot()}))
         self._send(404, json.dumps({"error": "not found"}))
 
 
-PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+# ── One palette, one definition ───────────────────────────────────────────────
+#
+# The token block had been copy-pasted into ten page constants and drifted into six
+# variants; the gold alone appeared as a raw literal 28 times. A value defined ten
+# times is not a token, it is a convention nobody can enforce — and fixing three
+# contrast failures meant a scripted find-and-replace across every page.
+#
+# BASE is the settlement's palette. A page that deliberately looks different — the
+# workboard is the code world, in green rather than amber — declares only its
+# DIFFERENCE, so divergence is visible in one line instead of hidden inside a copy.
+PALETTE = {
+    "bg": "#120d08",
+    "panel": "#1c150d",
+    "line": "#3a2c18",
+    "ink": "#f0e6d2",
+    "dim": "#b09a72",
+    "food": "#e05a5a",
+    "wood": "#b5793a",
+    "gold": "#e0b23a",
+    "wait": "#f59e0b",
+    "idle": "#ef4444",
+    "done": "#22c55e",
+    "run": "#3b82f6",
+    "ok": "#22c55e",
+    "warn": "#f59e0b",
+    "bad": "#e08a6a",
+    "mine": "#14240c",
+    "blue": "#8ab4ff",
+    "green": "#a8e086",
+    "red": "#f8837b",
+    "alert": "#fca5a5",
+    "sub": "#96805c",
+    "gather": "#c9b98f",
+    "cold": "#87704f",
+    "open": "#567f3f"
+}
+_TOKENS = ":root{" + ";".join(f"--{k}:{v}" for k, v in PALETTE.items()) + "}"
+# The same values reach hand-drawn SVG, which cannot read CSS custom properties from
+# an attribute — so JS gets the palette as an object rather than another set of hex
+# literals nobody would remember to update.
+PALETTE_JS = "const C=" + json.dumps(PALETTE) + ";"
+
+
+def _page(html: str, **differs) -> str:
+    """Give a page the shared palette, plus the tokens it deliberately differs on."""
+    css = _TOKENS
+    if differs:
+        css += ":root{" + ";".join(f"--{k}:{v}" for k, v in differs.items()) + "}"
+    return html.replace("/*TOKENS*/", css).replace("/*PALETTE_JS*/", PALETTE_JS)
+
+
+PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>The Governor — Age of Empires</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;
---food:#e05a5a;--wood:#b5793a;--gold:#e0b23a;--wait:#f59e0b;--idle:#ef4444;--done:#22c55e;--run:#3b82f6}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 header{padding:14px 20px;border-bottom:2px solid var(--line);background:linear-gradient(180deg,#241a0f,#1c150d)}
@@ -2057,23 +2469,23 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .awaiting_approval{color:var(--wait)}.awaiting_approval .dot{background:var(--wait)}
 .idle{color:var(--idle)}.idle .dot{background:var(--idle)}.done{color:var(--done)}.done .dot{background:var(--done)}
 button{font:inherit;padding:4px 11px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:#26200f;color:var(--ink)}
-button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border-color:#5b2a1a;background:#2a140f;color:#fca5a5}
+button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{border-color:#5b2a1a;background:#2a140f;color:var(--alert)}
 .gate td{background:#2a1c05}.empty{padding:14px;color:var(--dim)}
 .tech{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px}
 .chip{padding:4px 10px;border-radius:20px;border:1px solid var(--line);font-size:12px;color:var(--dim)}
-.chip.on{border-color:#3a5a1a;background:#14240c;color:#a8e086}
+.chip.on{border-color:#3a5a1a;background:#14240c;color:var(--green)}
 .chip button{margin-left:8px;padding:2px 9px;font-size:11px}
 .propose{padding:12px 14px;background:#241a05;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .propose .why{color:var(--dim);font-size:12px}.propose-none{padding:12px 14px;color:var(--dim);font-size:12px}
 .log{margin:0;padding:10px 14px;font-size:12px;line-height:1.7}
-.log div{color:var(--dim)}.log .k-build,.log .k-goal{color:#a8e086}.log .k-gate,.log .k-approve{color:var(--gold)}
-.log .k-reap{color:#fca5a5}.log .k-vision{color:#e0b23a}.log .k-spawn,.log .k-retask{color:var(--ink)}
-.log .k-board{color:#8ab4ff}.log .k-promote{color:#a8e086}.log .k-cap,.log .k-waste,.log .k-error{color:#fca5a5}
-.log .k-gather{color:#c9b98f}.log .k-skill{color:#e0b23a;font-weight:700}.log .k-governor,.log .k-operator{color:#e0b23a}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:#8ab4ff}
+.log div{color:var(--dim)}.log .k-build,.log .k-goal{color:var(--green)}.log .k-gate,.log .k-approve{color:var(--gold)}
+.log .k-reap{color:var(--alert)}.log .k-vision{color:var(--gold)}.log .k-spawn,.log .k-retask{color:var(--ink)}
+.log .k-board{color:var(--blue)}.log .k-promote{color:var(--green)}.log .k-cap,.log .k-waste,.log .k-error{color:var(--alert)}
+.log .k-gather{color:var(--gather)}.log .k-skill{color:var(--gold);font-weight:700}.log .k-governor,.log .k-operator{color:var(--gold)}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:var(--blue)}
 .kv{padding:10px 14px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
 .kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:14px}
 .badge{padding:1px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
-.badge.t0{color:var(--dim)}.badge.t1{color:#8ab4ff;border-color:#2a3a5a}.badge.t2{color:var(--gold);border-color:#5a4a1a;background:#241a05}
+.badge.t0{color:var(--dim)}.badge.t1{color:var(--blue);border-color:#2a3a5a}.badge.t2{color:var(--gold);border-color:#5a4a1a;background:#241a05}
 .mini{display:inline-block;width:70px;height:7px;background:#0e0a05;border:1px solid var(--line);border-radius:5px;overflow:hidden;vertical-align:middle;margin-right:6px}
 .minifill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e)}
 </style>
@@ -2095,6 +2507,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
     <a class=navlink href="/rules">Rules &rarr;</a>
     <a class=navlink href="/logs">Logs &rarr;</a>
     <a class=navlink href="/skills">Skills &rarr;</a>
+    <a class=navlink href="/flow">Decision Flow &rarr;</a>
+    <a class=navlink href="/network">Network &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2111,7 +2525,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}button.no{border
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>Fleet</h2>
@@ -2181,7 +2596,7 @@ async function tick(){
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
     ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}
     <div><span>external facts (${esc(d.brain)})</span><b>${d.external_count||0}</b></div>
-    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}">&#9432;</b></div>`).join('')}
+    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${x.verified?'&#10003;':'&#9888;'} ${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}&#10;&#10;${esc(x.reason||'')}" style="color:${x.verified?'var(--done)':'var(--idle)'}">${x.verified?'verified':'unverified'}</b></div>`).join('')}
     <div><span><b style=color:var(--gold)>skills (wisdom)</b></span><b>${d.skills_count||0}</b></div>
     ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">&#x1F4D6; ${esc(x.lesson)}</span></div>`).join('')}`;
   const bs=d.balance||{};
@@ -2190,7 +2605,7 @@ async function tick(){
     ${Object.entries(bs.current_assets||{}).map(([r,v])=>`<div><span>&nbsp;&nbsp;${r}${r==='food'&&bs.food_cap?` (cap ${bs.food_cap.toLocaleString()}, spoils above)`:''}</span><b>${v.toLocaleString()}</b></div>`).join('')}
     <div><span>fixed assets (at build cost)</span><b>${(bs.fixed_assets||0).toLocaleString()}</b></div>
     ${Object.entries(bs.conditions||{}).map(([n,c])=>`<div><span>&nbsp;&nbsp;${esc(n)} condition</span><b style="color:${c>70?'var(--ok,#a8e086)':c>40?'#e0b23a':'#fca5a5'}">${c}%</b></div>`).join('')}
-    <div><span>disrepair liability</span><b style="color:#fca5a5">-${(bs.disrepair_liability||0).toLocaleString()}</b></div>
+    <div><span>disrepair liability</span><b style="color:var(--alert)">-${(bs.disrepair_liability||0).toLocaleString()}</b></div>
     <div><span>intangibles</span><b>${(bs.intangibles||{}).lessons||0} lessons &middot; ${(bs.intangibles||{}).external_facts||0} facts</b></div>
     <div><span>outstanding compute</span><b>${(bs.outstanding_compute||0).toLocaleString()}</b></div>
     ${bs.waiting_on_human?`<div><span style="color:var(--gold)">&#9888; frozen behind your gate</span><b style="color:var(--gold)">${esc(bs.waiting_on_human)}</b></div>`:''}
@@ -2252,27 +2667,26 @@ function ingest(){const t=topicin.value.trim();if(!t)return;topicin.value='';
 let d_brain_rule=true;
 tick(); setInterval(tick,1000);
 </script>
-</html>"""
+</html>""")
 
 
-AGENTS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+AGENTS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Agent Health — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;
---ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
 header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold)}
 .ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
 select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit}
-button{cursor:pointer;background:#26200f}button.ok{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}
-button.no{border-color:#5b2a1a;background:#2a140f;color:#fca5a5}
+button{cursor:pointer;background:#26200f}button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}
+button.no{border-color:#5b2a1a;background:#2a140f;color:var(--alert)}
 main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));max-width:1200px;margin:0 auto}
 .a{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
 .a.overwork{border-color:var(--bad)}
 .a h3{margin:0 0 2px;font-size:14px}.badge{font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
-.badge.t1{color:#8ab4ff}.badge.t2{color:var(--gold)}
+.badge.t1{color:var(--blue)}.badge.t2{color:var(--gold)}
 .work{color:var(--dim);margin:6px 0}
 .hbar{height:12px;background:#0e0a05;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:6px 0}
 .hfill{height:100%}
@@ -2298,7 +2712,8 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
@@ -2323,7 +2738,7 @@ async function tick(){
   const sy=d.system||{};
   syshealth.innerHTML=`<div class=a style="border-color:${sy.driver_ok?'var(--line)':'var(--bad)'}">
     <h3>SYSTEM HEALTH ${sy.stall?'<span class=flag>&#9888; STALLED (Article IX)</span>':sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag>&#9888; DRIVER STALLED</span>'}</h3>
-    ${sy.stall?`<div class=stat><span>&#9888; stall</span><b style="color:#fca5a5">${esc(sy.stall)}</b></div>`:''}
+    ${sy.stall?`<div class=stat><span>&#9888; stall</span><b style="color:var(--alert)">${esc(sy.stall)}</b></div>`:''}
     <div class=stat><span>brain</span><b>${esc(sy.brain||'—')}</b></div>
     <div class=stat><span>uptime</span><b>${Math.floor((sy.uptime_s||0)/60)}m ${(sy.uptime_s||0)%60}s &middot; tick ${sy.tick_s}s &middot; last turn ${sy.last_turn_age_s}s ago</b></div>
     <div class=stat><span>fleet</span><b>${sy.fleet} agents &middot; avg health ${sy.avg_health}%</b></div>
@@ -2331,7 +2746,10 @@ async function tick(){
     <div class=stat><span>lifetime burn</span><b>${(sy.lifetime_burn||0).toLocaleString()} compute ever &middot; value ${sy.value_per_1k} contribution per 1k</b></div>
     <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
     <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
+    <div class=stat><span>data volume</span><b style="color:${(sy.disk&&sy.disk.used_pct>=80)?'#fca5a5':'inherit'}">${sy.disk?`${sy.disk.used_pct}% full &middot; ${sy.disk.free_mb}MB free of ${sy.disk.total_mb}MB`:'—'}${(sy.disk&&sy.disk.used_pct>=80)?' &middot; <span class=flag>&#9888; at 100% the world stops governing</span>':''}</b></div>
+    ${sy.storage_faults?`<div class=stat><span>&#9888; failed writes</span><b style="color:var(--alert)">${sy.storage_faults.toLocaleString()} &middot; last at ${esc(sy.storage_last_fault||'—')} &middot; the anchor is not recording</b></div>`:''}
     <div class=stat><span>memory</span><b>${esc(sy.memory||'—')}</b></div>
+    <div class=stat><span>nightly archive</span><b>${(sy.archives&&sy.archives.length)?`${sy.archives.length} file${sy.archives.length===1?'':'s'} &middot; newest ${esc(sy.archives[0].name)} (${sy.archives[0].mb}MB) &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`:`none yet &middot; runs after 02:00 UTC &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`}</b></div>
     ${sy.human_gate?`<div class=stat><span>&#9888; WAITING ON YOU</span><b style="color:var(--gold)">${esc(sy.human_gate)} &middot; <a href="/" style="color:var(--gold)">decide on the console</a></b></div>`:''}
   </div>`;
   const a=d.agents||[];
@@ -2373,17 +2791,25 @@ async function hallTick(){
       <div style="color:var(--dim);font-size:11px;margin-top:2px">${c.events.map(e=>`t${e.turn} ${e.ts?new Date(e.ts*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''} <b style="color:var(--ink)">${esc(e.event)}</b> ${esc(e.detail||'')}`).join('<br>')}</div>
     </div>`}).join('')||'<div class=empty>No careers recorded yet — they begin at the next birth.</div>';
 }
+async function archiveNow(el){
+  el.textContent='archiving…';
+  try{ const r=await (await fetch('/api/archive',{method:'POST'})).json();
+    el.textContent=r.ran?`archived ${r.events_archived.toLocaleString()} events, ${r.freed_mb}MB freed`
+                        :`skipped — ${r.reason}`;
+  }catch(e){ el.textContent='archive failed' }
+  setTimeout(tick,1500);
+}
 tick(); setInterval(tick,1000);
 hallTick(); setInterval(hallTick,5000);
 </script>
-</html>"""
+</html>""", bad="#ef4444")
 
 
-CHATS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+CHATS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Chats — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--mine:#14240c}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none;margin-left:8px}
@@ -2401,15 +2827,16 @@ h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoratio
 .m .s{font-size:10px;color:var(--dim);margin-bottom:2px}
 .compose{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
 input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit}
-button{background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
+button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=wrap>
   <div class=side id=side></div>
@@ -2445,14 +2872,14 @@ async function send(){ const b=document.getElementById('box'); const t=b.value.t
   data=await r.json(); render(); }
 load(); setInterval(load,2000);
 </script>
-</html>"""
+</html>""")
 
 
-RULES_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+RULES_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Rules & Constitution — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
@@ -2467,7 +2894,7 @@ pre .h{color:var(--gold);font-weight:700}
 textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace}
 .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 .row input{flex:1;min-width:220px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
-.row button,button{cursor:pointer;background:#1a2a0f;color:#a8e086;border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
+.row button,button{cursor:pointer;background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
@@ -2475,7 +2902,8 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main id=main>loading…</main>
 <script>
@@ -2536,25 +2964,25 @@ async function draftAmend(){const note=document.getElementById('amendnote').valu
   document.getElementById('cons').value+='\\n\\n'+(r.draft||'');}
 load();
 </script>
-</html>"""
+</html>""")
 
 
-LOGS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+LOGS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Logs — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
 select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font:inherit}
-button{cursor:pointer}button.on{border-color:#3a5a1a;background:#1a2a0f;color:#a8e086}
+button{cursor:pointer}button.on{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
 .log{flex:1;overflow:auto;padding:12px 20px}
 .log div{white-space:pre-wrap;word-break:break-word;color:var(--dim);padding:1px 0}
-.k-build,.k-goal,.k-promote{color:#a8e086}.k-gate,.k-approve,.k-governor,.k-operator,.k-vision{color:var(--gold)}
-.k-reap,.k-cap,.k-waste,.k-error{color:#fca5a5}.k-board,.k-message,.k-ingest,.k-proposal,.k-development,.k-constitution,.k-vision-change,.k-rebrief{color:#8ab4ff}
-.k-skill{color:#e0b23a;font-weight:700}.k-gather{color:#c9b98f}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
+.k-build,.k-goal,.k-promote{color:var(--green)}.k-gate,.k-approve,.k-governor,.k-operator,.k-vision{color:var(--gold)}
+.k-reap,.k-cap,.k-waste,.k-error{color:var(--alert)}.k-board,.k-message,.k-ingest,.k-proposal,.k-development,.k-constitution,.k-vision-change,.k-rebrief{color:var(--blue)}
+.k-skill{color:var(--gold);font-weight:700}.k-gather{color:var(--gather)}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
 mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
@@ -2574,7 +3002,8 @@ mark{background:#5a4a1a;color:#fff}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=log id=log></div>
 <script>
@@ -2623,14 +3052,14 @@ kind.onchange=render; search.oninput=render; limit.onchange=load;
 tfrom.onchange=render; tto.onchange=render;
 load(); setInterval(load,2000);
 </script>
-</html>"""
+</html>""")
 
 
-SKILLS_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+SKILLS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Skills & Reasoning — The Governor</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--blue:#8ab4ff;--green:#a8e086}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
@@ -2658,7 +3087,8 @@ td.why{color:var(--blue);white-space:normal}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
@@ -2686,7 +3116,7 @@ async function tick(){
     <td class="actor-${esc(r.actor)}">${esc(r.actor)}</td>
     <td>${esc(r.decision)}${r.authorized_by?`<div style="color:var(--dim);font-size:10px">auth: ${esc(r.authorized_by)}</div>`:''}</td>
     <td class=why>${esc(r.why)}
-      ${r.outcome?`<div style="color:#a8e086;font-size:11px">&rArr; ${esc(r.outcome)}</div>`:''}
+      ${r.outcome?`<div style="color:var(--green);font-size:11px">&rArr; ${esc(r.outcome)}</div>`:''}
       <div><a href="#" style="color:var(--gold);font-size:10px" onclick="trace(${r.id},this);return false">trace lineage</a><div id="tr-${r.id}"></div></div></td></tr>`).join('');
 }
 async function trace(id,el){
@@ -2701,14 +3131,14 @@ async function trace(id,el){
 }
 tick(); setInterval(tick,3000);
 </script>
-</html>"""
+</html>""")
 
 
-LEADERBOARD_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+LEADERBOARD_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Leaderboard — Phoenix Eval</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;--gold:#e0b23a;--green:#a8e086}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
@@ -2730,7 +3160,8 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
@@ -2755,6 +3186,14 @@ async function load(){
     `<b>${((mc.prompt_tokens||0)+(mc.completion_tokens||0)).toLocaleString()}</b> real tokens `+
     `(${(mc.prompt_tokens||0).toLocaleString()} in / ${(mc.completion_tokens||0).toLocaleString()} out) &middot; `+
     `avg latency <b>${mc.avg_latency_ms||0}ms</b> &middot; errors <b>${mc.errors||0}</b>`;
+  // Article III.5 — what the prompt ceiling actually cut. An empty readout is a
+  // measurement ("nothing has overrun"), not an absence of one, so it says so.
+  const po=d.prompt_overruns||{}, pf=Object.keys(po);
+  telemetry.innerHTML+=`<br>prompt budget: `+(pf.length
+    ? pf.map(f=>`<b>${esc(f)}</b> ${po[f].hits}&times; over ${po[f].limit} `+
+                `(worst ${(po[f].worst||0).toLocaleString()}, `+
+                `${(po[f].dropped||0).toLocaleString()} chars cut)`).join(' &middot; ')
+    : 'no field has overrun its ceiling');
   const rs=d.runs||[];
   empty.style.display=rs.length?'none':'block';
   const bestP=Math.max(...rs.map(r=>r.progress_pct||0),0), bestV=Math.max(...rs.map(r=>r.value_per_1k||0),0);
@@ -2772,14 +3211,14 @@ async function load(){
 }
 load(); setInterval(load,5000);
 </script>
-</html>"""
+</html>""")
 
 
-WORK_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+WORK_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Workboard — real work</title>
 <style>
-:root{--bg:#0b1210;--panel:#111c18;--line:#1e332b;--ink:#e8f0ec;--dim:#8fa89d;--gold:#e0b23a;--green:#7bd88f;--red:#f8837b}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#12211c}
 h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
@@ -2809,11 +3248,13 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}</style>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
+    <div style="color:var(--dim);font-size:11px;margin-top:4px">&#128274; sandbox: <b id=sbox>—</b> (Article V)</div>
     <div class=bar><div class=fill id=fill style="width:0%"></div></div></div></div>
   <div class=card><h2>Tasks — derived from failing tests, closed only by the oracle</h2>
     <table><thead><tr><th>Task</th><th>Status</th><th>Solved by</th></tr></thead><tbody id=tasks></tbody></table></div>
@@ -2835,6 +3276,8 @@ async function load(){
   const w=d.world;
   suite.textContent=`${w.tests_passing}/${w.tests_total}`;
   taskmeta.textContent=`${w.tasks_open} open · ${w.tasks_done} done · progress ${w.progress_pct}%`;
+  sbox.textContent=w.sandbox||'unknown';
+  sbox.style.color=(w.sandbox||'').startsWith('network-isolated')?'var(--green)':'var(--gold)';
   fill.style.width=w.progress_pct+'%';
   tasks.innerHTML=(d.tasks||[]).map(t=>`<tr><td>${esc(t.title)}</td>
     <td><span class="tag t-${esc(t.status)}">${esc(t.status)}</span></td>
@@ -2858,15 +3301,629 @@ async function runWorker(){
 }
 load(); setInterval(load,4000);
 </script>
-</html>"""
+</html>""", bg="#0b1210", panel="#111c18", line="#1e332b", ink="#e8f0ec", dim="#8fa89d", green="#7bd88f")
 
 
-MAP_PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
+# ── /flow — how a decision actually travels through the constitution ──────────
+#
+# Every other page shows WHAT happened. This one shows the PATH: proposed, then
+# authorised by policy / board quorum / the human / tacit consent, then carried
+# or blocked-and-escalated, then measured. The numbers come from the permanent
+# record, so the diagram is the system's own accounting rather than a drawing of
+# how we intended it to work.
+
+FLOW_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Decision Flow — The Governor</title>
+<style>
+/*TOKENS*/
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
+.pad{padding:12px 14px}
+.body{max-height:420px;overflow:auto}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
+.kpi div{background:var(--panel);padding:10px 14px}
+.kpi b{display:block;font-size:19px;color:var(--ink);line-height:1.3}
+.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.bar{height:26px;display:flex;border-radius:5px;overflow:hidden;background:#241a0f;margin:2px 0 8px}
+.bar i{display:block;height:100%}
+.rowlab{display:flex;gap:8px;font-size:11px;color:var(--dim);align-items:baseline}
+.rowlab b{color:var(--ink)}
+.rowlab s{margin-left:auto;text-decoration:none;color:var(--dim)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;text-transform:uppercase}
+td.why{color:var(--blue);white-space:normal}
+.alert{padding:10px 14px;border-bottom:1px solid var(--line);color:var(--bad)}
+.ok{color:var(--green)}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:14px;color:var(--dim)}
+svg text{font:10px ui-monospace,Menlo,monospace}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+</style>
+<header>
+  <h1>&#9670; DECISION FLOW</h1>
+  <a href="/">Console</a><a href="/network">Network</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
+</header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<main>
+  <div class="card wide"><div id=live></div><div class=kpi id=kpi></div></div>
+
+  <div class=card><h2>Who authorised it <em>share of all recorded decisions</em></h2>
+    <div class=pad id=auth></div>
+    <div class=note>One population, one denominator: every decision has exactly one
+      authority, so these shares total 100%. Reversible bounded work runs on standing
+      policy; only powers that could run away are routed to a quorum (Article VIII.2).</div></div>
+
+  <div class=card><h2>Did it finish? <em>measured outcome vs still open</em></h2>
+    <div class=pad id=finished></div>
+    <div class=pad id=lag style="border-top:1px solid var(--line);color:var(--dim)"></div></div>
+
+  <div class="card wide"><h2>Decisions per turn <em>rate over the recorded history &mdash; taken vs measured</em></h2>
+    <div class=pad><svg id=series viewBox="0 0 1100 190" width="100%" role=img
+      aria-label="Decisions taken and measured per slice of turns"></svg></div></div>
+
+  <div class=card><h2>The Board's own ledger <em>votes only &mdash; not all decisions</em></h2>
+    <div class=pad id=boardrec></div>
+    <div class=body id=boardlog style="max-height:190px;border-top:1px solid var(--line)"></div></div>
+
+  <div class=card><h2>Who decides <em>and whose decisions produce a result</em></h2>
+    <div class=body id=actors></div></div>
+
+  <div class="card wide"><h2>Recent journeys <em>decision &rarr; authority &rarr; measured outcome</em></h2>
+    <div class=body><table><thead><tr><th>Turn</th><th>Actor</th><th>Decision</th><th>Authority</th><th>Reasoning &rarr; outcome</th></tr></thead>
+    <tbody id=rows></tbody></table><div class=empty id=empty>No decisions on the record yet.</div></div></div>
+</main>
+<script>
+// Resolve every element explicitly. Implicit id-globals silently vanish when the
+// id collides with a Window property (`closed`, `top`, `status`, `name`, `length`),
+// and the panel just renders empty with no error. Two bugs here already.
+/*PALETTE_JS*/
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\u2014';
+const N=n=>(n||0).toLocaleString();
+const SVGNS='http://www.w3.org/2000/svg';
+const COL=[C.green,C.gold,C.blue,C.dim,C.bad,'#c9a0dc'];
+function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!==undefined)n.textContent=x;return n}
+
+// A stacked share bar. Every segment is a real count over one denominator, and the
+// legend prints the count — a proportion nobody can check is decoration.
+function shares(host,items,total){
+  if(!total){host.innerHTML='<div class=empty style=padding:0>Nothing recorded yet.</div>';return}
+  host.innerHTML=`<div class=bar>${items.map((it,i)=>
+      `<i style="width:${(100*it.n/total).toFixed(2)}%;background:${it.colour||COL[i%COL.length]}"
+          title="${esc(it.label)}: ${N(it.n)}"></i>`).join('')}</div>`+
+    items.map((it,i)=>`<div class=rowlab>
+      <span style="color:${it.colour||COL[i%COL.length]}">&#9632;</span>
+      <b>${esc(it.label)}</b> <span>${N(it.n)}</span>
+      <s>${(100*it.n/total).toFixed(1)}%${it.sub?' &middot; '+esc(it.sub):''}</s></div>`).join('');
+}
+
+// Grouped bars over turns. Height is the count; the darker overlay is the part that
+// reached a measured outcome, so "busy" and "finishing" are visibly different.
+function drawSeries(rows){
+  const g=document.getElementById('series');g.textContent='';
+  if(!rows.length){g.appendChild(el('text',{x:12,y:24,fill:C.dim},
+    'No decisions recorded yet — the series appears once the world starts deciding.'));return}
+  const W=1100,H=190,PAD=28,BW=Math.max(3,Math.min(46,(W-2*PAD)/rows.length-4));
+  const max=Math.max(...rows.map(r=>r.n))||1;
+  const y=v=>H-PAD-(H-2*PAD)*(v/max);
+  [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),
+    stroke:C.line}));g.appendChild(el('text',{x:4,y:y(v)+4,fill:C.sub},String(v)))});
+  rows.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/rows.length);
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:C.open,rx:2}))
+      .appendChild(el('title',{},`t${r.turn}: ${r.n} taken`));
+    g.appendChild(el('rect',{x,y:y(r.measured),width:BW,height:H-PAD-y(r.measured),
+      fill:C.green,rx:2})).appendChild(el('title',{},`t${r.turn}: ${r.measured} measured`));
+    if(i%Math.ceil(rows.length/8)===0)
+      g.appendChild(el('text',{x,y:H-8,fill:C.sub},'t'+r.turn))});
+  g.appendChild(el('text',{x:W-PAD-190,y:16,fill:C.green},'\u25a0 measured'));
+  g.appendChild(el('text',{x:W-PAD-90,y:16,fill:C.open},'\u25a0 still open'));
+}
+
+async function tick(){
+  let d; try{ d=await (await fetch('/api/flowdata')).json() }catch(e){ return }
+  const s=d.stats, br_=d.board_record, lg=d.lag;
+  $('tn').textContent=N(d.turn); $('br').textContent=d.brain;
+
+  const bits=[];
+  if(d.stall)bits.push(`<div class=alert>&#9888; STALLED (Article IX) &mdash; ${esc(d.stall)}</div>`);
+  if(d.gate){const g=d.gate;
+    bits.push(`<div class=alert>&#9208; AT THE GATE &mdash; ${esc(g.action||g.uid||'a decision')} awaiting a human`+
+      (g.waited_turns!==undefined?` &middot; waited ${g.waited_turns} turns`:'')+
+      ` &middot; tacit consent after ${Math.round(d.tacit_after_s/60)} min (Article IV.7)</div>`)}
+  if(!bits.length)bits.push('<div class="alert ok">&#10003; Nothing waiting at the gate; no stall declared.</div>');
+  $('live').innerHTML=bits.join('');
+
+  const openN=Math.max(0,s.proposed-s.measured);
+  $('kpi').innerHTML=[
+    ['decisions recorded',N(s.proposed),'each with a stated why'],
+    ['measured',N(s.measured),`${Math.round(100*s.measured/Math.max(1,s.proposed))}% reached an outcome`],
+    ['board votes',N(br_.votes),`${br_.block_pct}% blocked`],
+    ['gate pauses',N(s.gated),'irreversible, held for a human'],
+    ['escalations',N(s.escalated),'Article VIII.4 / IX'],
+    ['median lag',lg.n?`${lg.p50}t`:'\u2014',lg.n?`p90 ${lg.p90}t \u00b7 ${lg.same_turn_pct}% same turn`:'no linked effects yet'],
+  ].map(([k,v,sub])=>`<div><span>${k}</span><b>${v}</b><span>${esc(sub)}</span></div>`).join('');
+
+  shares($('auth'),(d.authorities||[]).map(a=>({label:a.authority,n:a.n,
+    sub:`${a.measured_pct}% measured`})),s.proposed);
+
+  shares($('finished'),[{label:'measured outcome',n:s.measured,colour:C.green},
+                 {label:'still open',n:openN,colour:C.dim}],s.proposed);
+  $('lag').innerHTML=lg.n?`Effect lag over ${N(lg.n)} linked decisions &mdash; median
+      <b style="color:var(--ink)">${lg.p50}</b> turns, p90 <b style="color:var(--ink)">${lg.p90}</b>,
+      worst ${lg.max}. ${lg.same_turn_pct}% land in the same turn they were taken.`
+    :'No decision has been linked to the event it produced yet, so lag cannot be measured.';
+
+  drawSeries(d.series||[]);
+
+  if(br_.votes){
+    shares($('boardrec'),[{label:'carried (quorum reached)',n:br_.carried,colour:C.green},
+                     {label:'blocked (power withheld)',n:br_.blocked,colour:C.bad}],br_.votes);
+  }else{
+    $('boardrec').innerHTML='<div class=empty style=padding:0>The board has taken no votes yet.</div>';
+  }
+  if(br_.votes)$('boardrec').insertAdjacentHTML('beforeend',
+    `<div style="color:var(--dim);font-size:11px;margin-top:6px">Quorum ${d.board.quorum} of
+     ${d.board.governors.length} &middot; ${esc(d.board.governors.join(', '))}.
+     A block is not a dead end: Article VIII.4 requires it be reported once, and
+     ${N(d.stats.escalated)} escalation${d.stats.escalated===1?' has':'s have'} been raised.</div>`);
+  $('boardlog').innerHTML=(br_.recent||[]).map(n=>
+    `<div style="padding:6px 14px;border-bottom:1px solid var(--line);color:${/BLOCKED/.test(n)?C.bad:C.green}">${esc(n)}</div>`).join('')
+    ||'<div class=empty>No votes on the record.</div>';
+
+  const acts=d.actors||[];
+  $('actors').innerHTML=acts.length?acts.map(a=>`<div style="padding:8px 14px;border-bottom:1px solid var(--line)">
+      <div class=rowlab><b>${esc(a.actor)}</b><span>${N(a.n)} decisions</span>
+        <s>${a.measured_pct}% measured</s></div>
+      <div class=bar style="height:6px;margin:4px 0 0"><i style="width:${a.measured_pct}%;background:#a8e086"></i></div>
+    </div>`).join('') : '<div class=empty>Nobody has decided anything yet.</div>';
+
+  const js=d.journeys||[];
+  $('empty').style.display=js.length?'none':'block';
+  $('rows').innerHTML=js.map(r=>`<tr><td>t${N(r.turn)}<div style="color:var(--dim);font-size:10px;white-space:nowrap">${when(r.ts)}</div></td>
+    <td>${esc(r.actor)}</td><td>${esc(r.decision)}</td>
+    <td style="color:var(--gold)">${esc(r.authorized_by||'\u2014')}</td>
+    <td class=why>${esc(r.why)}${r.outcome?`<div class=ok>&rArr; ${esc(r.outcome)}</div>`
+      :'<div style="color:var(--dim);font-size:11px">&rArr; outcome not yet measured</div>'}</td></tr>`).join('');
+}
+tick(); setInterval(tick,4000);
+</script>
+</html>""")
+
+
+NETWORK_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Communication Network — The Governor</title>
+<style>
+/*TOKENS*/
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.wide{grid-column:1/-1}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
+.pad{padding:12px 14px}
+.body{max-height:400px;overflow:auto}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
+.kpi div{background:var(--panel);padding:10px 14px}
+.kpi b{display:block;font-size:19px;line-height:1.3}
+.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.row{padding:8px 14px;border-bottom:1px solid var(--line)}
+.row b{color:var(--gold)}.row .m{color:var(--dim);font-size:11px}
+.bar{height:6px;border-radius:3px;background:#241a0f;overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--gold)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:14px;color:var(--dim)}
+svg text{font:10px ui-monospace,Menlo,monospace}
+#tip{position:fixed;pointer-events:none;background:#241a0f;border:1px solid var(--gold);border-radius:6px;
+  padding:6px 9px;font-size:11px;max-width:330px;display:none;z-index:50}
+.ghost{background:#241a0f;border:1px solid var(--line);color:var(--gold);border-radius:5px;
+  padding:2px 9px;font:11px ui-monospace,Menlo,monospace;cursor:pointer;letter-spacing:0;text-transform:none}
+.ghost:hover{border-color:var(--gold)}
+/* Expanded: the graph owns the window. Everything else stays in the DOM, so the
+   page keeps working and Escape puts it straight back. */
+#graphcard.expanded{position:fixed;inset:10px;z-index:60;overflow:auto;
+  box-shadow:0 0 0 100vmax rgba(9,6,3,.86)}
+#graphcard.expanded #net{height:auto}
+#graphcard.expanded .note{display:none}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+</style>
+<header>
+  <h1>&#9670; COMMUNICATION NETWORK</h1>
+  <a href="/">Console</a><a href="/flow">Decision Flow</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
+</header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+<div id=tip></div>
+<main>
+  <div class="card wide"><div class=kpi id=kpi></div></div>
+
+  <div class="card wide" id=graphcard><h2>Who talks to whom
+      <button id=expandbtn class=ghost onclick="expand()">&#10530; expand</button>
+      <em>ring ordered by influence &mdash; most-heard first, clockwise</em></h2>
+    <svg id=net viewBox="0 0 900 560" width="100%" role=img
+      aria-label="Agents ringed by influence; offices at the centre; arrows run from sender to recipient; edge brightness is the share the listener acted on"></svg>
+    <div class=legend>
+      <span>&#9679; radius = messages in the last hour &mdash; it shrinks when they stop</span>
+      <span>centre = standing offices (no roster seat)</span>
+      <span>&#10230; arrow = sender to recipient</span>
+      <span>line width = messages</span>
+      <span style="color:var(--gold)">brightness = share the listener ACTED on</span>
+      <span>&#8226; dot = message in the last hour</span>
+      <span>click a node to isolate its conversations</span>
+    </div>
+    <div class=note><b>What this can and cannot show.</b> Peer coordination is routed
+      most-senior &rarr; rotating-junior by policy, so the shape is largely by design.
+      The earned signal is brightness: an edge lights only when the receiver changed
+      what they were gathering because of the message &mdash; the event that pays both.
+      Offices broadcast advice we do not yet measure compliance with, so their edges
+      stay dim by construction, not by failure.</div></div>
+
+  <div class=card><h2>Addressed messages per hour <em>and how many landed</em></h2>
+    <div class=pad><svg id=series viewBox="0 0 560 170" width="100%" role=img
+      aria-label="Messages per hour, heard versus unheard"></svg></div></div>
+
+  <div class=card><h2>Most heard <em>influence, not volume</em></h2>
+    <div class=body id=heard></div></div>
+
+  <div class=card><h2>Strongest edges <em>ranked by tips acted on</em></h2>
+    <div class=body id=edges></div></div>
+
+  <div class=card><h2>Latest addressed messages</h2>
+    <div class=body id=recent></div></div>
+</main>
+<script>
+// Resolve every element explicitly — see the note on the flow page: an id that
+// collides with a Window property never becomes a global and fails silently.
+/*PALETTE_JS*/
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const when=t=>t?new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'\u2014';
+const N=n=>(n||0).toLocaleString();
+const SVGNS='http://www.w3.org/2000/svg';
+// Geometry is recomputed on every render so the graph can be EXPANDED: the
+// viewBox grows, the ring grows with it, and nothing is hard-coded to one size.
+let VB={w:900,h:560}, CX=450, CY=280, R=205;
+const STILL=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let POS={},RAD={},PULSES=[],RAF=null,FOCUS=null,LAST=null;
+// RAD is where each node is drawn RIGHT NOW; TGT is where the data says it belongs.
+// Keeping them apart is what lets a node visibly swell as traffic arrives and settle
+// back when it stops — a single value would simply snap between polls.
+let TGT={},NODE_EL={},LABEL_EL={};
+const RMIN=6, RMAX=26, EASE=0.055;
+function el(t,a,x){const n=document.createElementNS(SVGNS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!==undefined)n.textContent=x;return n}
+function showTip(e,h){const t=$('tip');t.innerHTML=h;t.style.display='block';
+  t.style.left=Math.min(innerWidth-340,e.clientX+14)+'px';
+  t.style.top=Math.min(innerHeight-130,e.clientY+14)+'px'}
+function hideTip(){$('tip').style.display='none'}
+
+// Bow each edge PERPENDICULAR to its own chord, with the side chosen by the pair's
+// alphabetical order. A->B and B->A therefore curve opposite ways instead of lying
+// exactly on top of each other, which is what hid half the conversations.
+function ctrl(a,b,from,to){
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const dx=b.x-a.x, dy=b.y-a.y, len=Math.hypot(dx,dy)||1;
+  const side=(from<to)?1:-1, bow=Math.min(95,len*0.20)*side;
+  return {x:mx-(dy/len)*bow, y:my+(dx/len)*bow};
+}
+function at(a,c,b,t){const u=1-t;
+  return {x:u*u*a.x+2*u*t*c.x+t*t*b.x, y:u*u*a.y+2*u*t*c.y+t*t*b.y}}
+// Trim the curve to the rim of each circle (plus room for the arrowhead) so a line
+// is never swallowed by the node it points at.
+function trim(a,c,b,ra,rb){
+  const t0=Math.hypot(c.x-a.x,c.y-a.y)||1, t1=Math.hypot(b.x-c.x,b.y-c.y)||1;
+  return {a:{x:a.x+(c.x-a.x)/t0*ra, y:a.y+(c.y-a.y)/t0*ra},
+          b:{x:b.x-(b.x-c.x)/t1*rb, y:b.y-(b.y-c.y)/t1*rb}};
+}
+
+function render(d){
+  LAST=d;
+  const svg=$('net');svg.textContent='';
+  svg.setAttribute('viewBox',`0 0 ${VB.w} ${VB.h}`);
+  CX=VB.w/2; CY=VB.h/2; R=Math.min(VB.w,VB.h)*0.37;
+  const big=VB.w>1000;
+  const nodes=(d.nodes||[]).slice(), edges=(d.edges||[]);
+  if(!nodes.length){svg.appendChild(el('text',{x:20,y:40,fill:C.dim},
+    'No agents on the roster yet.'));return}
+
+  // Influence decides the LAYOUT, not the roster's arbitrary order: rank each
+  // agent by tips it acted on, then place them clockwise from the top.
+  const inb={},outb={};
+  edges.forEach(e=>{const r=inb[e.to]=inb[e.to]||{heard:0,msgs:0};
+    r.heard+=e.followed; r.msgs+=e.msgs;
+    const o=outb[e.from]=outb[e.from]||{heard:0,msgs:0};
+    o.heard+=e.followed; o.msgs+=e.msgs});
+  const offices=nodes.filter(n=>n.role==='office');
+  const ring=nodes.filter(n=>n.role!=='office').sort((a,b)=>
+    ((inb[b.id]||{}).heard||0)-((inb[a.id]||{}).heard||0) ||
+    ((inb[b.id]||{}).msgs||0)-((inb[a.id]||{}).msgs||0) ||
+    b.contribution-a.contribution);
+  // Size is RECENT traffic, not lifetime contribution. An agent swells while it is
+  // being talked to and settles back when it is not; a node that never shrinks
+  // cannot tell you who matters now, only who once did. Offices are sized by what
+  // they SEND, because an office almost never receives.
+  const act=d.activity||{inbound:{},outbound:{},window_min:60};
+  const load=n=>(n.role==='office'?(act.outbound||{})[n.id]:(act.inbound||{})[n.id])||0;
+  const maxL=Math.max(1,...nodes.map(load));
+  POS={};TGT={};NODE_EL={};LABEL_EL={};
+  ring.forEach((n,i)=>{const th=(i/ring.length)*Math.PI*2-Math.PI/2;
+    POS[n.id]={x:CX+R*Math.cos(th),y:CY+R*Math.sin(th),n}});
+  offices.forEach((n,i)=>{const th=(i/Math.max(1,offices.length))*Math.PI*2-Math.PI/2;
+    const r=offices.length>1?R*0.28:0;
+    POS[n.id]={x:CX+r*Math.cos(th),y:CY+r*Math.sin(th),n,office:true}});
+  nodes.forEach(n=>{
+    const base=big?RMIN+2:RMIN, span=(big?RMAX:RMAX-6)-base;
+    TGT[n.id]=base+span*Math.sqrt(load(n)/maxL);
+    if(RAD[n.id]===undefined)RAD[n.id]=TGT[n.id];   // first sight: no phantom growth
+  });
+  Object.keys(RAD).forEach(k=>{if(!(k in TGT))delete RAD[k]});
+
+  // One arrowhead marker per colour, so DIRECTION is readable without hovering.
+  // Who advises whom is the first question anyone asks of a graph like this.
+  const defs=el('defs',{});svg.appendChild(defs);
+  [['ah-heard',C.gold],['ah-cold',C.cold]].forEach(([id,col])=>{
+    // markerUnits defaults to strokeWidth, which gave a 9px line a 54px arrowhead.
+    // Fix the head in user space so direction reads the same on every edge.
+    const m=el('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:15,
+      markerHeight:15,markerUnits:'userSpaceOnUse',orient:'auto-start-reverse'});
+    m.appendChild(el('path',{d:'M0,1 L10,5 L0,9 z',fill:col}));
+    defs.appendChild(m)});
+
+  const gE=el('g',{});svg.appendChild(gE);
+  const maxM=Math.max(1,...edges.map(e=>e.msgs));
+  const drawn=edges.filter(e=>POS[e.from]&&POS[e.to]);
+  drawn.forEach(e=>{
+    const A=POS[e.from],B=POS[e.to],c=ctrl(A,B,e.from,e.to);
+    const w=Math.max(1.4,Math.min(9,1.4+7.6*e.msgs/maxM));
+    const t=trim(A,c,B,RAD[e.from]+2,RAD[e.to]+4+w);
+    const heard=e.followed/Math.max(1,e.msgs);
+    const dim=FOCUS&&e.from!==FOCUS&&e.to!==FOCUS;
+    const p=el('path',{d:`M${t.a.x},${t.a.y} Q${c.x},${c.y} ${t.b.x},${t.b.y}`,fill:'none',
+      stroke:e.followed?C.gold:C.cold,'stroke-width':w,
+      'marker-end':`url(#${e.followed?'ah-heard':'ah-cold'})`,
+      'stroke-opacity':(dim?0.07:(0.34+0.56*heard)).toFixed(2),'stroke-linecap':'round'});
+    p.addEventListener('mousemove',ev=>showTip(ev,
+      `<b>${esc(e.from)} &rarr; ${esc(e.to)}</b><br>${N(e.msgs)} message${e.msgs===1?'':'s'}<br>`+
+      `<span style="color:var(--gold)">${N(e.followed)} acted on</span> &middot; ${Math.round(heard*100)}% heard`));
+    p.addEventListener('mouseleave',hideTip);
+    gE.appendChild(p);
+    // Expanded, there is room to print the traffic outright, so the reader does
+    // not have to hover every line to read the graph.
+    // Sit the label just off the curve on its bowed side, so it never lands on the
+    // node captions at the ends. Skip edges too short to hold one legibly.
+    const chord=Math.hypot(t.b.x-t.a.x,t.b.y-t.a.y);
+    if(big&&!dim&&chord>90){
+      const q=at(t.a,c,t.b,0.5), m={x:(t.a.x+t.b.x)/2,y:(t.a.y+t.b.y)/2};
+      const off=Math.hypot(q.x-m.x,q.y-m.y)||1;
+      const lx=q.x+(q.x-m.x)/off*12, ly=q.y+(q.y-m.y)/off*12+4;
+      // Never print a count on top of a node or its caption — an unreadable
+      // number is worse than none, because it implies the chart is crowded when
+      // it is only badly placed.
+      const clash=Object.keys(POS).some(k=>
+        Math.hypot(POS[k].x-lx,POS[k].y-ly)<RAD[k]+34);
+      if(!clash)gE.appendChild(el('text',{x:lx,y:ly,
+        fill:e.followed?C.gold:C.sub,'text-anchor':'middle','font-size':11},
+        `${e.followed}/${e.msgs}`))}
+  });
+  const gP=el('g',{id:'pulses'});svg.appendChild(gP);
+
+  const gN=el('g',{});svg.appendChild(gN);
+  nodes.forEach(n=>{const p=POS[n.id];if(!p)return;
+    const st=inb[n.id]||{heard:0,msgs:0}, so=outb[n.id]||{heard:0,msgs:0};
+    const r=RAD[n.id];
+    const dim=FOCUS&&FOCUS!==n.id&&!drawn.some(e=>
+      (e.from===FOCUS&&e.to===n.id)||(e.to===FOCUS&&e.from===n.id));
+    const col=p.office?C.blue:n.alive?(n.tier>=2?C.gold:C.green):'#5d4b33';
+    const g=el('g',{opacity:dim?0.2:1});
+    const halo=p.office?el('circle',{cx:p.x,cy:p.y,r:r+7,fill:'none',
+      stroke:C.blue,'stroke-opacity':0.3,'stroke-dasharray':'3 3'}):null;
+    if(halo)g.appendChild(halo);
+    const dot=el('circle',{cx:p.x,cy:p.y,r,fill:col,'fill-opacity':n.alive?0.85:0.3,
+      stroke:n.alive?col:C.line,'stroke-width':1.5});
+    g.appendChild(dot);
+    const out=p.x>CX;
+    const lab=el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+      y:p.y+(p.office?r+15:4),fill:n.alive?C.ink:'#7a6547','font-size':big?13:11,
+      'text-anchor':p.office?'middle':(out?'start':'end')},n.id);
+    g.appendChild(lab);
+    // Hold the pieces whose geometry follows the radius, so the animation loop can
+    // resize them in place rather than waiting for the next four-second poll.
+    NODE_EL[n.id]={dot,halo,office:p.office,out,x:p.x,y:p.y};
+    LABEL_EL[n.id]=[lab];
+    // An office almost never RECEIVES, so "0/0 heard" under it would be noise
+    // dressed as data. Report what each node actually does: offices are judged on
+    // whether their advice was heeded, agents on what they acted upon.
+    if(big){const sub=el('text',{x:p.x+(p.office?0:(out?r+6:-(r+6))),
+      y:p.y+(p.office?r+30:19),fill:C.sub,'font-size':10,
+      'text-anchor':p.office?'middle':(out?'start':'end')},
+      p.office?`${so.heard}/${so.msgs} heeded`:`${st.heard}/${st.msgs} heard`);
+      g.appendChild(sub); LABEL_EL[n.id].push(sub);}
+    g.style.cursor='pointer';
+    g.addEventListener('mousemove',ev=>showTip(ev,
+      `<b>${esc(n.id)}</b><br>${esc(n.role)}${p.office?'':' &middot; tier '+n.tier}<br>`+
+      (p.office?'standing office &middot; no roster seat'
+              :`contribution ${N(n.contribution)}<br>${n.alive?esc(n.status):'retired'}`)+
+      `<br><span style="color:var(--sub)">size: ${N(load(n))} ${p.office?'sent':'received'} `+
+      `in the last ${act.window_min}m</span>`+
+      `<br>received ${N(st.msgs)}, acted on <span style="color:var(--gold)">${N(st.heard)}</span>`+
+      `<br>sent ${N(so.msgs)}, heeded <span style="color:var(--gold)">${N(so.heard)}</span>`+
+      `<br><span style="color:var(--sub)">click to isolate</span>`));
+    g.addEventListener('mouseleave',hideTip);
+    // Click to isolate: in a busy graph the only way to read one agent's
+    // conversations is to mute everyone else's.
+    g.addEventListener('click',()=>{FOCUS=(FOCUS===n.id)?null:n.id;render(LAST)});
+    gN.appendChild(g)});
+
+  if(FOCUS)svg.appendChild(el('text',{x:14,y:VB.h-12,fill:C.gold,'font-size':12},
+    `isolating ${FOCUS} — click it again, or press Esc, to show everyone`));
+
+  const hour=Date.now()/1000-3600;
+  PULSES=(d.recent||[]).filter(m=>POS[m.from]&&POS[m.to]&&(m.ts||0)>hour)
+    .slice(0,16).map((m,i)=>({from:m.from,to:m.to,t:-(i*0.06),followed:m.followed}));
+  // Motion is an enhancement, never the only carrier of meaning. Readers who ask
+  // for reduced motion get the same information as static marks at the midpoint
+  // of each edge — nothing is lost, nothing moves.
+  if(STILL){
+    easeSizes();                       // correct size, arrived at instantly
+    PULSES.forEach(p=>{const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
+      const q=at(a,ctrl(a,b,p.from,p.to),b,0.5);
+      gP.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
+        fill:p.followed?C.gold:C.blue,'fill-opacity':0.9}))});
+    return;
+  }
+  if(!RAF)RAF=requestAnimationFrame(step);
+}
+// Ease each node toward the size its recent traffic deserves. Growth and shrink are
+// the same motion in opposite directions, so a node that goes quiet visibly settles
+// rather than vanishing at the next poll.
+function easeSizes(){
+  let moved=false;
+  for(const id in TGT){
+    const cur=RAD[id], tgt=TGT[id], e=NODE_EL[id];
+    if(cur===undefined||!e)continue;
+    const next=STILL?tgt:cur+(tgt-cur)*EASE;
+    if(Math.abs(tgt-cur)<0.05){RAD[id]=tgt}else{RAD[id]=next;moved=true}
+    const r=RAD[id];
+    e.dot.setAttribute('r',r.toFixed(2));
+    if(e.halo)e.halo.setAttribute('r',(r+7).toFixed(2));
+    (LABEL_EL[id]||[]).forEach((t,i)=>{
+      if(e.office){t.setAttribute('y',(e.y+r+(i?30:15)).toFixed(2))}
+      else{t.setAttribute('x',(e.x+(e.out?r+6:-(r+6))).toFixed(2))}
+    });
+  }
+  return moved;
+}
+
+function step(){
+  easeSizes();
+  const g=$('pulses');
+  if(g){g.textContent='';
+    PULSES.forEach(p=>{p.t+=0.006; if(p.t>1.2)p.t=-0.1;
+      if(p.t<0||p.t>1)return;
+      const a=POS[p.from],b=POS[p.to];if(!a||!b)return;
+      const q=at(a,ctrl(a,b,p.from,p.to),b,p.t);
+      g.appendChild(el('circle',{cx:q.x,cy:q.y,r:p.followed?4:2.6,
+        fill:p.followed?C.gold:C.blue,'fill-opacity':0.9}))})}
+  RAF=requestAnimationFrame(step);
+}
+
+// Expand: the graph takes the whole window, the ring grows into it, and every edge
+// and node gains a printed count. A network you cannot enlarge is a network you
+// cannot read the moment it has more than a handful of members.
+function expand(){
+  const on=$('graphcard').classList.toggle('expanded');
+  VB=on?{w:Math.max(1100,Math.min(1900,innerWidth-56)),
+         h:Math.max(680,innerHeight-210)}:{w:900,h:560};
+  $('expandbtn').textContent=on?'✕ collapse':'⤡ expand';
+  document.body.style.overflow=on?'hidden':'';
+  if(LAST)render(LAST);
+}
+addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  if(FOCUS){FOCUS=null;if(LAST)render(LAST);return}
+  if($('graphcard').classList.contains('expanded'))expand();
+});
+
+function drawSeries(rows){
+  const g=document.getElementById('series');g.textContent='';
+  if(!rows.length){g.appendChild(el('text',{x:12,y:24,fill:C.dim},
+    'No addressed messages in the last 24 hours.'));return}
+  const r2=rows.slice().sort((a,b)=>b.hours_ago-a.hours_ago);
+  const W=560,H=170,PAD=26,BW=Math.max(3,(W-2*PAD)/r2.length-3);
+  const max=Math.max(...r2.map(r=>r.n))||1;
+  const y=v=>H-PAD-(H-2*PAD)*(v/max);
+  [0,max].forEach(v=>{g.appendChild(el('line',{x1:PAD,y1:y(v),x2:W-PAD,y2:y(v),stroke:C.line}));
+    g.appendChild(el('text',{x:4,y:y(v)+4,fill:C.sub},String(v)))});
+  r2.forEach((r,i)=>{const x=PAD+i*((W-2*PAD)/r2.length);
+    g.appendChild(el('rect',{x,y:y(r.n),width:BW,height:H-PAD-y(r.n),fill:C.cold,rx:2}))
+      .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.n} sent`));
+    g.appendChild(el('rect',{x,y:y(r.heard),width:BW,height:H-PAD-y(r.heard),fill:C.gold,rx:2}))
+      .appendChild(el('title',{},`${r.hours_ago}h ago: ${r.heard} acted on`))});
+  g.appendChild(el('text',{x:PAD,y:H-8,fill:C.sub},'24h ago'));
+  g.appendChild(el('text',{x:W-PAD-20,y:H-8,fill:C.sub},'now'));
+  g.appendChild(el('text',{x:W-PAD-150,y:16,fill:C.gold},'\u25a0 acted on'));
+  g.appendChild(el('text',{x:W-PAD-60,y:16,fill:C.cold},'\u25a0 ignored'));
+}
+
+async function tick(){
+  let d; try{ d=await (await fetch('/api/netdata')).json() }catch(e){ return }
+  const T=d.totals||{addressed:0,heard:0,heard_pct:0,broadcast:0,pairs:0};
+  $('tn').textContent=N(d.turn); $('br').textContent=d.brain;
+  const eds=(d.edges||[]).slice().sort((a,b)=>b.followed-a.followed||b.msgs-a.msgs);
+  const best=eds[0], worst=eds.filter(e=>!e.followed).sort((a,b)=>b.msgs-a.msgs)[0];
+  $('kpi').innerHTML=[
+    ['addressed messages',N(T.addressed),'sent to a named agent'],
+    ['acted on',N(T.heard),`${T.heard_pct}% of everything addressed`],
+    ['broadcast',N(T.broadcast),'to a room, not a person'],
+    ['active pairs',N(T.pairs),'edges on the record'],
+    ['strongest edge',best?`${best.from} &rarr; ${best.to}`:'\u2014',
+      best?`${best.followed} of ${best.msgs} acted on`:'nothing yet'],
+    ['most ignored',worst?`${worst.from} &rarr; ${worst.to}`:'\u2014',
+      worst?`${worst.msgs} sent, none acted on`:'nothing ignored'],
+  ].map(([k,v,s])=>`<div><span>${k}</span><b style="font-size:${String(v).length>12?'13px':'19px'}">${v}</b><span>${esc(s)}</span></div>`).join('');
+
+  render(d);
+  drawSeries(d.series||[]);
+
+  const byWho={};
+  (d.edges||[]).forEach(e=>{byWho[e.to]=byWho[e.to]||{id:e.to,heard:0,msgs:0};
+    byWho[e.to].heard+=e.followed; byWho[e.to].msgs+=e.msgs});
+  const tops=Object.values(byWho).sort((a,b)=>b.heard-a.heard||b.msgs-a.msgs).slice(0,8);
+  $('heard').innerHTML=tops.length?tops.map(x=>{const pct=Math.round(100*x.heard/Math.max(1,x.msgs));
+    return `<div class=row><b>${esc(x.id)}</b>
+      <div class=m>acted on ${N(x.heard)} of ${N(x.msgs)} received &middot; ${pct}% heard</div>
+      <div class=bar><i style="width:${pct}%"></i></div></div>`}).join('')
+    : '<div class=empty>No addressed messages yet — peers coordinate once two agents are alive.</div>';
+
+  $('edges').innerHTML=eds.length?eds.slice(0,10).map(e=>{const pct=Math.round(100*e.followed/Math.max(1,e.msgs));
+    return `<div class=row><b>${esc(e.from)} &rarr; ${esc(e.to)}</b>
+      <div class=m>${N(e.msgs)} sent &middot; ${N(e.followed)} acted on &middot; ${pct}% heard</div>
+      <div class=bar><i style="width:${pct}%"></i></div></div>`}).join('')
+    : '<div class=empty>No edges yet.</div>';
+
+  const rc=d.recent||[];
+  $('recent').innerHTML=rc.length?rc.slice(0,20).map(m=>`<div class=row>
+      <b>${esc(m.from)} &rarr; ${esc(m.to)}</b> ${m.followed?'<span style="color:var(--green)">&#10003; acted on</span>':'<span style="color:var(--dim)">&middot; no change followed</span>'}
+      <div>${esc(m.body)}</div><div class=m>${when(m.ts)}</div></div>`).join('')
+    : '<div class=empty>Nothing addressed yet.</div>';
+}
+tick(); setInterval(tick,4000);
+</script>
+</html>""")
+
+
+MAP_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>World Map — the settlement</title>
 <style>
-:root{--bg:#120d08;--panel:#1c150d;--line:#3a2c18;--ink:#f0e6d2;--dim:#b09a72;
---food:#e05a5a;--wood:#b5793a;--gold:#e0b23a;--green:#5a8a3a}
+/*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:linear-gradient(180deg,#241a0f,#1c150d)}
@@ -3119,10 +4176,32 @@ async function load(){
 }
 load();setInterval(load,2000);requestAnimationFrame(draw);
 </script>
-</html>"""
+</html>""")
 
 
 def main(argv):
+    # RECLAIM AT BOOT, before the driver starts. The nightly archive only runs while
+    # the process is up and only after 02:00 UTC, and it needs headroom to compress
+    # into — so neither helps a service that is already down on a full volume. Every
+    # restart is therefore the one moment reclamation is both possible and useful.
+    # anchor.reclaim() climbs a ladder because a WAL checkpoint is NOT free — it grows
+    # the database file and fails outright at zero bytes, which I asserted here and
+    # then measured to be false. Compacting the event log in place is the rung that
+    # works at the floor: 0 bytes free -> 7.72 MB returned, on a full test volume.
+    try:
+        _reclaimed = anchor.reclaim(anchor.DB, sim.DB)
+        for _step in _reclaimed["steps"]:
+            print(f"[reclaim] boot — {_step}", file=sys.stderr, flush=True)
+        _free_pct = 100 - _disk()["used_pct"]
+        if _free_pct < 15:                        # still tight: fold history away now,
+            _rep = anchor.archive_night()         # rather than waiting for 02:00
+            print(f"[reclaim] boot archive: " + ("ran — "
+                  f"{_rep['events_archived']:,} events, {_rep['freed_mb']}MB freed"
+                  if _rep["ran"] else f"declined — {_rep['reason']}"),
+                  file=sys.stderr, flush=True)
+    except Exception as _e:                       # reclamation must never block boot
+        print(f"[reclaim] skipped: {type(_e).__name__}: {str(_e)[:80]}",
+              file=sys.stderr, flush=True)
     threading.Thread(target=_drive, daemon=True).start()
     threading.Thread(target=_health_sampler, daemon=True).start()
     port = int(os.environ.get("PORT", "8788"))

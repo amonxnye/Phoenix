@@ -50,6 +50,11 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+_EDGE_COLS = False       # does `messages` carry the graph columns? Set by init().
+                         # False means the migration could not run (full or read-only
+                         # volume) — the graph degrades to empty, the world keeps going.
+
+
 def init() -> None:
     c = _conn()
     try:
@@ -111,6 +116,32 @@ def init() -> None:
             c.execute("ALTER TABLE skills ADD COLUMN stale INT DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # Communication as a GRAPH, not a transcript. A message addressed to a named
+        # agent carries that name in its own column, and `followed` records whether
+        # the recipient acted on it — the difference between talking and influence.
+        #
+        # A MIGRATION MUST NEVER BE ABLE TO STOP THE WORLD FROM BOOTING. When the
+        # volume is full or read-only these ALTERs fail, and the old code read that
+        # failure as "column already there" and then queried a column that did not
+        # exist — turning a full disk into a dead deployment. Ask the schema what it
+        # actually has, and degrade to a graph with no edges rather than to no world.
+        global _EDGE_COLS
+        try:
+            have = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            for col, decl in (("to_agent", "TEXT"), ("followed", "INT DEFAULT 0")):
+                if col not in have:
+                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+            _EDGE_COLS = {"to_agent", "followed"} <= {
+                r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            if _EDGE_COLS:
+                # Backfill: peer messages predate the column and encode the edge in
+                # the sender as "vil-a -> vil-b". Parse it once so history draws too.
+                c.execute("UPDATE messages SET to_agent = "
+                          "TRIM(SUBSTR(sender, INSTR(sender, ?) + 1)) "
+                          "WHERE to_agent IS NULL AND INSTR(sender, ?) > 0", ("→", "→"))
+                c.execute("CREATE INDEX IF NOT EXISTS idx_msg_edge ON messages(to_agent)")
+        except sqlite3.Error:
+            _EDGE_COLS = False                     # no graph; the settlement runs on
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -254,15 +285,25 @@ def visitor_stats() -> dict:
 
 def metric_bump(key: str, n: int = 1) -> None:
     """Platform analytics, permanent, by UTC day: pageviews, unique visitors, chats.
-    Same anchor, same ethos — a counter, not a tracking pixel."""
+    Same anchor, same ethos — a counter, not a tracking pixel.
+
+    Counting a visit must never be able to refuse one: this is telemetry, so a
+    storage fault loses the COUNT, not the page. (A full volume made every
+    console page answer 502 while `/api/*` — which does not count views — stayed
+    up. The least important write in the system was in the critical path.)"""
     day = time.strftime("%Y-%m-%d", time.gmtime())
-    c = _conn()
+    try:
+        c = _conn()
+    except sqlite3.Error:
+        return
     try:
         c.execute("CREATE TABLE IF NOT EXISTS analytics("
                   "day TEXT, key TEXT, value INT DEFAULT 0, PRIMARY KEY(day, key))")
         c.execute("INSERT INTO analytics(day, key, value) VALUES(?,?,?) "
                   "ON CONFLICT(day, key) DO UPDATE SET value=value+?", (day, key, n, n))
         c.commit()
+    except sqlite3.Error:
+        pass                                   # the visit still happened; the tally didn't
     finally:
         c.close()
 
@@ -633,6 +674,84 @@ def skills_top(limit: int = 5) -> list[dict]:
         c.close()
 
 
+# ── relevance retrieval: the RIGHT lessons, not the newest ───────────────────
+#
+# Injecting `skills_top(3)` fed decisions whatever was learned most recently — which
+# is how the anchor once kept recommending a resource nobody was gathering. Memory
+# that grows is only useful if the part that surfaces is the part that applies.
+#
+# SQLite's FTS5 gives BM25 relevance ranking with no dependency and no embeddings:
+# the index lives in the same file, is rebuilt from the skills table, and degrades
+# gracefully to recency wherever FTS5 is unavailable.
+
+_FTS_OK: bool | None = None
+
+
+def _fts_ready(c: sqlite3.Connection) -> bool:
+    """Create/refresh the lesson index. Returns False if this SQLite lacks FTS5."""
+    global _FTS_OK
+    if _FTS_OK is False:
+        return False
+    try:
+        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts "
+                  "USING fts5(lesson, sid UNINDEXED)")
+        # keep the index in step with the live (non-stale) lessons — cheap: the live
+        # set is bounded to ~30 by skill_prune
+        live = c.execute("SELECT id, lesson FROM skills WHERE stale=0").fetchall()
+        indexed = {r[0] for r in c.execute("SELECT sid FROM skills_fts").fetchall()}
+        want = {i for i, _ in live}
+        for i, lesson in live:
+            if i not in indexed:
+                c.execute("INSERT INTO skills_fts(lesson, sid) VALUES(?,?)", (lesson, i))
+        for gone in indexed - want:                # stale/pruned lessons stop surfacing
+            c.execute("DELETE FROM skills_fts WHERE sid=?", (gone,))
+        c.commit()
+        _FTS_OK = True
+        return True
+    except sqlite3.OperationalError:
+        _FTS_OK = False
+        return False
+
+
+def _fts_query(text: str) -> str:
+    """Turn a situation sentence into a safe FTS OR-query: alphanumeric words only,
+    deduped, short words dropped (they carry no signal and inflate matches)."""
+    words, seen = [], set()
+    for w in "".join(ch if ch.isalnum() else " " for ch in (text or "")).split():
+        wl = w.lower()
+        if len(wl) > 3 and wl not in seen and not wl.isdigit():
+            seen.add(wl)
+            words.append(wl)
+    return " OR ".join(words[:40])
+
+
+def skills_relevant(situation: str, limit: int = 3) -> list[dict]:
+    """The lessons that actually bear on THIS decision, ranked by BM25 relevance.
+    Falls back to the newest lessons when FTS5 is unavailable or nothing matches —
+    a decision is never left without wisdom, it just may be less targeted."""
+    q = _fts_query(situation)
+    if not q:
+        return skills_top(limit)
+    c = _conn()
+    try:
+        if not _fts_ready(c):
+            return skills_top(limit)
+        try:
+            rows = c.execute(
+                "SELECT s.id, s.turn, s.lesson, s.source, s.trigger, s.ts "
+                "FROM skills_fts f JOIN skills s ON s.id = f.sid "
+                "WHERE skills_fts MATCH ? AND s.stale=0 "
+                "ORDER BY bm25(skills_fts) LIMIT ?", (q, limit)).fetchall()
+        except sqlite3.OperationalError:
+            return skills_top(limit)
+    finally:
+        c.close()
+    if not rows:
+        return skills_top(limit)
+    return [{"id": i, "turn": t, "lesson": l, "source": s, "trigger": tr, "ts": ts}
+            for i, t, l, s, tr, ts in rows]
+
+
 def skill_prune(keep: int = 30) -> int:
     """Expire all but the newest `keep` lessons (VI.4: knowledge expires; contradictory
     old guidance ages out instead of coexisting forever). Returns how many were
@@ -707,6 +826,198 @@ def record(turn: int, kind: str, note: str, caused_by: int | None = None) -> int
     return eid
 
 
+ARCHIVE_DIR = os.path.join(_DATA_DIR, "archive")
+
+
+def archive_night(keep_tail: int = 20_000) -> dict:
+    """Fold the day's history into compressed, dated archives on the same volume.
+
+    The event log is append-only and the anchor is permanent, so both already
+    survive a reboot — what they do not survive is growing forever, and a full
+    volume is how this world stopped governing for a week. So this is a backup
+    that also buys space: the log is gzipped whole, then truncated to its recent
+    tail, and the anchor is snapshotted through SQLite's own backup API (safe on
+    a live database, unlike copying the file) and gzipped beside it. JSON lines
+    compress roughly fifteen-fold, so the full history costs a fraction of the
+    room it did while staying completely readable.
+
+    Never raises and never runs a volume dry: it refuses when free space would
+    not comfortably hold the copy. Returns a report for the console.
+    """
+    import gzip
+    import shutil
+    out = {"ran": False, "reason": "", "events_archived": 0,
+           "freed_mb": 0.0, "files": [], "ts": time.time()}
+    try:
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        # Refuse rather than finish the job the disk fault started.
+        st = os.statvfs(_DATA_DIR)
+        free = st.f_bavail * st.f_frsize
+        need = 0
+        for p in (EVENTS_PATH, DB):
+            if os.path.exists(p):
+                need += os.path.getsize(p)
+        if free < need // 4 + 5_000_000:           # gzip lands well under a quarter
+            out["reason"] = (f"declined — {free // 1_000_000}MB free is too little to "
+                             f"archive {need // 1_000_000}MB safely")
+            return out
+
+        # 1. the event log: gzip the whole thing, then keep only the recent tail.
+        if os.path.exists(EVENTS_PATH):
+            before = os.path.getsize(EVENTS_PATH)
+            dest = os.path.join(ARCHIVE_DIR, f"events-{day}.jsonl.gz")
+            with open(EVENTS_PATH, "rb") as src, gzip.open(dest, "wb", 6) as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            with open(EVENTS_PATH, "r", errors="replace") as fh:
+                lines = fh.readlines()
+            out["events_archived"] = len(lines)
+            if len(lines) > keep_tail:
+                tmp = EVENTS_PATH + ".rotating"
+                with open(tmp, "w") as fh:
+                    fh.writelines(lines[-keep_tail:])
+                os.replace(tmp, EVENTS_PATH)       # atomic: no window with no log
+                global _EVENT_COUNT
+                _EVENT_COUNT = None                # recount lazily against the new file
+            out["freed_mb"] = round(
+                (before - os.path.getsize(EVENTS_PATH)) / 1e6, 2)
+            out["files"].append(os.path.basename(dest))
+
+        # 2. the anchor: a consistent snapshot of a LIVE database, then gzipped.
+        snap = os.path.join(ARCHIVE_DIR, f"anchor-{day}.sqlite")
+        src_c, dst_c = _conn(), sqlite3.connect(snap)
+        try:
+            src_c.backup(dst_c)
+        finally:
+            dst_c.close()
+            src_c.close()
+        with open(snap, "rb") as s, gzip.open(snap + ".gz", "wb", 6) as z:
+            shutil.copyfileobj(s, z, 1 << 20)
+        os.remove(snap)                            # keep the compressed copy only
+        out["files"].append(os.path.basename(snap) + ".gz")
+
+        out["ran"] = True
+        config_set("last_archive", str(int(out["ts"])))
+        record(CURRENT_TURN, "archive",
+               f"nightly archive — {out['events_archived']:,} events to "
+               f"{', '.join(out['files'])}; {out['freed_mb']}MB freed")
+    except Exception as e:                         # a backup may never break the world
+        out["reason"] = f"{type(e).__name__}: {str(e)[:120]}"
+    return out
+
+
+def _checkpoint(db: str) -> int:
+    """Fold a write-ahead log back into its database. Returns bytes freed."""
+    wal = db + "-wal"
+    before = os.path.getsize(wal) if os.path.exists(wal) else 0
+    if not before:
+        return 0
+    c = sqlite3.connect(db, timeout=5.0)
+    try:
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        c.commit()
+    finally:
+        c.close()
+    return before - (os.path.getsize(wal) if os.path.exists(wal) else 0)
+
+
+def _compact_events(keep_tail: int = 4000) -> int:
+    """Cut the event log down to its most recent lines USING NO EXTRA SPACE.
+
+    The last resort, and the only reclamation that works at literally zero bytes
+    free: read the tail into memory, rewrite it over the head of the same file,
+    and truncate. No temp file, no copy, nothing that needs the volume to grow.
+    History is lost — which is why it is last, and why it is recorded loudly
+    rather than done quietly.
+    """
+    if not os.path.exists(EVENTS_PATH):
+        return 0
+    before = os.path.getsize(EVENTS_PATH)
+    with open(EVENTS_PATH, "r+b") as fh:
+        lines = fh.readlines()
+        # A volume that fills mid-write leaves a truncated final record. Compaction
+        # is the one moment we are already rewriting the file, so repair it here
+        # rather than faithfully carrying the damage forward.
+        if lines and not lines[-1].endswith(b"\n"):
+            lines.pop()
+        if len(lines) <= keep_tail:
+            return 0
+        tail = b"".join(lines[-keep_tail:])
+        fh.seek(0)
+        fh.write(tail)
+        fh.truncate()
+        fh.flush()
+        os.fsync(fh.fileno())
+    global _EVENT_COUNT
+    _EVENT_COUNT = None
+    return before - os.path.getsize(EVENTS_PATH)
+
+
+def reclaim(*db_paths: str) -> dict:
+    """Return space to a volume that may be completely full.
+
+    The nightly archive only runs while the process is up and needs headroom to
+    compress into, so neither it nor anything else helps a service already down on
+    a full disk. That is Article IX.7 again: a recovery that requires the system to
+    be running cannot recover a system that is not. Every restart is therefore the
+    one moment reclamation is both possible and useful.
+
+    A LADDER, because each rung buys the headroom the next one needs. A WAL
+    checkpoint is NOT free — it writes the log's pages back into the main database
+    file, which has to grow — and on a genuinely full volume it fails outright with
+    "database or disk is full". Measured, not assumed: that is exactly what happened
+    on an 8 MB test volume holding a 4.12 MB WAL against a 0.54 MB database.
+
+    So: checkpoint first; if the volume is still at the floor, compact the event log
+    in place (the only move that needs no space at all); then checkpoint again with
+    the room that bought.
+    """
+    dbs = db_paths or (DB,)
+    out = {"freed_mb": 0.0, "steps": [], "dropped_events_bytes": 0}
+
+    def _sweep(label):
+        got = 0
+        for db in dbs:
+            try:
+                got += _checkpoint(db)
+            except (OSError, sqlite3.Error) as e:
+                out.setdefault("errors", []).append(
+                    f"{label} {os.path.basename(db)}: {str(e)[:60]}")
+        if got:
+            out["steps"].append(f"{label}: {got/1e6:.2f}MB from write-ahead logs")
+        return got
+
+    freed = _sweep("checkpoint")
+    try:
+        st = os.statvfs(os.path.dirname(EVENTS_PATH) or ".")
+        if st.f_bavail * st.f_frsize < 2_000_000:      # still on the floor
+            cut = _compact_events()
+            if cut:
+                freed += cut
+                out["dropped_events_bytes"] = cut
+                out["steps"].append(f"event log compacted in place: {cut/1e6:.2f}MB "
+                                    f"of history dropped to keep the world alive")
+                freed += _sweep("checkpoint-after-compaction")
+    except OSError as e:
+        out.setdefault("errors", []).append(f"statvfs: {str(e)[:60]}")
+
+    out["freed_mb"] = round(freed / 1e6, 2)
+    return out
+
+
+def archives() -> list[dict]:
+    """What has been archived, newest first — the history you can still read."""
+    try:
+        rows = []
+        for name in sorted(os.listdir(ARCHIVE_DIR), reverse=True):
+            p = os.path.join(ARCHIVE_DIR, name)
+            rows.append({"name": name, "mb": round(os.path.getsize(p) / 1e6, 2),
+                         "ts": os.path.getmtime(p)})
+        return rows
+    except OSError:
+        return []
+
+
 def event_log(limit: int = 200) -> list[str]:
     """The permanent event log, newest first. TAIL-read: seek near the end and parse
     only what's needed — reading the whole multi-MB file per poller per second is
@@ -735,14 +1046,22 @@ def event_log(limit: int = 200) -> list[str]:
     return list(reversed(out))
 
 
-def msg_send(thread: str, sender: str, body: str) -> None:
+def msg_send(thread: str, sender: str, body: str, to: str = "") -> None:
     """Store a chat message. thread = the counterpart the human converses with;
-    sender = 'operator' (the human) or the counterpart's name. Every message is
-    also mirrored into the event log — communications are observable, not hidden."""
+    sender = 'operator' (the human) or the counterpart's name. `to` names the
+    recipient when the message is ADDRESSED rather than broadcast — that is the
+    edge the communication graph is drawn from. Every message is also mirrored
+    into the event log — communications are observable, not hidden."""
+    if not to and "→" in sender:
+        to = sender.split("→", 1)[1].strip()       # legacy "a -> b" senders still draw
     c = _conn()
     try:
-        c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
-                  (thread, sender, body, time.time()))
+        if _EDGE_COLS:
+            c.execute("INSERT INTO messages(thread, sender, body, ts, to_agent) "
+                      "VALUES(?,?,?,?,?)", (thread, sender, body, time.time(), to or None))
+        else:                                      # graph unavailable — never lose the message
+            c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
+                      (thread, sender, body, time.time()))
         c.commit()
     finally:
         c.close()
@@ -784,24 +1103,360 @@ def msg_count(thread: str) -> int:
         c.close()
 
 
-def ingest(topic: str, source: str, fact: str) -> None:
-    """Bring external knowledge into the anchor (Article VI): the source is always
-    recorded, and the fact is stored as data — it is never executed or acted on."""
+# ── The communication graph — who talks to whom, and who is actually heard ────
+#
+# A transcript shows that a message was sent. A graph shows whether it MOVED
+# anyone. `followed` is set when the recipient acts on the tip (the same event
+# that pays both agents), so edge weight is influence, not volume.
+
+def _edge_from(sender: str) -> str:
+    return sender.split("→", 1)[0].strip() if "→" in sender else sender
+
+
+def msg_follow(sender: str, to: str) -> bool:
+    """Mark the most recent unfollowed message on this edge as acted upon.
+    Returns True if one was marked — a tip nobody acted on is left cold."""
+    if not _EDGE_COLS:
+        return False
     c = _conn()
     try:
-        c.execute("INSERT INTO external_knowledge(topic, source, fact) VALUES(?,?,?)",
-                  (topic, source, fact))
+        row = c.execute("SELECT id FROM messages WHERE to_agent=? AND followed=0 "
+                        "AND (sender=? OR sender LIKE ?) ORDER BY id DESC LIMIT 1",
+                        (to, sender, sender + " →%")).fetchone()
+        if not row:
+            return False
+        c.execute("UPDATE messages SET followed=1 WHERE id=?", (row[0],))
         c.commit()
+        return True
     finally:
         c.close()
 
 
-def external(limit: int = 20) -> list[dict]:
+def comm_edges(limit: int = 4000) -> list[dict]:
+    """Aggregated edges over the most recent addressed messages: how many were
+    sent along each, and how many of those the recipient acted on."""
+    if not _EDGE_COLS:
+        return []
     c = _conn()
     try:
-        rows = c.execute("SELECT id, topic, source, fact FROM external_knowledge ORDER BY id DESC "
-                         "LIMIT ?", (limit,)).fetchall()
-        return [{"id": i, "topic": t, "source": s, "fact": f} for i, t, s, f in rows]
+        rows = c.execute(
+            "SELECT sender, to_agent, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
+    agg: dict[tuple, dict] = {}
+    for sender, to, followed in rows:
+        key = (_edge_from(sender), to)
+        e = agg.setdefault(key, {"from": key[0], "to": key[1], "msgs": 0, "followed": 0})
+        e["msgs"] += 1
+        e["followed"] += 1 if followed else 0
+    return sorted(agg.values(), key=lambda e: (-e["followed"], -e["msgs"]))
+
+
+def comm_recent(limit: int = 40) -> list[dict]:
+    """The most recent addressed messages, newest first — what to animate."""
+    if not _EDGE_COLS:
+        return []
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT sender, to_agent, body, ts, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"from": _edge_from(s), "to": t, "body": b, "ts": ts,
+                 "followed": bool(f)} for s, t, b, ts, f in rows]
+    finally:
+        c.close()
+
+
+def decision_authorities() -> list[dict]:
+    """Every authority that has actually carried a decision, with how many it
+    carried and how many of those reached a measured outcome. Read from the data
+    rather than from a fixed list, so an authority nobody uses does not get a box
+    on a diagram, and one we never anticipated is not invisible."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT COALESCE(NULLIF(TRIM(authorized_by),''),'(unrecorded)') AS auth, "
+            "COUNT(*), SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY auth ORDER BY COUNT(*) DESC").fetchall()
+        return [{"authority": a, "n": n, "measured": m or 0,
+                 "measured_pct": round(100 * (m or 0) / max(1, n))} for a, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_actors(limit: int = 8) -> list[dict]:
+    """Who decides, how much, and how often their decisions produce a measured
+    result — accountability per actor, not one number for the whole system."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT actor, COUNT(*), "
+            "SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY actor ORDER BY COUNT(*) DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [{"actor": a, "n": n, "measured": m or 0,
+                 "measured_pct": round(100 * (m or 0) / max(1, n))} for a, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_series(buckets: int = 24) -> list[dict]:
+    """Decisions per slice of recent history, split by whether they were measured.
+    A rate over time answers 'is this system deciding and finishing?' — a single
+    lifetime total cannot."""
+    c = _conn()
+    try:
+        lo, hi = c.execute("SELECT MIN(turn), MAX(turn) FROM decisions").fetchone()
+        if lo is None or hi is None or hi <= lo:
+            return []
+        width = max(1, (hi - lo + 1) // max(1, buckets))
+        rows = c.execute(
+            "SELECT (turn - ?) / ? AS b, COUNT(*), "
+            "SUM(CASE WHEN outcome IS NOT NULL AND outcome<>'' THEN 1 ELSE 0 END) "
+            "FROM decisions GROUP BY b ORDER BY b", (lo, width)).fetchall()
+        return [{"turn": lo + b * width, "n": n, "measured": m or 0} for b, n, m in rows]
+    finally:
+        c.close()
+
+
+def decision_lag() -> dict:
+    """How long a decision takes to show a measured effect, in turns — from the
+    decision's own turn to the turn of the event it produced. Waiting is a cost
+    (Article IV.4); this is the one place it can be counted."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT k.turn - d.turn FROM decisions d JOIN knowledge k ON k.id = d.effect_event "
+            "WHERE d.effect_event IS NOT NULL AND k.turn >= d.turn").fetchall()
+        lags = sorted(r[0] for r in rows)
+        if not lags:
+            return {"n": 0, "p50": 0, "p90": 0, "max": 0, "same_turn_pct": 0}
+        return {"n": len(lags), "p50": lags[len(lags) // 2],
+                "p90": lags[min(len(lags) - 1, int(len(lags) * 0.9))],
+                "max": lags[-1],
+                "same_turn_pct": round(100 * sum(1 for x in lags if x == 0) / len(lags))}
+    finally:
+        c.close()
+
+
+def board_record(limit: int = 400) -> dict:
+    """The board's own ledger, kept on its OWN denominator. Carried and blocked
+    are counts of votes the board took — mixing them into the whole decision
+    population (most of which never goes to a vote) drew a river that did not
+    exist."""
+    c = _conn()
+    try:
+        rows = c.execute("SELECT note FROM knowledge WHERE kind='board' "
+                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
+    carried = sum(1 for (n,) in rows if "approved" in n)
+    blocked = sum(1 for (n,) in rows if "BLOCKED" in n)
+    return {"votes": carried + blocked, "carried": carried, "blocked": blocked,
+            "block_pct": round(100 * blocked / max(1, carried + blocked)),
+            "recent": [n for (n,) in rows[:8]]}
+
+
+def comm_series(hours: int = 24) -> list[dict]:
+    """Addressed messages per hour, split by whether the listener acted. Messages
+    carry wall-clock ts (not a turn), so this series is time-based."""
+    if not _EDGE_COLS:
+        return []
+    c = _conn()
+    try:
+        since = time.time() - hours * 3600
+        rows = c.execute(
+            "SELECT CAST((? - ts) / 3600 AS INT) AS h, COUNT(*), "
+            "SUM(CASE WHEN followed THEN 1 ELSE 0 END) FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' AND ts IS NOT NULL AND ts >= ? "
+            "GROUP BY h", (time.time(), since)).fetchall()
+        # Dense, zero-filled: a quiet hour is data. Returning only the hours that
+        # had traffic drew a single bar the width of the chart and called it a
+        # time series.
+        seen = {h: (n, s or 0) for h, n, s in rows}
+        return [{"hours_ago": h, "n": seen.get(h, (0, 0))[0],
+                 "heard": seen.get(h, (0, 0))[1]} for h in range(hours)]
+    finally:
+        c.close()
+
+
+def comm_activity(minutes: int = 60) -> dict:
+    """Addressed traffic per participant over a RECENT WINDOW, not for all time.
+
+    Cumulative counts only ever rise, so anything drawn from them can grow and never
+    shrink — which makes a busy agent and a long-retired one look alike. A window
+    lets attention fall away when the traffic does.
+    """
+    if not _EDGE_COLS:
+        return {"window_min": minutes, "inbound": {}, "outbound": {}, "heard": {}}
+    since = time.time() - minutes * 60
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT sender, to_agent, followed FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>'' AND ts IS NOT NULL AND ts >= ?",
+            (since,)).fetchall()
+    finally:
+        c.close()
+    inb: dict[str, int] = {}
+    out: dict[str, int] = {}
+    heard: dict[str, int] = {}
+    for sender, to, followed in rows:
+        frm = _edge_from(sender)
+        out[frm] = out.get(frm, 0) + 1
+        inb[to] = inb.get(to, 0) + 1
+        if followed:
+            heard[to] = heard.get(to, 0) + 1
+    return {"window_min": minutes, "inbound": inb, "outbound": out, "heard": heard}
+
+
+def comm_totals() -> dict:
+    """One honest headline for the graph: how much was addressed, how much landed."""
+    if not _EDGE_COLS:
+        return {"addressed": 0, "heard": 0, "heard_pct": 0, "broadcast": 0, "pairs": 0}
+    c = _conn()
+    try:
+        addressed, heard = c.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN followed THEN 1 ELSE 0 END) FROM messages "
+            "WHERE to_agent IS NOT NULL AND to_agent<>''").fetchone()
+        broadcast = c.execute("SELECT COUNT(*) FROM messages "
+                              "WHERE to_agent IS NULL OR to_agent=''").fetchone()[0]
+        pairs = c.execute("SELECT COUNT(DISTINCT sender || '>' || to_agent) FROM messages "
+                          "WHERE to_agent IS NOT NULL AND to_agent<>''").fetchone()[0]
+        return {"addressed": addressed or 0, "heard": heard or 0,
+                "heard_pct": round(100 * (heard or 0) / max(1, addressed or 0)),
+                "broadcast": broadcast or 0, "pairs": pairs or 0}
+    finally:
+        c.close()
+
+
+def flow_stats() -> dict:
+    """Counts along the governed-decision pipeline: proposed → voted → carried →
+    gated → measured. Each number is read from the permanent record, so the
+    diagram is the system's own accounting, not a drawing of intent."""
+    c = _conn()
+    try:
+        def one(sql, *a):
+            return c.execute(sql, a).fetchone()[0] or 0
+        return {
+            "proposed": one("SELECT COUNT(*) FROM decisions"),
+            "by_board": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%board%"),
+            "by_human": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%human%"),
+            "by_policy": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%policy%"),
+            "tacit": one("SELECT COUNT(*) FROM decisions WHERE authorized_by LIKE ?", "%tacit%"),
+            "carried": one("SELECT COUNT(*) FROM knowledge WHERE kind='board' AND note LIKE ?", "%approved%"),
+            "blocked": one("SELECT COUNT(*) FROM knowledge WHERE kind='board' AND note LIKE ?", "%BLOCKED%"),
+            "measured": one("SELECT COUNT(*) FROM decisions WHERE outcome IS NOT NULL AND outcome<>''"),
+            "gated": one("SELECT COUNT(*) FROM knowledge WHERE kind='gate'"),
+            "escalated": one("SELECT COUNT(*) FROM knowledge WHERE kind='escalation'"),
+            "stalls": one("SELECT COUNT(*) FROM knowledge WHERE kind='stall'"),
+        }
+    finally:
+        c.close()
+
+
+# ── Article VI.2, enforced: a source that isn't checkable doesn't steer ───────
+#
+# Recording a source string is bookkeeping; CHECKING it is the rule. A fact is
+# `verified` only when its source resolves to something real AND the quoted span is
+# actually found there. Everything else is kept (the record is permanent) but marked
+# unverified, and unverified knowledge is excluded from the facts that steer
+# decisions — the same discipline stale lessons already live under (VI.4).
+#
+# Deterministic and offline by design: quote-or-it-didn't-happen. No model judges
+# whether a citation supports a claim; the text either contains the span or it
+# doesn't. Model-assisted entailment is a later, adversarially-verified tier.
+
+def _resolve_source(source: str) -> str | None:
+    """Return the source's text if it resolves to something readable, else None.
+    Handles local files today (file paths under the repo/data dirs); a URL fetcher
+    can be added behind the same interface without changing any caller."""
+    src = (source or "").strip()
+    if not src or "://" in src:
+        return None                                # remote sources: not resolvable offline
+    for base in (_DATA_DIR, os.path.dirname(os.path.abspath(__file__)),
+                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        p = os.path.realpath(os.path.join(base, src))
+        if p.startswith(os.path.realpath(base)) and os.path.isfile(p):
+            try:
+                with open(p, errors="replace") as f:
+                    return f.read()
+            except OSError:
+                return None
+    return None
+
+
+def _normalise(s: str) -> str:
+    return " ".join((s or "").split()).lower()
+
+
+def verify_claim(source: str, quote: str) -> tuple[bool, str]:
+    """The citation check: (verified, reason).
+
+    1. RESOLUTION — does the source exist and can it be read?
+    2. SUPPORT    — does it actually contain the quoted span?
+    A claim with no quote is never verified: an assertion about a source is not
+    evidence from it."""
+    if not (quote or "").strip():
+        return False, "no quoted span — a claim without evidence is not verified"
+    text = _resolve_source(source)
+    if text is None:
+        return False, f"source did not resolve: {source[:60] or '(none)'}"
+    if _normalise(quote) in _normalise(text):
+        return True, "source resolves and contains the quoted span"
+    return False, "source resolves but does NOT contain the quoted span"
+
+
+def ingest(topic: str, source: str, fact: str, quote: str = "") -> dict:
+    """Bring external knowledge into the anchor (Article VI): the source is always
+    recorded, the fact is stored as data — never executed or acted on — and the
+    citation is CHECKED. Returns {id, verified, reason}. Unverified knowledge is kept
+    for the record but does not steer decisions (see `external(verified_only=True)`)."""
+    verified, reason = verify_claim(source, quote)
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS external_knowledge("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, source TEXT, fact TEXT)")
+        for col, ddl in (("quote", "TEXT DEFAULT ''"), ("verified", "INT DEFAULT 0"),
+                         ("reason", "TEXT DEFAULT ''")):
+            try:
+                c.execute(f"ALTER TABLE external_knowledge ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                pass
+        cur = c.execute("INSERT INTO external_knowledge(topic, source, fact, quote, "
+                        "verified, reason) VALUES(?,?,?,?,?,?)",
+                        (topic, source, fact, quote, 1 if verified else 0, reason))
+        c.commit()
+        eid = cur.lastrowid
+    finally:
+        c.close()
+    record(-1, "ingest" if verified else "unverified",
+           f"{'VERIFIED' if verified else 'UNVERIFIED'} [{topic}] {fact[:140]} "
+           f"— {reason}")
+    return {"id": eid, "verified": verified, "reason": reason}
+
+
+def external(limit: int = 20, verified_only: bool = False) -> list[dict]:
+    """Ingested knowledge, newest first. `verified_only` is what decision-making code
+    should read: unverified facts remain on the record but must not steer (VI.2)."""
+    c = _conn()
+    try:
+        try:
+            q = ("SELECT id, topic, source, fact, COALESCE(quote,''), "
+                 "COALESCE(verified,0), COALESCE(reason,'') FROM external_knowledge"
+                 + (" WHERE COALESCE(verified,0)=1" if verified_only else "")
+                 + " ORDER BY id DESC LIMIT ?")
+            rows = c.execute(q, (limit,)).fetchall()
+        except sqlite3.OperationalError:
+            rows = [(i, t, s, f, "", 0, "") for i, t, s, f in c.execute(
+                "SELECT id, topic, source, fact FROM external_knowledge "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+        return [{"id": i, "topic": t, "source": s, "fact": f, "quote": q_,
+                 "verified": bool(v), "reason": r}
+                for i, t, s, f, q_, v, r in rows]
     finally:
         c.close()
 

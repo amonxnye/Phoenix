@@ -20,3 +20,8 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+
+# Test fixtures: verify_sim mkdtemp()s beside the anchor DB and removes it at exit;
+# these two escaped into commits 4454793 and ed36cf1 before that cleanup existed.
+gov/tmp*/
+gov/archive/

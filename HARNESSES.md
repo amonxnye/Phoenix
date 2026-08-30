@@ -24,6 +24,7 @@ That is the whole selection rule.
 | `harness/quant` | Strategy research | out-of-sample backtest on an unreadable holdout | placing a trade (tacit consent disabled) | design |
 | `harness/ops` | Reliability engineering | the SLO recovering and holding | every production mutation | design |
 | `harness/data` | Data engineering & analysis | data contracts passing on staging | any production write, deletion, backfill or export | design |
+| `harness/logistics` | Supply chain & logistics | a network simulator replaying unseen demand (service *and* capital) | the purchase order / dispatch / contract | design |
 
 ## Candidates not yet branched
 
@@ -31,7 +32,6 @@ Strong fit (the oracle exists, the gate is obvious):
 - **Formal verification / theorem proving** — the proof checker is a *perfect* oracle.
 - **Hardware & chip design** — simulation and DRC as oracle; the gate is tapeout, the
   most expensive irreversible action in industry.
-- **Logistics & supply chain** — network simulation; gate = purchase orders.
 - **Energy & grid** — load simulators; gate = physical dispatch.
 - **Clinical trial design** — power calculations and protocol simulation; gate =
   enrolling a human being.

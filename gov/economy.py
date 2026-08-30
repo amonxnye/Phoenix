@@ -65,9 +65,16 @@ def enlist(agent: str, tier: int = 0) -> None:
     # the row is reset to a fresh living villager instead of silently staying dead.
     c = _conn()
     try:
+        # Re-enlisting a LIVING agent is a no-op: a worker that returns for another
+        # cycle keeps the career it has earned. Only a dead (or reused) id is reset to
+        # a fresh villager — otherwise contribution could never accumulate toward
+        # promotion across cycles.
         c.execute("INSERT INTO ledger(agent, tier, contribution, budget, alive) "
                   "VALUES(?,?,0,?,1) ON CONFLICT(agent) DO UPDATE SET "
-                  "tier=excluded.tier, contribution=0, budget=excluded.budget, alive=1",
+                  "tier=CASE WHEN alive=0 THEN excluded.tier ELSE tier END, "
+                  "contribution=CASE WHEN alive=0 THEN 0 ELSE contribution END, "
+                  "budget=CASE WHEN alive=0 THEN excluded.budget ELSE budget END, "
+                  "alive=1",
                   (agent, tier, TIERS[tier]["budget"]))
         c.commit()
     finally:
