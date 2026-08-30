@@ -1847,6 +1847,28 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass                                  # client hung up mid-response — not an error
 
+    _PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript",
+                   ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg",
+                   ".glb": "model/gltf-binary", ".json": "application/json"}
+    _PAGE_CACHE: dict = {}
+
+    def _serve_page_file(self, rel: str):
+        """Serve a file from gov/pages/ — the 3D worlds and their vendored engines.
+        The path is resolved and must stay inside the pages dir (no traversal), and
+        files are cached in memory after the first read (they never change at runtime)."""
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
+        full = os.path.realpath(os.path.join(base, rel.lstrip("/")))
+        if not full.startswith(os.path.realpath(base) + os.sep):
+            return self._send(404, json.dumps({"error": "not found"}))
+        if full not in self._PAGE_CACHE:
+            try:
+                with open(full, "rb") as f:
+                    self._PAGE_CACHE[full] = f.read()
+            except OSError:
+                return self._send(404, json.dumps({"error": "not found"}))
+        ctype = self._PAGE_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
+        return self._send(200, self._PAGE_CACHE[full], ctype)
+
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
         try:
@@ -1927,6 +1949,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/map":
             self._count_view()
             return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
+        # The 3D worlds live as standalone files under gov/pages/ (each is a whole
+        # scene — far too large to inline), with their engines VENDORED under
+        # gov/pages/vendor/ so the deployed console needs no CDN and no network.
+        if self.path == "/map3d":
+            self._count_view()
+            return self._serve_page_file("map3d.html")
+        if self.path == "/babylon":
+            self._count_view()
+            return self._serve_page_file("babylon.html")
+        if self.path.startswith("/pages/"):
+            return self._serve_page_file(self.path[len("/pages/"):])
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
@@ -2535,6 +2568,8 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
   <div class=vmeta id=vmeta></div>
   <div class=ops>
     <a class=navlink href="/map">World Map &rarr;</a>
+    <a class=navlink href="/map3d">3D World &rarr;</a>
+    <a class=navlink href="/babylon">Babylon &rarr;</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -4101,7 +4136,7 @@ canvas{display:block;width:100%;height:auto}
 </style>
 <header><h1>&#9670; WORLD MAP</h1>
   <span class=age id=age>&mdash;</span>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/map3d">3D World</a><a href="/babylon">Babylon</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
   <span class=meta id=meta></span></header>
 <main>
   <div class=card>
