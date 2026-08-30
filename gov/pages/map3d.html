@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset=utf-8><title>3D World</title>
+<style>body{margin:0;background:#120d08}#s{position:fixed;top:8px;left:8px;color:#e0b23a;font:12px monospace}</style>
+<script type="importmap">{"imports":{"three":"/pages/vendor/three.module.js","three/addons/":"/pages/vendor/addons/"}}</script>
+</head><body><div id=s>booting</div>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const r = new THREE.WebGLRenderer({antialias:true});
+r.setSize(innerWidth, innerHeight); document.body.appendChild(r.domElement);
+const sc = new THREE.Scene(); sc.background = new THREE.Color(0x120d08);
+const cam = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100); cam.position.set(3,3,3); cam.lookAt(0,0,0);
+sc.add(new THREE.AmbientLight(0xffffff, 0.4));
+const dl = new THREE.DirectionalLight(0xffe0b0, 2); dl.position.set(5,8,3); sc.add(dl);
+const cube = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({color:0xe0b23a}));
+sc.add(cube);
+new OrbitControls(cam, r.domElement);
+(function anim(t){ requestAnimationFrame(anim); cube.rotation.y = t/1000; r.render(sc, cam); })(0);
+document.getElementById('s').textContent = 'three r' + THREE.REVISION + ' ok';
+</script></body></html>

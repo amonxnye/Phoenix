@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset=utf-8><title>Babylon World</title>
+<style>body{margin:0}#c{width:100vw;height:100vh;display:block}#s{position:fixed;top:8px;left:8px;color:#e0b23a;font:12px monospace}</style>
+<script src="/pages/vendor/babylon.min.js"></script>
+</head><body><canvas id=c></canvas><div id=s>booting</div>
+<script>
+const e = new BABYLON.Engine(document.getElementById('c'), true);
+const sc = new BABYLON.Scene(e); sc.clearColor = BABYLON.Color4.FromHexString('#120d08ff');
+const cam = new BABYLON.ArcRotateCamera('c', -Math.PI/2, Math.PI/3, 8, BABYLON.Vector3.Zero(), sc);
+cam.attachControl(document.getElementById('c'), true);
+new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), sc);
+const sp = BABYLON.MeshBuilder.CreateSphere('s', {diameter:2}, sc);
+const m = new BABYLON.StandardMaterial('m', sc); m.diffuseColor = BABYLON.Color3.FromHexString('#e0b23a'); sp.material = m;
+e.runRenderLoop(() => sc.render());
+document.getElementById('s').textContent = 'babylon ' + BABYLON.Engine.Version + ' ok';
+</script></body></html>
