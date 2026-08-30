@@ -198,6 +198,22 @@ Everything below is those two laws, applied.
    carries the authority that carried it — policy, board quorum, the human, or tacit
    consent — and the pipeline from proposal to measured outcome is counted from the
    permanent record rather than asserted (`anchor.flow_stats`, surfaced on `/flow`).
+8. **A message declares what it is, and an exchange can be read as a whole.** Every
+   message carries an intent (`request`, `response`, `notify`, `ack`, `error`), a
+   conversation it belongs to, and a hop count; a reply names the message it answers.
+   A transcript proves words were exchanged; only an envelope shows who asked, who
+   answered, and who was ignored (`anchor.msg_send`, `anchor.conversations`, surfaced
+   on `/comms`). Adapted from ACCP, which profiles agent messaging over RFC 5322 —
+   we take the envelope and leave the transport, since our agents share a database.
+9. **An unanswered request is a governed state, not a gap in the log.** The second law
+   binds agent traffic as it binds the human gate: a request with no reply is named
+   `unanswered` and shown first, ahead of anything merely recent (`anchor._outcome`).
+   A conversation nobody closed is the same defect as a decision nobody took.
+10. **No exchange may run forever, and a failure may not answer a failure.** A reply
+   past `anchor.MAX_HOPS` is refused, and an `error` may never answer an `error`
+   (ACCP §7) — two agents faulting at each other is a loop, not a conversation. Both
+   refusals are recorded when they bite, because a refusal nobody can see is not
+   governance (`anchor._envelope`).
 > Enforced by `governor.py`, `anchor.py`, `sim_console.py`; tracing via `LANGCHAIN_*` env vars.
 
 ---

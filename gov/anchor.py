@@ -14,6 +14,7 @@ irreversible; the governor still gates every action that spends or can't be undo
 
 import json
 import os
+import random as _rand
 import sqlite3
 import time
 
@@ -51,6 +52,7 @@ def _conn() -> sqlite3.Connection:
 
 
 _EDGE_COLS = False       # does `messages` carry the graph columns? Set by init().
+_CONV_COLS = False       # ... and the ACCP envelope columns? Set by init(), separately.
                          # False means the migration could not run (full or read-only
                          # volume) — the graph degrades to empty, the world keeps going.
 
@@ -142,6 +144,26 @@ def init() -> None:
                 c.execute("CREATE INDEX IF NOT EXISTS idx_msg_edge ON messages(to_agent)")
         except sqlite3.Error:
             _EDGE_COLS = False                     # no graph; the settlement runs on
+        # The ACCP envelope migrates SEPARATELY and fails separately. Bundling it with
+        # the edge columns would mean a volume that can afford one but not both loses
+        # the graph as well — one migration, one feature, one blast radius.
+        global _CONV_COLS
+        try:
+            have = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            for col, decl in (("conv", "TEXT"), ("intent", "TEXT DEFAULT 'notify'"),
+                              ("hops", "INT DEFAULT 1"), ("reply_to", "INT")):
+                if col not in have:
+                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+            _CONV_COLS = {"conv", "intent", "hops", "reply_to"} <= {
+                r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            if _CONV_COLS:
+                # Every pre-envelope message is its own one-hop conversation. History
+                # stays readable on the new page instead of appearing to start today.
+                c.execute("UPDATE messages SET conv = 'legacy-' || id, intent = 'notify', "
+                          "hops = 1 WHERE conv IS NULL")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conv)")
+        except sqlite3.Error:
+            _CONV_COLS = False                     # no envelope; the transcript remains
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -1046,30 +1068,110 @@ def event_log(limit: int = 200) -> list[str]:
     return list(reversed(out))
 
 
-def msg_send(thread: str, sender: str, body: str, to: str = "") -> None:
-    """Store a chat message. thread = the counterpart the human converses with;
-    sender = 'operator' (the human) or the counterpart's name. `to` names the
-    recipient when the message is ADDRESSED rather than broadcast — that is the
-    edge the communication graph is drawn from. Every message is also mirrored
-    into the event log — communications are observable, not hidden."""
-    if not to and "→" in sender:
-        to = sender.split("→", 1)[1].strip()       # legacy "a -> b" senders still draw
+# ── the message envelope: an exchange you can audit, not a stream of prose ────
+#
+# Adapted from ACCP (Agent Communication Context Protocol), which profiles agent
+# messaging over RFC 5322 rather than inventing a transport. We take the part that
+# makes a conversation legible — a conversation token, a declared intent, a hop
+# count, and a link to what is being answered — and leave the mail carriage alone,
+# because our agents share a process and a database.
+#
+# The reason to want it: 403 addressed messages on the live record, 14% of them ever
+# acted on. A flat transcript cannot tell you WHY. It cannot say which message was a
+# question, which answered it, which asked and was ignored, or whether an exchange
+# ever ended. Four columns turn the same traffic into a record that answers all four.
+
+INTENTS = ("request", "response", "notify", "ack", "error")
+MAX_HOPS = 12            # an exchange that cannot end is a loop wearing a conversation
+
+
+def _envelope(intent: str, reply_to: int | None) -> tuple[str, int, str]:
+    """Resolve (conversation, hops, refusal). A refusal is a non-empty third value.
+
+    A message with no parent opens a conversation. A reply joins its parent's and
+    counts one hop further — which is the only reason the ceiling below can exist:
+    a hop count nobody increments is a field, not a limit."""
+    if reply_to is None:
+        return f"c{int(time.time() * 1000):x}{_rand.randrange(1 << 20):05x}", 1, ""
     c = _conn()
     try:
+        row = c.execute("SELECT conv, hops, intent FROM messages WHERE id=?",
+                        (reply_to,)).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        c.close()
+    if not row:                                    # parent gone: open a fresh exchange
+        return f"c{int(time.time() * 1000):x}{_rand.randrange(1 << 20):05x}", 1, ""
+    conv, p_hops, p_intent = row[0], int(row[1] or 1), row[2]
+    if intent == "error" and p_intent == "error":
+        # ACCP §7, and the cheapest loop guard in the protocol: an error reply must
+        # not provoke an error reply. Without it two agents can fault at each other
+        # until something else runs out.
+        return conv, p_hops + 1, (f"conversation {conv}: an error may not answer an "
+                                  f"error (message {reply_to}) — dropped")
+    if p_hops + 1 > MAX_HOPS:
+        return conv, p_hops + 1, (f"conversation {conv}: hop {p_hops + 1} exceeds the "
+                                  f"ceiling of {MAX_HOPS} — exchange closed")
+    return conv, p_hops + 1, ""
+
+
+def msg_send(thread: str, sender: str, body: str, to: str = "",
+             intent: str = "notify", reply_to: int | None = None) -> int | None:
+    """Store a chat message and return its id (None if the envelope was refused, or
+    if the world is running without the graph columns).
+
+    thread = the counterpart the human converses with; sender = 'operator' (the human)
+    or the counterpart's name. `to` names the recipient when the message is ADDRESSED
+    rather than broadcast — that is the edge the communication graph is drawn from.
+
+    `intent` and `reply_to` carry the ACCP envelope (see INTENTS / MAX_HOPS). Passing
+    `reply_to` joins the parent's CONVERSATION and increments its hop count, which is
+    what turns a flat stream of prose into an auditable exchange: who asked, who
+    answered, how far it ran, and whether it ever ended.
+
+    Two refusals are enforced here rather than described somewhere:
+      - a reply past MAX_HOPS is refused, so no exchange can run forever;
+      - an `error` may not answer an `error`, so a failure cannot become a loop.
+    Both are recorded when they bite — a refusal nobody can see is not governance.
+    """
+    if not to and "→" in sender:
+        to = sender.split("→", 1)[1].strip()       # legacy "a -> b" senders still draw
+    intent = intent if intent in INTENTS else "notify"
+    conv, hops = None, 1
+    if _CONV_COLS:
+        conv, hops, refusal = _envelope(intent, reply_to)
+        if refusal:
+            try:
+                record(-1, "comm-refused", refusal)
+            except Exception:
+                pass
+            return None
+    c = _conn()
+    try:
+        cols, vals = ["thread", "sender", "body", "ts"], [thread, sender, body, time.time()]
         if _EDGE_COLS:
-            c.execute("INSERT INTO messages(thread, sender, body, ts, to_agent) "
-                      "VALUES(?,?,?,?,?)", (thread, sender, body, time.time(), to or None))
-        else:                                      # graph unavailable — never lose the message
-            c.execute("INSERT INTO messages(thread, sender, body, ts) VALUES(?,?,?,?)",
-                      (thread, sender, body, time.time()))
+            cols.append("to_agent"), vals.append(to or None)
+        if _CONV_COLS:
+            cols += ["conv", "intent", "hops", "reply_to"]
+            vals += [conv, intent, hops, reply_to]
+        # graph or envelope unavailable → the message is still written, always: losing
+        # a column must cost us the FEATURE, never the record (the migration lesson)
+        cur = c.execute(f"INSERT INTO messages({','.join(cols)}) "
+                        f"VALUES({','.join('?' * len(vals))})", vals)
+        mid = cur.lastrowid
         c.commit()
     finally:
         c.close()
     kind = "comm" if thread == "internal" else "chat"
     try:
-        record(-1, kind, f"[{thread}] {sender}: {body[:400]}")   # VII.5: don't clip telemetry
+        # The envelope belongs in the human-readable log too, or the transcript and
+        # the audit disagree about what happened.
+        tag = f"[{thread}] " + (f"({intent}·h{hops}) " if _CONV_COLS else "")
+        record(-1, kind, f"{tag}{sender}: {body[:400]}")        # VII.5: don't clip telemetry
     except Exception:
         pass
+    return mid                                     # the row exists; the caller may thread it
 
 
 def msg_thread(thread: str, limit: int = 100) -> list[dict]:
@@ -1331,6 +1433,123 @@ def comm_totals() -> dict:
                 "broadcast": broadcast or 0, "pairs": pairs or 0}
     finally:
         c.close()
+
+
+# ── conversations: the exchange, not the stream ───────────────────────────────
+
+def _outcome(intents: list[str], followed: int) -> str:
+    """What actually became of an exchange. This is the whole point of the envelope.
+
+    The second law — no indefinite inaction without an escalation — has always been
+    enforced on the human gate and never on agent traffic, because a flat transcript
+    cannot distinguish a question nobody answered from a remark nobody needed to.
+    An intent can. `unanswered` is the state that should make someone act."""
+    if "error" in intents:
+        return "failed"
+    if "request" in intents:
+        return "answered" if ({"response", "ack"} & set(intents)) else "unanswered"
+    return "acted on" if followed else "one-way"
+
+
+def msg_conv(mid: int | None) -> str:
+    """Which conversation a message belongs to — so a caller holding an id can thread
+    a later reply, or an audit can jump from one line of the log to the whole exchange."""
+    if not _CONV_COLS or mid is None:
+        return ""
+    c = _conn()
+    try:
+        row = c.execute("SELECT conv FROM messages WHERE id=?", (mid,)).fetchone()
+        return (row[0] or "") if row else ""
+    except sqlite3.Error:
+        return ""
+    finally:
+        c.close()
+
+
+def conversation(conv: str, limit: int = 200) -> list[dict]:
+    """One exchange, in order, with its envelope — the readable unit of audit."""
+    if not _CONV_COLS:
+        return []
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT id, sender, COALESCE(to_agent,''), body, ts, intent, hops, reply_to "
+            "FROM messages WHERE conv=? ORDER BY id LIMIT ?", (conv, limit)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        c.close()
+    return [{"id": i, "from": _edge_from(s), "to": t, "body": b, "ts": ts,
+             "intent": it or "notify", "hops": h or 1, "reply_to": rt}
+            for i, s, t, b, ts, it, h, rt in rows]
+
+
+def conversations(limit: int = 40) -> list[dict]:
+    """Recent exchanges, newest first: who took part, how far it ran, how it ended.
+
+    Ordered by outcome severity before recency — an unanswered request from an hour
+    ago matters more than a notice from a minute ago, and a list sorted purely by
+    time buries exactly the rows worth reading."""
+    if not _CONV_COLS:
+        return []
+    c = _conn()
+    try:
+        convs = c.execute(
+            "SELECT conv, MAX(id) FROM messages WHERE conv IS NOT NULL "
+            "GROUP BY conv ORDER BY MAX(id) DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for conv, _ in convs:
+            rows = c.execute(
+                "SELECT sender, COALESCE(to_agent,''), body, ts, intent, hops, "
+                "COALESCE(followed,0) FROM messages WHERE conv=? ORDER BY id",
+                (conv,)).fetchall()
+            if not rows:
+                continue
+            intents = [(r[4] or "notify") for r in rows]
+            who = []
+            for s, t, *_ in rows:                  # order of appearance reads as a story
+                for name in (_edge_from(s), t):
+                    if name and name not in who:
+                        who.append(name)
+            followed = sum(r[6] for r in rows)
+            out.append({"conv": conv, "msgs": len(rows), "hops": max(r[5] or 1 for r in rows),
+                        "started": rows[0][3], "last": rows[-1][3], "who": who,
+                        "intents": intents, "followed": followed,
+                        "outcome": _outcome(intents, followed),
+                        "opener": rows[0][2][:160], "closer": rows[-1][2][:160]})
+    except sqlite3.Error:
+        return []
+    finally:
+        c.close()
+    rank = {"failed": 0, "unanswered": 1, "one-way": 2, "answered": 3, "acted on": 3}
+    return sorted(out, key=lambda x: (rank.get(x["outcome"], 4), -x["last"]))
+
+
+def conv_stats() -> dict:
+    """The headline: how many exchanges, how many ran long, how many ended badly.
+    `unanswered` and `refused` are the two numbers this whole feature exists to show."""
+    zero = {"convs": 0, "unanswered": 0, "failed": 0, "answered": 0, "one_way": 0,
+            "max_hops": 0, "at_ceiling": 0, "refused": 0, "ceiling": MAX_HOPS}
+    if not _CONV_COLS:
+        return zero
+    rows = conversations(400)
+    if not rows:
+        return zero
+    kinds = [r["outcome"] for r in rows]
+    c = _conn()
+    try:
+        refused = c.execute("SELECT COUNT(*) FROM knowledge WHERE kind=?",
+                            ("comm-refused",)).fetchone()[0]
+    except sqlite3.Error:
+        refused = 0
+    finally:
+        c.close()
+    return {"convs": len(rows), "unanswered": kinds.count("unanswered"),
+            "failed": kinds.count("failed"), "answered": kinds.count("answered"),
+            "one_way": kinds.count("one-way") + kinds.count("acted on"),
+            "max_hops": max(r["hops"] for r in rows),
+            "at_ceiling": sum(1 for r in rows if r["hops"] >= MAX_HOPS),
+            "refused": refused, "ceiling": MAX_HOPS}
 
 
 def flow_stats() -> dict:

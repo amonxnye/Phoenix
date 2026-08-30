@@ -336,7 +336,8 @@ _saved_cols = A._EDGE_COLS
 try:
     A._EDGE_COLS = False
     check("a world without the graph columns still records messages",
-          A.msg_send("internal", f"{_a} → {_b}", "sent while degraded") is None)
+          A.msg_send("internal", f"{_a} → {_b}", "sent while degraded") is not None,
+          "the id comes back either way — losing the graph must not also lose threading")
     check("the graph degrades to empty rather than raising",
           A.comm_edges(10) == [] and A.comm_recent(10) == []
           and A.msg_follow(_a, _b) is False)
@@ -344,6 +345,82 @@ try:
           any("sent while degraded" in m["body"] for m in A.msg_thread("internal", 20)))
 finally:
     A._EDGE_COLS = _saved_cols
+
+# ── 12b. the ACCP envelope: an exchange you can audit, not a stream of prose ──
+# A transcript proves words were exchanged. It cannot say which message was a
+# question, which answered it, or which asked and was ignored — and on the live
+# record 86% of addressed messages were never acted on, with no way to tell the
+# difference between a remark nobody needed and a request nobody answered.
+print("\n12b. Conversations — intent, hops, and how an exchange ended (VII.8-10)")
+_conv_of = A.msg_conv
+def _summary(conv):
+    return next((c for c in A.conversations(200) if c["conv"] == conv), {"outcome": "?"})
+_q = A.msg_send("internal", f"{_a} → {_b}", "shall we shift to gold?", to=_b, intent="request")
+_r = A.msg_send("internal", f"{_b} → {_a}", "agreed, shifting", to=_a,
+                intent="response", reply_to=_q)
+check("a reply joins its parent's conversation rather than starting a new one",
+      bool(_q) and bool(_r) and
+      len({m["intent"] for m in A.conversation(_conv_of(_r))}) == 2,
+      f"messages {_q} → {_r} share one conversation")
+check("a reply counts one hop further than what it answers",
+      [m["hops"] for m in A.conversation(_conv_of(_r))] == [1, 2])
+check("an answered request reads as answered",
+      _summary(_conv_of(_r))["outcome"] == "answered")
+
+_lonely = A.msg_send("internal", f"{_a} → {_c}", "can you cover the mill?", to=_c,
+                     intent="request")
+check("a request nobody replied to is named, not merely absent (VII.9)",
+      _summary(_conv_of(_lonely))["outcome"] == "unanswered",
+      "the second law applied to agent traffic, not only to the human gate")
+check("unanswered outranks recent — the row worth reading is not buried",
+      [c["outcome"] for c in A.conversations(60)].index("unanswered")
+      < max((i for i, c in enumerate(A.conversations(60))
+             if c["outcome"] in ("answered", "one-way")), default=99),
+      "worst outcome first, then newest")
+
+# VII.10 — the two refusals. A hop count nobody enforces is a field, not a limit.
+_chain, _refused_at = A.msg_send("internal", "a→b", "open", to="b", intent="request"), 0
+for _i in range(A.MAX_HOPS + 4):
+    _nxt = A.msg_send("internal", "b→a", f"turn {_i}", to="a",
+                      intent="response", reply_to=_chain)
+    if _nxt is None:
+        _refused_at = _i + 2
+        break
+    _chain = _nxt
+check("an exchange cannot run forever — the ceiling actually refuses",
+      _refused_at == A.MAX_HOPS + 1, f"refused at hop {_refused_at}, ceiling {A.MAX_HOPS}")
+check("the refusal is recorded, not silent (a refusal nobody sees is not governance)",
+      any("exceeds the ceiling" in e for e in A.event_log(40)))
+
+_e1 = A.msg_send("internal", "a→b", "gather failed", to="b", intent="error")
+check("an error may not answer an error (ACCP §7)",
+      A.msg_send("internal", "b→a", "your error errored", to="a",
+                 intent="error", reply_to=_e1) is None,
+      "two agents faulting at each other is a loop, not a conversation")
+check("but an error may still be answered normally",
+      A.msg_send("internal", "b→a", "acknowledged, retrying", to="a",
+                 intent="ack", reply_to=_e1) is not None)
+check("an unknown intent degrades to notify rather than entering the record",
+      A.conversation(_conv_of(A.msg_send("internal", "x", "hi", intent="telepathy")))[0]
+      ["intent"] == "notify")
+
+# Losing the envelope must cost the FEATURE, never the transcript — the same rule
+# the edge columns learned the hard way, checked separately because it migrates
+# separately. A volume that can afford one migration but not both keeps the other.
+_saved_conv = A._CONV_COLS
+try:
+    A._CONV_COLS = False
+    check("a world without the envelope columns still records messages",
+          A.msg_send("internal", "z", "sent without an envelope") is not None)
+    check("the conversation views degrade to empty rather than raising",
+          A.conversations(5) == [] and A.conversation("c1") == []
+          and A.conv_stats()["convs"] == 0)
+    check("the transcript survives losing the envelope",
+          any("sent without an envelope" in m["body"] for m in A.msg_thread("internal", 20)))
+finally:
+    A._CONV_COLS = _saved_conv
+check("the console reports the envelope it ACTUALLY has, never asserts it (VII.4)",
+      '"enabled": anchor._CONV_COLS' in open(os.path.join(HERE, "sim_console.py")).read())
 
 # Telemetry may never refuse the thing it is counting. A full volume made every
 # console page answer 502 while /api/* — which does not count views — stayed up:

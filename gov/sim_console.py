@@ -675,7 +675,11 @@ def _governor_report():
     body = brain.think("the Chief Governor", _situation(),
                        f"Report your work to the Board in 1-2 sentences, leading with the "
                        f"vision delta: {facts}") or facts
-    anchor.msg_send("all", "Chief Governor", f"WORK REPORT — {body}"[:480])
+    # A report is a REQUEST for a verdict, and the Board's review below answers it —
+    # one conversation, two hops, so the record shows the exchange and not two
+    # unrelated announcements that happen to sit near each other in the log.
+    _S["report_msg"] = anchor.msg_send("all", "Chief Governor",
+                                       f"WORK REPORT — {body}"[:480], intent="request")
 
     # VIII.5: scored on Vision points gained per compute spent, less waste — never on
     # capacity authorised. Zero movement caps the score at 3 (the load-bearing rule).
@@ -713,14 +717,16 @@ def _governor_report():
                    f"binding constraint is {binding}")
         anchor.msg_send("chief", "Board",
                         f"POOR REVIEW ({score}/10): the vision has not moved. "
-                        f"The binding constraint is {binding}. Your decision needed.")
+                        f"The binding constraint is {binding}. Your decision needed.",
+                        intent="request", reply_to=_S.get("report_msg"))
     elif score <= 4:
         anchor.config_set("birth_throttle", "0.75")
         anchor.config_set("throttle_until", str(t + 30))
         verdict = f"score {score}/10 — wasteful work: births throttled 25% until turn {t + 30}"
     else:
         verdict = f"score {score}/10 — steady; no reward, no sanction"
-    anchor.msg_send("all", "Board", f"REVIEW of the Governor's report: {verdict}")
+    anchor.msg_send("all", "Board", f"REVIEW of the Governor's report: {verdict}",
+                    intent="response", reply_to=_S.get("report_msg"))
     anchor.record(t, "board", f"governor report scored: {verdict}")
     anchor.reason_add(t, "board", "score governor report",
                       f"Δvision {delta:+d}% / {period_tokens:,} tokens = {vppm:.1f} pts/M; "
@@ -839,6 +845,7 @@ def _internal_voices():
         anchor.msg_send("internal", "Chief Governor", line)
     if t % 8 == 0:                # board debates less often; each round is 3 model calls
         said = []                 # a DEBATE: each governor hears and answers the others
+        prev = None               # … and each reply CHAINS, so the debate is one exchange
         for g in board.GOVERNORS:
             stance = {"Prudence": "watch the spend, block anything reckless",
                       "Growth": "push toward the vision",
@@ -849,7 +856,8 @@ def _internal_voices():
                                f"colleagues — agree or push back ({stance}).") \
                 or f"{stance.capitalize()}."
             said.append(f"{g}: {line[:140]}")
-            anchor.msg_send("internal", g, line)
+            prev = anchor.msg_send("internal", g, line, reply_to=prev,
+                                   intent="request" if prev is None else "response")
 
 
 def _peer_chatter():
@@ -872,10 +880,13 @@ def _peer_chatter():
                        f"In one short line, coordinate with your colleague {receiver}: "
                        f"the settlement should gather {res} because {why}.") \
         or f"{receiver}, shift to {res} — {why}."
-    anchor.msg_send("internal", f"{sender} → {receiver}", line, to=receiver)
+    mid = anchor.msg_send("internal", f"{sender} → {receiver}", line, to=receiver,
+                          intent="request")       # a tip ASKS for a change of behaviour
     anchor.career_add(sender, _S["turn"], "message", f"to {receiver}: {line[:140]}")
     anchor.career_add(receiver, _S["turn"], "message", f"from {sender}: {line[:140]}")
-    _S["peer_tip"] = {"from": sender, "to": receiver, "res": res}   # rewarded if followed
+    # carry the message id: when the tip is followed, the ack answers THIS message, so
+    # the record shows an exchange that closed rather than two lines that both happened
+    _S["peer_tip"] = {"from": sender, "to": receiver, "res": res, "msg": mid}
 
 
 def _fleet_speaks():
@@ -1089,6 +1100,11 @@ def _one_turn():
                 economy.credit(uid, 25)
                 economy.credit(tip["from"], 25)
                 anchor.msg_follow(tip["from"], uid)   # the edge is now INFLUENCE, not chatter
+                # …and the exchange gets its answer. Acting on a tip without saying so
+                # leaves an "unanswered request" on the record that nobody can close.
+                anchor.msg_send("internal", f"{uid} → {tip['from']}",
+                                f"acting on your tip — gathering {res}", to=tip["from"],
+                                intent="ack", reply_to=tip.get("msg"))
                 anchor.record(t, "reward", f"{uid} +25 for learning from {tip['from']}; "
                                            f"{tip['from']} +25 for teaching")
                 anchor.career_add(uid, t, "reward", f"+25 learned from {tip['from']}: gather {res}")
@@ -1905,6 +1921,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/network":
             self._count_view()
             return self._send(200, NETWORK_PAGE, "text/html; charset=utf-8")
+        if self.path == "/comms":
+            self._count_view()
+            return self._send(200, COMMS_PAGE, "text/html; charset=utf-8")
         if self.path == "/map":
             self._count_view()
             return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
@@ -1972,6 +1991,20 @@ class Handler(BaseHTTPRequestHandler):
                 "turn": _S["turn"],
                 "brain": brain.brain_name(),
             }))
+        if self.path == "/api/commsdata":
+            return self._send(200, json.dumps({
+                "conversations": anchor.conversations(60),
+                "stats": anchor.conv_stats(),
+                "enabled": anchor._CONV_COLS,   # VII.4: report the feature we ACTUALLY have
+                "turn": _S["turn"],
+            }))
+        if self.path.startswith("/api/conversation"):
+            from urllib.parse import parse_qs, urlparse
+            conv = (parse_qs(urlparse(self.path).query).get("c") or [""])[0]
+            if not conv:
+                return self._send(400, json.dumps({"error": "conversation id required"}))
+            return self._send(200, json.dumps({"conv": conv,
+                                               "turns": anchor.conversation(conv)}))
         if self.path == "/api/evaldata":
             return self._send(200, json.dumps({
                 "runs": anchor.eval_runs(50),
@@ -2830,7 +2863,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -3349,7 +3382,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 </style>
 <header>
   <h1>&#9670; DECISION FLOW</h1>
-  <a href="/">Console</a><a href="/network">Network</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -3503,6 +3536,132 @@ async function tick(){
       :'<div style="color:var(--dim);font-size:11px">&rArr; outcome not yet measured</div>'}</td></tr>`).join('');
 }
 tick(); setInterval(tick,4000);
+</script>
+</html>""")
+
+
+COMMS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Conversations — The Governor</title>
+<style>
+/*TOKENS*/
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+.meta{color:var(--dim);font-size:12px;margin-left:auto}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line)}
+.kpi div{background:var(--panel);padding:10px 14px}
+.kpi b{display:block;font-size:19px;line-height:1.3}
+.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:14px;color:var(--dim)}
+.filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
+.ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;
+  padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
+.ghost:hover{border-color:var(--gold);color:var(--gold)}
+.ghost[aria-pressed=true]{border-color:var(--gold);color:var(--gold);background:#2c2013}
+details{border-bottom:1px solid var(--line)}
+details[open]{background:#241a0f55}
+summary{padding:9px 14px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:#241a0f}
+.who{color:var(--gold);font-weight:700}
+.snip{color:var(--sub);flex:1 1 260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.when{color:var(--dim);font-size:11px}
+.tag{border-radius:4px;padding:0 7px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+  border:1px solid currentColor;white-space:nowrap}
+.o-unanswered{color:var(--bad)}.o-failed{color:var(--bad)}
+.o-answered{color:var(--green)}.o-acted{color:var(--green)}.o-oneway{color:var(--dim)}
+.hop{color:var(--dim);font-size:11px;white-space:nowrap}
+.hop.deep{color:var(--gold)}
+.turn{padding:7px 14px 7px 30px;border-top:1px dotted var(--line);display:flex;gap:9px;align-items:baseline}
+.turn .i{font-size:10px;text-transform:uppercase;letter-spacing:.5px;width:64px;flex:none;color:var(--dim)}
+.turn .i.request{color:var(--gold)}.turn .i.response,.turn .i.ack{color:var(--green)}
+.turn .i.error{color:var(--bad)}
+.turn .t{flex:1;min-width:0;overflow-wrap:anywhere}
+.turn .n{color:var(--dim);font-size:11px;white-space:nowrap}
+</style>
+<header><h1>&#9670; CONVERSATIONS</h1>
+  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a>
+  <a href="/chats">Chats</a><a href="/logs">Logs</a>
+  <span class=meta id=meta>loading&hellip;</span></header>
+<main>
+  <div class=card><h2>The exchange, not the stream <em id=ceil></em></h2>
+    <div class=kpi id=kpi></div>
+    <div class=note id=lede></div></div>
+  <div class=card><h2>Recent exchanges <em>worst outcome first, then newest</em></h2>
+    <div class=filters id=filters></div>
+    <div id=rows><div class=empty>loading&hellip;</div></div></div>
+</main>
+<script>
+/*PALETTE_JS*/
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ago=t=>{const s=Math.max(0,Date.now()/1000-t);
+  return s<60?Math.round(s)+'s':s<3600?Math.round(s/60)+'m':s<86400?Math.round(s/3600)+'h':Math.round(s/86400)+'d'};
+const CLS={'unanswered':'o-unanswered','failed':'o-failed','answered':'o-answered',
+           'acted on':'o-acted','one-way':'o-oneway'};
+let ALL=[], FILTER='all';
+
+function turns(c){
+  return (c.turns||[]).map(m=>`<div class=turn>
+    <span class="i ${esc(m.intent)}">${esc(m.intent)}</span>
+    <span class=t><b>${esc(m.from)}</b>${m.to?' &rarr; '+esc(m.to):''} &mdash; ${esc(m.body)}</span>
+    <span class=n>h${m.hops}</span></div>`).join('');
+}
+function draw(){
+  const rows=document.getElementById('rows');
+  const shown=ALL.filter(c=>FILTER==='all'||c.outcome===FILTER);
+  if(!shown.length){rows.innerHTML='<div class=empty>No exchange matches this filter yet.</div>';return}
+  rows.innerHTML=shown.map(c=>`<details data-conv="${esc(c.conv)}">
+    <summary>
+      <span class="tag ${CLS[c.outcome]||''}">${esc(c.outcome)}</span>
+      <span class=who>${esc((c.who||[]).join(' &rarr; ').replace(/&amp;rarr;/g,'&rarr;'))}</span>
+      <span class=snip>${esc(c.opener)}</span>
+      <span class="hop${c.hops>=Math.ceil(c.ceiling*0.75)?' deep':''}">${c.msgs} msg &middot; ${c.hops}/${c.ceiling} hops</span>
+      <span class=when>${ago(c.last)} ago</span>
+    </summary><div class=body></div></details>`).join('');
+  rows.querySelectorAll('details').forEach(d=>d.addEventListener('toggle',async()=>{
+    if(!d.open||d.dataset.done)return; d.dataset.done='1';
+    const b=d.querySelector('.body'); b.innerHTML='<div class=empty>reading&hellip;</div>';
+    try{ const c=await (await fetch('/api/conversation?c='+encodeURIComponent(d.dataset.conv))).json();
+         b.innerHTML=turns(c)||'<div class=empty>no turns recorded</div>' }
+    catch(e){ b.innerHTML='<div class=empty>could not read this exchange</div>' }
+  }));
+}
+async function load(){
+  let d; try{ d=await (await fetch('/api/commsdata')).json() }catch(e){ return }
+  document.getElementById('meta').textContent=
+    'turn '+d.turn+' \u00b7 '+(d.enabled?'envelope active':'envelope unavailable \u2014 transcript only');
+  const s=d.stats||{};
+  document.getElementById('ceil').textContent='hop ceiling '+(s.ceiling||0);
+  document.getElementById('kpi').innerHTML=
+    [['exchanges',s.convs,''],['unanswered requests',s.unanswered,s.unanswered?'o-unanswered':''],
+     ['failed',s.failed,s.failed?'o-failed':''],['answered',s.answered,s.answered?'o-answered':''],
+     ['deepest exchange',(s.max_hops||0)+'/'+(s.ceiling||0),s.at_ceiling?'o-unanswered':''],
+     ['refused by ceiling',s.refused,s.refused?'o-unanswered':'']]
+    .map(([k,v,cl])=>`<div><b class="${cl}">${v||0}</b><span>${k}</span></div>`).join('');
+  document.getElementById('lede').innerHTML=
+    'Every message declares an intent and joins a conversation, so an exchange can be read as a '+
+    'whole: who asked, who answered, how far it ran. <b>Unanswered</b> is a request nobody replied '+
+    'to &mdash; the second law (no indefinite inaction without an escalation) applied to agent '+
+    'traffic instead of only to the human gate. A reply past hop '+(s.ceiling||0)+' is refused, and '+
+    'an error may not answer an error.';
+  ALL=d.conversations||[];
+  const counts={}; ALL.forEach(c=>counts[c.outcome]=(counts[c.outcome]||0)+1);
+  document.getElementById('filters').innerHTML=
+    [['all',ALL.length]].concat(Object.keys(counts).sort().map(k=>[k,counts[k]]))
+    .map(([k,n])=>`<button class=ghost data-f="${esc(k)}" aria-pressed="${k===FILTER}">${esc(k)} ${n}</button>`).join('');
+  document.getElementById('filters').querySelectorAll('button').forEach(b=>
+    b.onclick=()=>{FILTER=b.dataset.f;
+      document.getElementById('filters').querySelectorAll('button').forEach(x=>
+        x.setAttribute('aria-pressed',x.dataset.f===FILTER)); draw()});
+  draw();
+}
+load(); setInterval(load, 12000);
 </script>
 </html>""")
 
