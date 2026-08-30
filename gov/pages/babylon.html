@@ -1,0 +1,685 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Phoenix — Night Watch</title>
+<style>
+  html,body{margin:0;height:100%;background:#120d08;overflow:hidden}
+  #c{width:100vw;height:100vh;display:block;outline:none}
+  #vig{position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at 50% 42%,transparent 52%,rgba(6,4,12,.62) 100%)}
+  .hud{position:fixed;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#f0e6d2;
+    background:rgba(28,21,13,.84);border:1px solid #3a2c18;border-radius:6px;padding:10px 14px;
+    backdrop-filter:blur(2px);pointer-events:none}
+  #hud{top:14px;left:14px;min-width:190px}
+  #hud h1{margin:0 0 2px;font-size:13px;font-weight:700;letter-spacing:.14em;color:#e0b23a}
+  #hud .sub{color:#b09a72;font-size:11px;margin-bottom:7px}
+  #hud .res{display:flex;justify-content:space-between;gap:14px}
+  #hud .res b{font-weight:600}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  #pend{margin-top:7px;color:#e0b23a;font-size:11px;display:none}
+  #pend .dot{background:#e0b23a;box-shadow:0 0 6px #e0b23a;animation:pp 1.6s infinite}
+  @keyframes pp{50%{opacity:.35}}
+  #keys{bottom:14px;left:14px;color:#b09a72;font-size:11px;padding:7px 12px}
+  #keys b{color:#f0e6d2;font-weight:600}
+  #tip{display:none;min-width:150px;z-index:5}
+  #tip .nm{color:#e0b23a;font-weight:700;letter-spacing:.06em}
+  #tip .fx{color:#b09a72}
+  #tip .ring{color:#a8e086}
+  #tip .worn{color:#e05a5a}
+</style>
+<script src="/pages/vendor/babylon.min.js"></script>
+</head><body>
+<canvas id="c"></canvas><div id="vig"></div>
+<div class="hud" id="hud">
+  <h1>PHOENIX</h1><div class="sub" id="ageln">night watch</div>
+  <div class="res"><span><i class="dot" style="background:#e05a5a"></i>food</span><b id="rf">–</b></div>
+  <div class="res"><span><i class="dot" style="background:#b5793a"></i>wood</span><b id="rw">–</b></div>
+  <div class="res"><span><i class="dot" style="background:#e0b23a"></i>gold</span><b id="rg">–</b></div>
+  <div id="pend"><i class="dot"></i>council awaits approval</div>
+</div>
+<div class="hud" id="keys"><b>drag</b> orbit · <b>wheel</b> zoom · <b>WASD/QE</b> fly · <b>hover</b> a building</div>
+<div class="hud" id="tip"></div>
+<script>
+'use strict';
+/* ---------------- palette ---------------- */
+const PAL={bg:'#120d08',ink:'#f0e6d2',dim:'#b09a72',line:'#3a2c18',
+  food:'#e05a5a',wood:'#b5793a',gold:'#e0b23a',green:'#a8e086',blue:'#8ab4ff'};
+const C3=h=>BABYLON.Color3.FromHexString(h);
+const mulberry32=a=>{a|=0;return()=>{a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);
+  t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;}};
+const seedOf=id=>mulberry32((id*2654435761)>>>0);
+const tileHash=(x,y)=>mulberry32(((x*73856093)^(y*19349663))>>>0);
+const W=24,H=16, wx=x=>x-(W-1)/2, wz=y=>y-(H-1)/2;
+
+/* ---------------- engine / scene ---------------- */
+const canvas=document.getElementById('c');
+const engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true});
+const scene=new BABYLON.Scene(engine);
+scene.clearColor=BABYLON.Color4.FromHexString('#0d0b16ff');
+scene.fogMode=BABYLON.Scene.FOGMODE_EXP2; scene.fogDensity=0.011;
+scene.fogColor=C3('#0f0c1a');
+scene.skipPointerMovePicking=true;
+
+const cam=new BABYLON.ArcRotateCamera('cam',-1.15,1.07,14.5,new BABYLON.Vector3(0.5,0.5,0.5),scene);
+cam.attachControl(canvas,true);
+cam.lowerRadiusLimit=4; cam.upperRadiusLimit=42; cam.upperBetaLimit=1.5; cam.lowerBetaLimit=0.15;
+cam.wheelDeltaPercentage=0.02; cam.panningSensibility=180; cam.minZ=0.1; cam.maxZ=400;
+/* #cam=alpha,beta,radius[,tx,ty,tz] freezes the camera (reproducible screenshots) */
+let camLocked=false;
+{const h=location.hash.match(/cam=([^&]+)/);
+ if(h){const[a,b2,r,tx,ty,tz]=h[1].split(',').map(Number);
+   if(isFinite(a))cam.alpha=a; if(isFinite(b2))cam.beta=b2; if(isFinite(r))cam.radius=r;
+   if(isFinite(tx))cam.target.set(tx,isFinite(ty)?ty:0.5,isFinite(tz)?tz:0.5);
+   camLocked=true;}}
+
+const hemi=new BABYLON.HemisphericLight('hemi',new BABYLON.Vector3(0,1,0),scene);
+hemi.intensity=0.9; hemi.diffuse=C3('#4c5896'); hemi.groundColor=C3('#3d2e1a'); hemi.specular=C3('#000000');
+const MOONPOS=new BABYLON.Vector3(-52,24,-34);
+const moonDir=MOONPOS.scale(-1).normalize();
+const moonLight=new BABYLON.DirectionalLight('moon',moonDir,scene);
+moonLight.position=MOONPOS.scale(0.8); moonLight.intensity=1.2;
+moonLight.diffuse=C3('#a3bce8'); moonLight.specular=C3('#cfe0ff');
+const villageLight=new BABYLON.PointLight('vlg',new BABYLON.Vector3(0.5,2.6,0.5),scene);
+villageLight.diffuse=C3('#e0913a'); villageLight.specular=C3('#402808');
+villageLight.intensity=1.05; villageLight.range=10;
+const torchLight=new BABYLON.PointLight('torch',new BABYLON.Vector3(1.15,1.15,-0.1),scene);
+torchLight.diffuse=C3('#ffb054'); torchLight.specular=C3('#553311');
+torchLight.intensity=0.9; torchLight.range=4.5;
+
+const glow=new BABYLON.GlowLayer('glow',scene,{blurKernelSize:48});
+glow.intensity=0.68;
+const shadow=new BABYLON.ShadowGenerator(1024,moonLight);
+shadow.usePoissonSampling=true; shadow.setDarkness(0.45);
+const castShadow=m=>{shadow.addShadowCaster(m,false);};
+
+/* ---------------- shared textures / materials ---------------- */
+function flareTex(){const dt=new BABYLON.DynamicTexture('flare',{width:64,height:64},scene,false);
+  const g=dt.getContext();const gr=g.createRadialGradient(32,32,0,32,32,30);
+  gr.addColorStop(0,'rgba(255,255,255,1)');gr.addColorStop(0.4,'rgba(255,255,255,.55)');
+  gr.addColorStop(1,'rgba(255,255,255,0)');g.fillStyle=gr;g.fillRect(0,0,64,64);
+  dt.update();dt.hasAlpha=true;return dt;}
+const FLARE=flareTex();
+
+function mat(name,hex,opt={}){const m=new BABYLON.StandardMaterial(name,scene);
+  m.diffuseColor=C3(hex); m.specularColor=C3(opt.spec||'#0a0806');
+  if(opt.em)m.emissiveColor=C3(opt.em).scale(opt.emScale==null?1:opt.emScale);
+  return m;}
+const glowMat=(name,hex,scale=1)=>{const m=new BABYLON.StandardMaterial(name,scene);
+  m.diffuseColor=C3('#1a130a');m.specularColor=C3('#000');
+  m.emissiveColor=C3(hex).scale(scale);return m;};
+const windowMat=glowMat('window','#ffbf66',1.0);
+const flameMat=glowMat('flame','#ffd27a',1.0);
+const RES_HEX={food:PAL.food,wood:PAL.wood,gold:PAL.gold};
+
+/* condition weathering: darken + desaturate */
+function weather(hex,cond){const c=C3(hex);const t=Math.max(0,Math.min(1,cond/100));
+  const k=0.45+0.55*t; const g=(c.r+c.g+c.b)/3;
+  const mix=(v)=>((v*(0.55+0.45*t))+g*(1-t)*0.45)*k/(k); // desaturate toward gray, darken
+  return new BABYLON.Color3(c.r*k*(t)+ (c.r*0.4+g*0.6)*k*(1-t),
+                            c.g*k*(t)+ (c.g*0.4+g*0.6)*k*(1-t),
+                            c.b*k*(t)+ (c.b*0.4+g*0.6)*k*(1-t));}
+
+/* ---------------- sky, moon, ground ---------------- */
+(function sky(){
+  const dt=new BABYLON.DynamicTexture('stars',{width:1024,height:512},scene,false);
+  const g=dt.getContext();
+  const grd=g.createLinearGradient(0,0,0,512);
+  grd.addColorStop(0,'#171226');grd.addColorStop(0.42,'#0c0a18');
+  grd.addColorStop(0.62,'#0c0a18');grd.addColorStop(1,'#181022');
+  g.fillStyle=grd;g.fillRect(0,0,1024,512);
+  // faint milky band
+  g.save();g.translate(512,256);g.rotate(-0.5);
+  const band=g.createLinearGradient(0,-70,0,70);
+  band.addColorStop(0,'rgba(140,150,200,0)');band.addColorStop(0.5,'rgba(150,160,215,0.10)');
+  band.addColorStop(1,'rgba(140,150,200,0)');g.fillStyle=band;g.fillRect(-700,-90,1400,180);g.restore();
+  const rr=mulberry32(77);
+  for(let i=0;i<620;i++){const x=rr()*1024,y=rr()*512,s=rr();
+    const a=0.2+rr()*0.6, r=s<0.9?0.35+rr()*0.4:0.75+rr()*0.5;
+    g.fillStyle=rr()<0.22?`rgba(178,196,255,${a})`:`rgba(240,236,224,${a})`;
+    g.beginPath();g.arc(x,y,r,0,7);g.fill();}
+  dt.update();
+  const sk=BABYLON.MeshBuilder.CreateSphere('sky',{diameter:240,sideOrientation:BABYLON.Mesh.BACKSIDE},scene);
+  const m=new BABYLON.StandardMaterial('skym',scene);
+  m.emissiveTexture=dt;m.diffuseColor=C3('#000000');m.specularColor=C3('#000000');
+  m.disableLighting=true;m.fogEnabled=false;m.backFaceCulling=false;sk.material=m;
+  sk.isPickable=false;glow.addExcludedMesh(sk);
+  const moon=BABYLON.MeshBuilder.CreateSphere('moonball',{diameter:7,segments:12},scene);
+  moon.position.copyFrom(MOONPOS);
+  const mm=new BABYLON.StandardMaterial('moonm',scene);
+  mm.emissiveColor=C3('#d8e4ff').scale(0.95);mm.diffuseColor=C3('#000');mm.specularColor=C3('#000');
+  mm.disableLighting=true;mm.fogEnabled=false;moon.material=mm;moon.isPickable=false;
+})();
+(function ground(){
+  const px=32, cw=W*px, ch=H*px;
+  const dt=new BABYLON.DynamicTexture('gt',{width:cw,height:ch},scene,false);
+  const g=dt.getContext();
+  g.fillStyle='#221a11';g.fillRect(0,0,cw,ch);
+  for(let x=0;x<W;x++)for(let y=0;y<H;y++){const r=tileHash(x,y);
+    const v=r(); const shade=v<0.5?`rgba(44,52,26,${0.14+r()*0.2})`:`rgba(62,46,26,${0.12+r()*0.18})`;
+    g.fillStyle=shade;g.fillRect(x*px,y*px,px,px);
+    for(let k=0;k<3;k++){g.fillStyle=`rgba(92,78,46,${0.06+r()*0.1})`;
+      g.fillRect(x*px+r()*px,y*px+r()*px,2+r()*4,2+r()*4);}}
+  // warm halo around town
+  const tg=g.createRadialGradient(12.5*px,8.5*px,0,12.5*px,8.5*px,5.2*px);
+  tg.addColorStop(0,'rgba(224,145,58,0.16)');tg.addColorStop(1,'rgba(224,145,58,0)');
+  g.fillStyle=tg;g.fillRect(0,0,cw,ch);
+  g.strokeStyle='rgba(58,44,24,0.28)';g.lineWidth=1;
+  for(let x=0;x<=W;x++){g.beginPath();g.moveTo(x*px,0);g.lineTo(x*px,ch);g.stroke();}
+  for(let y=0;y<=H;y++){g.beginPath();g.moveTo(0,y*px);g.lineTo(cw,y*px);g.stroke();}
+  dt.update();
+  const gr=BABYLON.MeshBuilder.CreateGround('ground',{width:W,height:H},scene);
+  const m=new BABYLON.StandardMaterial('gm',scene);
+  m.diffuseTexture=dt;m.specularColor=C3('#050403');m.diffuseColor=C3('#d8d2c8');
+  gr.material=m;gr.receiveShadows=true;gr.isPickable=false;
+  // diorama slab
+  const slab=BABYLON.MeshBuilder.CreateBox('slab',{width:W+1.5,depth:H+1.5,height:1.1},scene);
+  slab.position.y=-0.561;
+  slab.material=mat('slabm','#0e0a06');slab.isPickable=false;
+  const rim=BABYLON.MeshBuilder.CreateBox('rim',{width:W+0.4,depth:H+0.4,height:0.09},scene);
+  rim.position.y=-0.048; rim.material=mat('rimm','#2a2013'); rim.isPickable=false;
+})();
+
+/* ---------------- vegetation / terrain sources (instanced) ---------------- */
+const SRC={};
+(function sources(){
+  const trunk=BABYLON.MeshBuilder.CreateCylinder('s_trunk',{height:0.34,diameter:0.085,tessellation:6},scene);
+  trunk.material=mat('trunkm','#4a3116');
+  const shades=['#1d3014','#24391a','#182a12'];
+  SRC.foliage=shades.map((h,i)=>{const c=BABYLON.MeshBuilder.CreateCylinder('s_fol'+i,
+    {height:0.62,diameterTop:0.001,diameterBottom:0.46,tessellation:7},scene);
+    c.material=mat('folm'+i,h,{spec:'#0c1408'});c.convertToFlatShadedMesh();return c;});
+  SRC.trunk=trunk;
+  SRC.stump=BABYLON.MeshBuilder.CreateCylinder('s_stump',{height:0.09,diameter:0.13,tessellation:6},scene);
+  SRC.stump.material=mat('stumpm','#3a2c18');
+  SRC.bush=BABYLON.MeshBuilder.CreateSphere('s_bush',{diameter:0.34,segments:5},scene);
+  SRC.bush.material=mat('bushm','#22361a',{spec:'#0c1408'});SRC.bush.convertToFlatShadedMesh();
+  SRC.berry=BABYLON.MeshBuilder.CreateSphere('s_berry',{diameter:0.05,segments:4},scene);
+  SRC.berry.material=glowMat('berrym',PAL.food,0.42);
+  SRC.crystal=BABYLON.MeshBuilder.CreatePolyhedron('s_cry',{type:1,size:0.09},scene);
+  SRC.crystal.material=glowMat('crym',PAL.gold,0.3);
+  SRC.crystal.material.diffuseColor=C3('#5a4520');
+  SRC.crystal.material.specularColor=C3('#ffe9a8');SRC.crystal.material.specularPower=32;
+  SRC.rock=BABYLON.MeshBuilder.CreatePolyhedron('s_rock',{type:0,size:0.11},scene);
+  SRC.rock.material=mat('rockm','#4a443c');
+  for(const k of ['trunk','stump','bush','berry','crystal','rock'])
+    {SRC[k].isVisible=false;SRC[k].isPickable=false;}
+  SRC.foliage.forEach(f=>{f.isVisible=false;f.isPickable=false;});
+  castShadow(SRC.trunk);SRC.foliage.forEach(castShadow);
+})();
+const inst=(src,x,y,z,s,ry)=>{const i=src.createInstance(src.name+'_i');
+  i.position.set(x,y,z); if(s!=null)i.scaling.set(s,s,s); if(ry!=null)i.rotation.y=ry;
+  i.isPickable=false; return i;};
+
+function buildTerrainTile(t){
+  const r=tileHash(t.x,t.y), X=wx(t.x), Z=wz(t.y), st=t.stock/100, nodes=[];
+  if(t.cls==='forest'){
+    if(st<=0.02){nodes.push(inst(SRC.stump,X+(r()-0.5)*0.5,0.045,Z+(r()-0.5)*0.5,1,r()*3));
+      nodes.push(inst(SRC.stump,X+(r()-0.5)*0.6,0.045,Z+(r()-0.5)*0.6,0.8,r()*3));}
+    else{const n=1+Math.floor(r()*3);
+      for(let i=0;i<n;i++){const ox=(r()-0.5)*0.72,oz=(r()-0.5)*0.72,s=(0.6+r()*0.55)*(0.45+0.55*st);
+        nodes.push(inst(SRC.trunk,X+ox,0.17*s,Z+oz,s));
+        const f=SRC.foliage[Math.floor(r()*3)];
+        nodes.push(inst(f,X+ox,(0.30+0.31)*s,Z+oz,s,r()*3.14));}}
+  }else if(t.cls==='berries'){
+    const n=1+Math.floor(r()*2);
+    for(let i=0;i<n;i++){const ox=(r()-0.5)*0.6,oz=(r()-0.5)*0.6,s=(0.7+r()*0.5)*(0.4+0.6*st);
+      const b=inst(SRC.bush,X+ox,0.10*s,Z+oz,s,0);b.scaling.y=s*0.62;nodes.push(b);
+      if(st>0.05){const nb=2+Math.floor(r()*4*st+1);
+        for(let k=0;k<nb;k++){const a=r()*6.28,d=0.09+r()*0.07;
+          nodes.push(inst(SRC.berry,X+ox+Math.cos(a)*d*s*2.4,(0.10+r()*0.08)*s+0.06,Z+oz+Math.sin(a)*d*s*2.4,0.8+r()*0.5));}}}
+  }else if(t.cls==='gold_seam'){
+    if(st<=0.02){nodes.push(inst(SRC.rock,X,0.07,Z,1.1,r()*3));}
+    else{const n=2+Math.floor(r()*2);
+      for(let i=0;i<n;i++){const ox=(r()-0.5)*0.6,oz=(r()-0.5)*0.6,s=(0.7+r()*0.7)*(0.4+0.6*st);
+        const c=inst(SRC.crystal,X+ox,0.14*s,Z+oz,s,r()*3.14);
+        c.scaling.y=s*(1.7+r()*0.9); c.rotation.x=(r()-0.5)*0.3; c.rotation.z=(r()-0.5)*0.3; nodes.push(c);}
+      nodes.push(inst(SRC.rock,X+(r()-0.5)*0.5,0.05,Z+(r()-0.5)*0.5,0.8+r()*0.4,r()*3));}
+  }else if(t.cls==='water'){
+    const gm=BABYLON.MeshBuilder.CreateGround('water',{width:1.3,height:1.3,subdivisions:7,updatable:true},scene);
+    gm.position.set(X,0.045,Z);
+    const wm=new BABYLON.StandardMaterial('wm',scene);
+    wm.diffuseColor=C3('#0a1626');wm.specularColor=C3('#5a7cb0');wm.specularPower=90;
+    wm.emissiveColor=C3('#060d1a');wm.opacityTexture=pondMask();
+    gm.material=wm;gm.isPickable=false;
+    glow.addExcludedMesh(gm);
+    waterMeshes.push({m:gm,idx:gm.getIndices()});nodes.push(gm);
+  }
+  return nodes;
+}
+
+/* ---------------- rings / beams / particles ---------------- */
+let _pondMask=null;
+function pondMask(){if(_pondMask)return _pondMask;
+  const dt=new BABYLON.DynamicTexture('pond',{width:128,height:128},scene,false);
+  const g=dt.getContext();g.clearRect(0,0,128,128);
+  const gr=g.createRadialGradient(64,64,0,64,64,64);
+  gr.addColorStop(0,'rgba(255,255,255,0.96)');gr.addColorStop(0.58,'rgba(255,255,255,0.92)');
+  gr.addColorStop(0.86,'rgba(255,255,255,0.4)');gr.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=gr;g.fillRect(0,0,128,128);dt.update();dt.hasAlpha=true;
+  _pondMask=dt;return dt;}
+function ringTexFor(hex){const dt=new BABYLON.DynamicTexture('ring'+hex,{width:256,height:256},scene,false);
+  const g=dt.getContext();g.clearRect(0,0,256,256);
+  const c=C3(hex), rgb=`${c.r*255|0},${c.g*255|0},${c.b*255|0}`;
+  const gr=g.createRadialGradient(128,128,0,128,128,128);
+  gr.addColorStop(0,`rgba(${rgb},0.02)`);gr.addColorStop(0.66,`rgba(${rgb},0.05)`);
+  gr.addColorStop(0.855,`rgba(${rgb},0.42)`);gr.addColorStop(0.94,`rgba(${rgb},0.18)`);
+  gr.addColorStop(1,`rgba(${rgb},0)`);
+  g.fillStyle=gr;g.fillRect(0,0,256,256);dt.update();dt.hasAlpha=true;return dt;}
+function makeRing(x,y,hex,radius){
+  const d=(radius+0.5)*2;
+  const p=BABYLON.MeshBuilder.CreateGround('ring',{width:d,height:d},scene);
+  p.position.set(wx(x),0.015,wz(y));
+  const m=new BABYLON.StandardMaterial('ringm'+hex,scene);
+  const tx=ringTexFor(hex);
+  m.emissiveTexture=tx;m.opacityTexture=tx;m.disableLighting=true;
+  m.diffuseColor=C3('#000');m.specularColor=C3('#000');
+  p.material=m;p.isPickable=false;glow.addExcludedMesh(p);return p;}
+function makeBeam(x,z,hex,h=2.6){
+  const b=BABYLON.MeshBuilder.CreateCylinder('beam',{height:h,diameterTop:0.03,diameterBottom:0.16,tessellation:8},scene);
+  b.position.set(x,h/2+0.2,z);
+  const m=new BABYLON.StandardMaterial('beamm',scene);
+  m.emissiveColor=C3(hex).scale(0.8);m.diffuseColor=C3('#000');m.specularColor=C3('#000');
+  m.alpha=0.10;m.disableLighting=true;b.material=m;b.isPickable=false;glow.addExcludedMesh(b);return b;}
+function fireflies(x,y,hex){
+  const ps=new BABYLON.ParticleSystem('ff',36,scene);
+  ps.particleTexture=FLARE;ps.emitter=new BABYLON.Vector3(wx(x),0.5,wz(y));
+  ps.minEmitBox=new BABYLON.Vector3(-2.6,-0.3,-2.6);ps.maxEmitBox=new BABYLON.Vector3(2.6,1.0,2.6);
+  const c=C3(hex);
+  ps.color1=new BABYLON.Color4(c.r,c.g,c.b,0.85);
+  ps.color2=new BABYLON.Color4(0.66,0.88,0.53,0.7);
+  ps.colorDead=new BABYLON.Color4(c.r,c.g,c.b,0);
+  ps.minSize=0.06;ps.maxSize=0.16;ps.minLifeTime=2.5;ps.maxLifeTime=5.5;ps.emitRate=13;
+  ps.blendMode=BABYLON.ParticleSystem.BLENDMODE_ADD;
+  ps.direction1=new BABYLON.Vector3(-0.12,0.03,-0.12);ps.direction2=new BABYLON.Vector3(0.12,0.1,0.12);
+  ps.minEmitPower=0.2;ps.maxEmitPower=0.5;ps.updateSpeed=0.01;ps.start();return ps;}
+function smoke(x,y3,z){
+  const ps=new BABYLON.ParticleSystem('smoke',14,scene);
+  ps.particleTexture=FLARE;ps.emitter=new BABYLON.Vector3(x,y3,z);
+  ps.minEmitBox=new BABYLON.Vector3(-0.01,0,-0.01);ps.maxEmitBox=new BABYLON.Vector3(0.01,0,0.01);
+  ps.color1=new BABYLON.Color4(0.55,0.55,0.64,0.22);ps.color2=new BABYLON.Color4(0.45,0.44,0.5,0.15);
+  ps.colorDead=new BABYLON.Color4(0.4,0.4,0.45,0);
+  ps.minSize=0.1;ps.maxSize=0.22;ps.minLifeTime=2.2;ps.maxLifeTime=3.8;ps.emitRate=5;
+  ps.blendMode=BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+  ps.direction1=new BABYLON.Vector3(0.05,0.85,0.02);ps.direction2=new BABYLON.Vector3(0.14,1.1,0.06);
+  ps.minEmitPower=0.14;ps.maxEmitPower=0.26;ps.updateSpeed=0.008;
+  ps.minScaleX=1;ps.maxScaleX=1;
+  ps.addSizeGradient(0,0.08);ps.addSizeGradient(1,0.32);
+  ps.start();return ps;}
+function torchFlame(x,y3,z){
+  const ps=new BABYLON.ParticleSystem('tf',26,scene);
+  ps.particleTexture=FLARE;ps.emitter=new BABYLON.Vector3(x,y3,z);
+  ps.minEmitBox=new BABYLON.Vector3(-0.02,0,-0.02);ps.maxEmitBox=new BABYLON.Vector3(0.02,0.02,0.02);
+  ps.color1=new BABYLON.Color4(1,0.82,0.42,0.9);ps.color2=new BABYLON.Color4(0.88,0.35,0.2,0.7);
+  ps.colorDead=new BABYLON.Color4(0.5,0.1,0.05,0);
+  ps.minSize=0.05;ps.maxSize=0.13;ps.minLifeTime=0.3;ps.maxLifeTime=0.7;ps.emitRate=26;
+  ps.blendMode=BABYLON.ParticleSystem.BLENDMODE_ADD;
+  ps.direction1=new BABYLON.Vector3(-0.05,0.8,-0.05);ps.direction2=new BABYLON.Vector3(0.05,1.2,0.05);
+  ps.minEmitPower=0.15;ps.maxEmitPower=0.4;ps.updateSpeed=0.012;ps.start();return ps;}
+
+/* ---------------- buildings ---------------- */
+const spinners=[];      // fns(t,dt) run each frame
+const waterMeshes=[];
+function tag(root,p,reg){root.getChildMeshes().forEach(m=>{m.metadata={p,reg};m.isPickable=true;});}
+
+function makeHouse(root,r,cond){
+  const fw=0.5+r()*0.16, fd=0.5+r()*0.16, h=0.3+r()*0.14;
+  const wallHex=['#8b5a2b','#7d5226','#946336'][Math.floor(r()*3)];
+  const roofHex=['#5a3a1e','#6b3226','#4e3320'][Math.floor(r()*3)];
+  const walls=BABYLON.MeshBuilder.CreateBox('hw',{width:fw,depth:fd,height:h},scene);
+  walls.position.y=h/2;walls.parent=root;
+  walls.material=mat('hwm'+wallHex+cond,'#000');walls.material.diffuseColor=weather(wallHex,cond);
+  const roof=BABYLON.MeshBuilder.CreateCylinder('hr',{height:fd*1.24,diameter:fw*1.5,tessellation:3},scene);
+  roof.rotation.x=Math.PI/2; roof.rotation.y=Math.PI/2;
+  roof.scaling.z=0.62+r()*0.22; // pitch (z is up after x-rot)
+  roof.position.y=h+ (fw*0.75*roof.scaling.z)/2*0.94; roof.parent=root;
+  roof.convertToFlatShadedMesh();
+  roof.material=mat('hrm'+roofHex+cond,'#000');roof.material.diffuseColor=weather(roofHex,cond);
+  const win=BABYLON.MeshBuilder.CreateBox('winb',{width:0.09,height:0.1,depth:0.02},scene);
+  win.position.set((r()-0.5)*fw*0.5, h*0.55, fd/2+0.005); win.parent=root; win.material=windowMat;
+  if(r()>0.45){const w2=win.clone('win2');w2.position.x=-win.position.x;w2.position.z=-(fd/2+0.005);w2.parent=root;}
+  const door=BABYLON.MeshBuilder.CreateBox('door',{width:0.12,height:0.17,depth:0.02},scene);
+  door.position.set(0,0.085,fd/2+0.004);door.parent=root;door.material=mat('doorm','#241505');
+  root.rotation.y=Math.floor(r()*4)*Math.PI/2 + (r()-0.5)*0.2;
+  if(r()>0.35){
+    const ch=BABYLON.MeshBuilder.CreateBox('chim',{width:0.07,depth:0.07,height:0.2},scene);
+    ch.position.set(fw*0.28,h+fw*0.4,fd*0.15);ch.parent=root;ch.material=mat('chm','#4e4034');
+    const wp=BABYLON.Vector3.TransformCoordinates(ch.position.clone().add(new BABYLON.Vector3(0,0.12,0)),
+      BABYLON.Matrix.RotationY(root.rotation.y)).add(root.position);
+    root._smoke=smoke(wp.x,wp.y,wp.z);}
+  [walls,roof].forEach(castShadow);
+  return root;}
+function makeMill(root,r,cond){
+  const th=0.78+r()*0.22;
+  const tower=BABYLON.MeshBuilder.CreateCylinder('mt',{height:th,diameterBottom:0.46,diameterTop:0.34,tessellation:9},scene);
+  tower.position.y=th/2;tower.parent=root;
+  tower.material=mat('mtm'+cond,'#000');tower.material.diffuseColor=weather('#9c8d70',cond);
+  const cap=BABYLON.MeshBuilder.CreateCylinder('mc',{height:0.24,diameterBottom:0.42,diameterTop:0.02,tessellation:9},scene);
+  cap.position.y=th+0.12;cap.parent=root;cap.material=mat('mcm'+cond,'#000');
+  cap.material.diffuseColor=weather('#6b3226',cond);
+  const win=BABYLON.MeshBuilder.CreateBox('mwin',{width:0.08,height:0.1,depth:0.02},scene);
+  win.position.set(0,th*0.62,0.21);win.parent=root;win.material=windowMat;
+  const hub=new BABYLON.TransformNode('hub',scene);hub.parent=root;
+  hub.position.set(0,th*0.92,0.26);
+  const bl=[];
+  for(let i=0;i<4;i++){const b=BABYLON.MeshBuilder.CreateBox('bl'+i,{width:0.13,height:0.76,depth:0.02},scene);
+    b.position.y=0.38;const piv=new BABYLON.TransformNode('piv'+i,scene);piv.parent=hub;
+    piv.rotation.z=i*Math.PI/2;b.parent=piv;
+    b.material=mat('blm','#e4d7b2',{em:'#e4d7b2',emScale:0.12});bl.push(b);}
+  const spin=0.5+r()*0.5;
+  spinners.push((t,dt)=>{hub.rotation.z+=dt*spin;});
+  root.rotation.y=(r()-0.5)*0.5 + (root.position.x<0?0.4:-2.6);
+  [tower,cap].forEach(castShadow);bl.forEach(castShadow);
+  return root;}
+function makeCamp(root,r,cond,accentHex){
+  const s=0.56+r()*0.12, ph=0.3+r()*0.06;
+  for(const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
+    const post=BABYLON.MeshBuilder.CreateCylinder('cp',{height:ph,diameter:0.05,tessellation:5},scene);
+    post.position.set(sx*s*0.42,ph/2,sz*s*0.42);post.parent=root;
+    post.material=mat('cpm'+cond,'#000');post.material.diffuseColor=weather('#5a4326',cond);}
+  const roof=BABYLON.MeshBuilder.CreateCylinder('cr',{height:0.2,diameterBottom:s*1.55,diameterTop:0.03,tessellation:4},scene);
+  roof.position.y=ph+0.1;roof.rotation.y=Math.PI/4;roof.parent=root;roof.convertToFlatShadedMesh();
+  roof.material=mat('crm'+cond,'#000');roof.material.diffuseColor=weather('#6e5433',cond);
+  // stockpile in accent colour
+  if(accentHex===PAL.wood||accentHex==='#b5793a'){
+    for(let i=0;i<4;i++){const log=BABYLON.MeshBuilder.CreateCylinder('log',{height:0.34,diameter:0.07,tessellation:6},scene);
+      log.rotation.z=Math.PI/2;log.rotation.y=(r()-0.5)*0.4;
+      log.position.set(s*0.62,(i<3?0.045:0.11),(i%3-1)*0.08+s*0.1);log.parent=root;
+      log.material=mat('logm'+cond,'#000');log.material.diffuseColor=weather('#8a5c2c',cond);}
+  }else{
+    for(let i=0;i<5;i++){const nug=BABYLON.MeshBuilder.CreatePolyhedron('nug',{type:0,size:0.05},scene);
+      nug.position.set(s*0.58+(r()-0.5)*0.16,0.05+(i>2?0.08:0),(r()-0.5)*0.24+s*0.08);
+      nug.parent=root;nug.material=glowMat('nugm',accentHex,0.5);}
+  }
+  const lamp=BABYLON.MeshBuilder.CreateSphere('cl',{diameter:0.07,segments:5},scene);
+  lamp.position.set(0,ph+0.02,0);lamp.parent=root;lamp.material=glowMat('clm',accentHex,0.55);
+  root.rotation.y=r()*Math.PI*2;
+  castShadow(roof);
+  return root;}
+function makeTech(root,r,cond){
+  const plinth=BABYLON.MeshBuilder.CreateBox('tp',{width:0.34,depth:0.34,height:0.1},scene);
+  plinth.position.y=0.05;plinth.parent=root;
+  plinth.material=mat('tpm'+cond,'#000');plinth.material.diffuseColor=weather('#6b6257',cond);
+  const ob=BABYLON.MeshBuilder.CreateCylinder('to',{height:0.42,diameterBottom:0.14,diameterTop:0.05,tessellation:4},scene);
+  ob.position.y=0.31;ob.parent=root;ob.convertToFlatShadedMesh();
+  ob.material=mat('tom'+cond,'#000');ob.material.diffuseColor=weather('#8f8574',cond);
+  const badge=BABYLON.MeshBuilder.CreatePolyhedron('tb',{type:1,size:0.06},scene);
+  badge.position.y=0.62;badge.parent=root;badge.material=glowMat('tbm',PAL.green,0.8);
+  spinners.push((t,dt)=>{badge.rotation.y+=dt*0.8;badge.position.y=0.62+Math.sin(t*1.7)*0.03;});
+  castShadow(ob);
+  return root;}
+function makeGem(root,r,cond,hex){
+  const gem=BABYLON.MeshBuilder.CreatePolyhedron('gem',{type:3,size:0.16},scene);
+  gem.position.y=0.5;gem.parent=root;gem.convertToFlatShadedMesh();
+  gem.material=glowMat('gemm',hex||PAL.blue,0.7);
+  spinners.push((t,dt)=>{gem.rotation.y+=dt*0.6;gem.position.y=0.5+Math.sin(t*1.3)*0.05;});
+  return root;}
+
+function buildPlacement(p,reg){
+  const root=new BABYLON.TransformNode('pl'+p.id,scene);
+  root.position.set(wx(p.x),0,wz(p.y));
+  const r=seedOf(p.id), shape=(reg&&reg.shape)||'unknown';
+  if(shape==='house')makeHouse(root,r,p.condition);
+  else if(shape==='mill')makeMill(root,r,p.condition);
+  else if(shape==='camp')makeCamp(root,r,p.condition,(reg&&reg.accent)||PAL.gold);
+  else if(shape==='tech')makeTech(root,r,p.condition);
+  else makeGem(root,r,p.condition,reg&&reg.color);
+  if(p.condition<50)root.rotation.z=0.07;
+  if(p.near&&stateCache&&stateCache.map&&stateCache.map.proximity){
+    const hex=(reg&&reg.accent)||(reg&&reg.color)||PAL.green;
+    const beam=makeBeam(root.position.x,root.position.z,hex,2.2);beam.parent=null;
+    root._beam=beam;}
+  tag(root,p,reg);
+  return root;}
+
+/* ---------------- town centre keep ---------------- */
+let beacon=null, beaconMat=null;
+(function keep(){
+  const root=new BABYLON.TransformNode('keep',scene);
+  root.position.set(wx(12),0,wz(8));
+  const base=BABYLON.MeshBuilder.CreateBox('kb',{width:1.15,depth:1.15,height:0.5},scene);
+  base.position.y=0.25;base.parent=root;base.material=mat('kbm','#6b6257');
+  const up=BABYLON.MeshBuilder.CreateBox('ku',{width:0.82,depth:0.82,height:0.5},scene);
+  up.position.y=0.75;up.parent=root;up.material=mat('kum','#7a7060');
+  for(let i=0;i<8;i++){const cx=[-1,0,1,1,1,0,-1,-1][i]*0.36,cz=[-1,-1,-1,0,1,1,1,0][i]*0.36;
+    const cr=BABYLON.MeshBuilder.CreateBox('kc'+i,{width:0.12,depth:0.12,height:0.12},scene);
+    cr.position.set(cx,1.06,cz);cr.parent=root;cr.material=up.material;}
+  const win=BABYLON.MeshBuilder.CreateBox('kwin',{width:0.12,height:0.16,depth:0.02},scene);
+  win.position.set(0,0.62,0.42);win.parent=root;win.material=windowMat;
+  const w2=win.clone('kwin2');w2.position.set(0.42,0.62,0);w2.rotation.y=Math.PI/2;w2.parent=root;
+  // banner
+  const pole=BABYLON.MeshBuilder.CreateCylinder('kp',{height:0.7,diameter:0.03,tessellation:5},scene);
+  pole.position.set(0,1.45,0);pole.parent=root;pole.material=mat('kpm','#3a2c18');
+  const flag=BABYLON.MeshBuilder.CreatePlane('kf',{width:0.34,height:0.2},scene);
+  flag.position.set(0.18,1.68,0);flag.parent=root;
+  flag.material=glowMat('kfm',PAL.gold,0.35);flag.material.backFaceCulling=false;
+  spinners.push((t)=>{flag.rotation.y=Math.sin(t*2.3)*0.24;flag.rotation.z=Math.sin(t*3.1)*0.06;});
+  // torch
+  const tp=BABYLON.MeshBuilder.CreateCylinder('tpole',{height:0.55,diameter:0.035,tessellation:5},scene);
+  tp.position.set(0.68,0.275,-0.62);tp.parent=root;tp.material=pole.material;
+  const fl=BABYLON.MeshBuilder.CreateSphere('tflam',{diameter:0.09,segments:5},scene);
+  fl.position.set(0.68,0.58,-0.62);fl.parent=root;fl.material=flameMat;
+  torchFlame(root.position.x+0.68,0.6,root.position.z-0.62);
+  torchLight.position.set(root.position.x+0.68,0.75,root.position.z-0.62);
+  // beacon
+  beacon=BABYLON.MeshBuilder.CreateCylinder('beacon',{height:3.4,diameterTop:0.45,diameterBottom:0.22,tessellation:12},scene);
+  beacon.position.set(root.position.x,1.75+1.15,root.position.z);
+  beaconMat=new BABYLON.StandardMaterial('beam',scene);
+  beaconMat.emissiveColor=C3(PAL.gold).scale(0.7);beaconMat.diffuseColor=C3('#000');
+  beaconMat.specularColor=C3('#000');beaconMat.alpha=0;beaconMat.disableLighting=true;
+  beacon.material=beaconMat;beacon.isPickable=false;glow.addExcludedMesh(beacon);
+  [base,up].forEach(castShadow);
+  root.getChildMeshes().forEach(m=>{m.metadata={p:{name:'town centre',condition:100,near:false},
+    reg:{effect:'heart of the settlement'}};m.isPickable=true;});
+})();
+
+/* ---------------- villagers ---------------- */
+const RESV=t=>t&&t.includes('food')?'food':t&&t.includes('gold')?'gold':t&&t.includes('wood')?'wood':'food';
+const qmTex=(()=>{const dt=new BABYLON.DynamicTexture('qm',{width:64,height:64},scene,false);
+  const g=dt.getContext();g.clearRect(0,0,64,64);g.font='bold 46px monospace';
+  g.fillStyle='#f0e6d2';g.textAlign='center';g.textBaseline='middle';g.fillText('?',32,34);
+  dt.update();dt.hasAlpha=true;return dt;})();
+function makeFigure(hex,scale=1){
+  const root=new BABYLON.TransformNode('fig',scene);
+  const body=BABYLON.MeshBuilder.CreateCapsule('fb',{height:0.34*scale,radius:0.085*scale},scene);
+  body.position.y=0.19*scale;body.parent=root;
+  const bm=new BABYLON.StandardMaterial('fbm',scene);
+  bm.diffuseColor=C3(hex);bm.emissiveColor=C3(hex).scale(0.22);bm.specularColor=C3('#111');
+  body.material=bm;
+  const head=BABYLON.MeshBuilder.CreateSphere('fh',{diameter:0.13*scale,segments:6},scene);
+  head.position.y=0.42*scale;head.parent=root;
+  const hm=new BABYLON.StandardMaterial('fhm',scene);
+  hm.diffuseColor=C3('#d9c49a');hm.emissiveColor=C3('#d9c49a').scale(0.12);hm.specularColor=C3('#111');
+  head.material=hm;
+  body.isPickable=false;head.isPickable=false;castShadow(body);
+  return root;}
+class Villager{
+  constructor(a,grounds,idx){
+    this.uid=a.uid;this.res=RESV(a.task);this.status=a.status;
+    const r=mulberry32([...a.uid].reduce((s,c)=>s*33+c.charCodeAt(0)>>>0,7));
+    this.rng=r; this.node=makeFigure(RES_HEX[this.res]);
+    this.cube=BABYLON.MeshBuilder.CreateBox('carry',{size:0.09},scene);
+    this.cube.parent=this.node;this.cube.position.set(0,0.30,0.13);
+    this.cube.material=glowMat('carrym'+this.res,RES_HEX[this.res],0.5);
+    this.cube.isPickable=false;
+    this.qm=BABYLON.MeshBuilder.CreatePlane('q',{size:0.26},scene);
+    this.qm.parent=this.node;this.qm.position.y=0.72;
+    this.qm.billboardMode=BABYLON.Mesh.BILLBOARDMODE_ALL;
+    const qmm=new BABYLON.StandardMaterial('qmm',scene);
+    qmm.emissiveTexture=qmTex;qmm.opacityTexture=qmTex;qmm.disableLighting=true;
+    qmm.diffuseColor=C3('#000');this.qm.material=qmm;this.qm.isPickable=false;
+    glow.addExcludedMesh(this.qm);
+    this.setTarget(grounds,idx);
+    this.phase=r()*2;
+  }
+  setTarget(grounds,idx){
+    const g=grounds[this.res]||[12,8];
+    const T=new BABYLON.Vector3(0.5,0,0.5), G=new BABYLON.Vector3(wx(g[0]),0,wz(g[1]));
+    const away=G.subtract(T), perp=new BABYLON.Vector3(-away.z,0,away.x).normalize();
+    const mid=T.add(G).scale(0.5).add(perp.scale((this.rng()-0.5)*3.4));
+    this.pts=[T,mid,G]; this.len=BABYLON.Vector3.Distance(T,G);
+    const a=idx*2.399+this.rng()*0.8, d=0.45+this.rng()*0.5;
+    this.stand=G.add(new BABYLON.Vector3(Math.cos(a)*d,0,Math.sin(a)*d));
+  }
+  bez(t){const[a,b,c]=this.pts,u=1-t;
+    return new BABYLON.Vector3(u*u*a.x+2*u*t*b.x+t*t*c.x,0,u*u*a.z+2*u*t*b.z+t*t*c.z);}
+  update(t,dt){
+    const n=this.node;
+    if(this.status==='running'){
+      this.qm.isVisible=false;
+      const speed=1.05/this.len;
+      this.phase=(this.phase+dt*speed)%2;
+      const ph=this.phase, tt=ph<1?ph:2-ph;
+      const pos=this.bez(tt), ahead=this.bez(Math.min(1,Math.max(0,tt+(ph<1?0.02:-0.02))));
+      n.position.set(pos.x,Math.abs(Math.sin(t*9+this.phase*7))*0.02,pos.z);
+      n.rotation.y=Math.atan2(ahead.x-pos.x,ahead.z-pos.z);
+      this.cube.isVisible=ph>=1;
+    }else if(this.status==='done'){
+      this.qm.isVisible=false;this.cube.isVisible=false;
+      n.position.set(0.5+Math.cos(t*0.1)*0.001+1.1,0,0.5+1.0);
+    }else{ // awaiting / idle: stand at ground, '?' bob, slow sway
+      n.position.copyFrom(this.stand);
+      n.rotation.y=Math.atan2(0.5-this.stand.x,0.5-this.stand.z);
+      n.rotation.z=Math.sin(t*1.4+this.phase*6)*0.05;
+      this.cube.isVisible=false;this.qm.isVisible=true;
+      this.qm.position.y=0.72+Math.sin(t*2.2+this.phase*6)*0.05;
+    }
+  }
+  dispose(){this.node.dispose(false,false);}
+}
+let herald=null;
+(function makeHerald(){
+  herald=makeFigure(PAL.blue,1.15);
+  herald.position.set(1.35,0,1.25);
+  const pole=BABYLON.MeshBuilder.CreateCylinder('hp',{height:0.6,diameter:0.02,tessellation:5},scene);
+  pole.position.set(0.12,0.35,0);pole.parent=herald;pole.material=mat('hpm','#3a2c18');
+  const fl=BABYLON.MeshBuilder.CreatePlane('hf',{width:0.16,height:0.1},scene);
+  fl.position.set(0.2,0.58,0);fl.parent=herald;
+  fl.material=glowMat('hfm',PAL.blue,0.45);fl.material.backFaceCulling=false;
+  spinners.push(t=>{herald.rotation.y=Math.atan2(0.5-1.35,0.5-1.25)+Math.sin(t*0.5)*0.2;
+    fl.rotation.y=Math.sin(t*2.7)*0.3;});
+})();
+
+/* ---------------- live state sync ---------------- */
+let stateCache=null;
+const placed=new Map();   // id -> {cond, near, node}
+const terr=new Map();     // "x,y" -> {stock, nodes}
+const vils=new Map();     // uid -> Villager
+let ringsBuilt=false, ffBuilt=false, pendingNow=false;
+
+function syncState(d){
+  stateCache=d;
+  const m=d.map||{}, reg=m.registry||{};
+  // rings + fireflies once
+  if(!ringsBuilt&&m.grounds&&m.proximity){
+    for(const[k,xy]of Object.entries(m.grounds))makeRing(xy[0],xy[1],RES_HEX[k],m.proximity.radius);
+    ringsBuilt=true;}
+  if(!ffBuilt&&m.grounds){
+    for(const[k,xy]of Object.entries(m.grounds))fireflies(xy[0],xy[1],RES_HEX[k]);
+    ffBuilt=true;}
+  // terrain diff
+  const seen=new Set();
+  for(const t of (m.terrain||[])){const key=t.x+','+t.y;seen.add(key);
+    const cur=terr.get(key);
+    const bucket=Math.round(t.stock/12);
+    if(!cur){terr.set(key,{bucket,nodes:buildTerrainTile(t)});}
+    else if(cur.bucket!==bucket&&t.cls!=='water'){
+      cur.nodes.forEach(n=>n.dispose());
+      terr.set(key,{bucket,nodes:buildTerrainTile(t)});}}
+  for(const[key,v]of terr)if(!seen.has(key)){v.nodes.forEach(n=>n.dispose());terr.delete(key);}
+  // placements diff
+  const pseen=new Set();
+  for(const p of (m.placements||[])){pseen.add(p.id);
+    const cur=placed.get(p.id);
+    if(!cur){placed.set(p.id,{cond:p.condition,near:p.near,node:buildPlacement(p,reg[p.name])});}
+    else if(cur.cond!==p.condition||cur.near!==p.near){
+      if(cur.node._beam)cur.node._beam.dispose();
+      if(cur.node._smoke)cur.node._smoke.dispose();
+      cur.node.dispose(false,false);
+      placed.set(p.id,{cond:p.condition,near:p.near,node:buildPlacement(p,reg[p.name])});}}
+  for(const[id,v]of placed)if(!pseen.has(id)){
+    if(v.node._beam)v.node._beam.dispose();
+    if(v.node._smoke)v.node._smoke.dispose();
+    v.node.dispose(false,false);placed.delete(id);}
+  // agents
+  const agents=(d.agents||[]).filter(a=>a.role!=='herald');
+  const aseen=new Set(); let anyPending=false; let i=0;
+  for(const a of agents){aseen.add(a.uid); if(a.pending)anyPending=true;
+    const cur=vils.get(a.uid);
+    if(!cur){vils.set(a.uid,new Villager(a,m.grounds||{},i));}
+    else{const res=RESV(a.task);
+      if(res!==cur.res){cur.dispose();vils.set(a.uid,new Villager(a,m.grounds||{},i));}
+      else cur.status=a.status;}
+    i++;}
+  for(const[uid,v]of vils)if(!aseen.has(uid)){v.dispose();vils.delete(uid);}
+  pendingNow=anyPending;
+  // HUD
+  const w=d.world||{};
+  document.getElementById('rf').textContent=(w.food??0).toLocaleString();
+  document.getElementById('rw').textContent=(w.wood??0).toLocaleString();
+  document.getElementById('rg').textContent=(w.gold??0).toLocaleString();
+  document.getElementById('ageln').textContent=(w.age||'?')+' · turn '+(d.turn??'?');
+  document.getElementById('pend').style.display=anyPending?'block':'none';
+}
+async function poll(){try{const r=await fetch('/api/state');if(r.ok)syncState(await r.json());}
+  catch(e){} finally{setTimeout(poll,2000);}}
+poll();
+
+/* ---------------- controls: auto-orbit + WASD/QE ---------------- */
+let userTook=false;
+const keys={};
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();
+  if('wasdqe'.includes(k)){keys[k]=true;userTook=true;}});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+canvas.addEventListener('pointerdown',()=>{userTook=true;});
+canvas.addEventListener('wheel',()=>{userTook=true;});
+
+/* ---------------- picking / tooltip ---------------- */
+const tip=document.getElementById('tip');
+let mx=0,my=0,needPick=false;
+canvas.addEventListener('pointermove',e=>{mx=e.clientX;my=e.clientY;needPick=true;});
+setInterval(()=>{if(!needPick)return;needPick=false;
+  const pk=scene.pick(mx,my,mm=>mm.isPickable&&mm.metadata&&mm.metadata.p);
+  if(pk&&pk.hit){const{p,reg}=pk.pickedMesh.metadata;
+    let html=`<div class="nm">${p.name.replace(/_/g,' ')}</div>`;
+    if(reg&&reg.effect)html+=`<div class="fx">${reg.effect}</div>`;
+    html+=`<div class="${p.condition<60?'worn':'fx'}">condition ${p.condition}%</div>`;
+    if(p.near&&stateCache&&stateCache.map.proximity)
+      html+=`<div class="ring">+${stateCache.map.proximity.pct}% ring</div>`;
+    tip.innerHTML=html;tip.style.display='block';
+    tip.style.left=Math.min(innerWidth-190,mx+16)+'px';
+    tip.style.top=Math.min(innerHeight-110,my+14)+'px';
+  }else tip.style.display='none';},130);
+
+/* ---------------- render loop ---------------- */
+let T0=performance.now();
+engine.runRenderLoop(()=>{
+  const now=performance.now(), t=now/1000, dt=Math.min(0.1,(now-T0)/1000); T0=now;
+  if(!userTook&&!camLocked){cam.alpha+=dt*0.055; cam.beta=1.07+Math.sin(t*0.11)*0.045;}
+  else{
+    const fwd=cam.target.subtract(cam.position);fwd.y=0;fwd.normalize();
+    const right=new BABYLON.Vector3(-fwd.z,0,fwd.x);
+    const mv=new BABYLON.Vector3(0,0,0), sp=dt*6;
+    if(keys.w)mv.addInPlace(fwd.scale(sp)); if(keys.s)mv.addInPlace(fwd.scale(-sp));
+    if(keys.d)mv.addInPlace(right.scale(-sp)); if(keys.a)mv.addInPlace(right.scale(sp));
+    if(keys.q)mv.y+=sp; if(keys.e)mv.y-=sp;
+    if(mv.lengthSquared()>0)cam.target.addInPlace(mv);
+  }
+  torchLight.intensity=0.85+Math.sin(t*11)*0.1+Math.sin(t*23.7)*0.07;
+  if(beaconMat){const target=pendingNow?(0.06+Math.sin(t*2.4)*0.035):0;
+    beaconMat.alpha+=(target-beaconMat.alpha)*0.04;
+    if(pendingNow)torchLight.intensity+=Math.max(0,Math.sin(t*2.4))*0.5;}
+  for(const fn of spinners)fn(t,dt);
+  for(const v of vils.values())v.update(t,dt);
+  const wt=t*1.9;
+  for(const w of waterMeshes){
+    const pos=w.m.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const gx=w.m.position.x,gz=w.m.position.z;
+    for(let i=0;i<pos.length;i+=3)
+      pos[i+1]=Math.sin(wt+(pos[i]+gx)*5.2+(pos[i+2]+gz)*3.7)*0.024
+              +Math.sin(wt*1.6+(pos[i+2]+gz)*7.1)*0.013;
+    w.m.updateVerticesData(BABYLON.VertexBuffer.PositionKind,pos);
+    const nrm=w.m.getVerticesData(BABYLON.VertexBuffer.NormalKind);
+    BABYLON.VertexData.ComputeNormals(pos,w.idx,nrm);
+    w.m.updateVerticesData(BABYLON.VertexBuffer.NormalKind,nrm);
+  }
+  scene.render();
+});
+addEventListener('resize',()=>engine.resize());
+</script></body></html>

@@ -912,5 +912,24 @@ check("the paint registry covers everything built, with rank and effect",
 check("water is never built on",
       not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 
+print("\n20. The third dimension — 3D worlds ship whole, offline, and wired")
+_pages = os.path.join(HERE, "pages")
+_p3, _pb = (os.path.join(_pages, f) for f in ("map3d.html", "babylon.html"))
+check("both 3D pages exist and are real scenes, not stubs",
+      all(os.path.exists(p) and os.path.getsize(p) > 10_000 for p in (_p3, _pb)),
+      " + ".join(f"{os.path.getsize(p) // 1024}KB" for p in (_p3, _pb) if os.path.exists(p)))
+_srcs = "".join(open(p).read() for p in (_p3, _pb) if os.path.exists(p))
+check("the pages load nothing from the network — engines are vendored",
+      "http://" not in _srcs and "https://" not in _srcs
+      and "/pages/vendor/" in _srcs)
+check("the vendored engines are present",
+      all(os.path.getsize(os.path.join(_pages, "vendor", f)) > 100_000
+          for f in ("three.module.js", "babylon.min.js"))
+      and os.path.exists(os.path.join(_pages, "vendor", "addons", "controls", "OrbitControls.js")))
+_console_src2 = open(os.path.join(HERE, "sim_console.py")).read()
+check("the console routes them, path-safely, from one file-server",
+      all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
+                                       "realpath")))
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
