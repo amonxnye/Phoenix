@@ -1774,19 +1774,15 @@ def _snapshot_build(now: float) -> dict:
 
 
 def _constitution_text() -> str:
-    override = anchor.config_get("constitution", "")
-    if override:
-        return override                          # live, human-edited version
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CONSTITUTION.md")
-    try:
-        with open(p) as f:
-            return f.read()
-    except OSError:
-        return "# The Constitution\n\n(CONSTITUTION.md not found next to the app.)"
+    # One reader (anchor.charter_text), so the text shown on /rules and the version
+    # stamped onto every decision can never describe different rules (Article X.1).
+    return anchor.charter_text() or "# The Constitution\n\n(CONSTITUTION.md not found next to the app.)"
 
 
 def _rules_data() -> dict:
     return {
+        "charter": anchor.charter(),          # X: which rules these are, and whether
+                                              # the label still matches the text
         "resources": {r: sim.BASE[r] for r in sim.RESOURCES},
         "structures": {k: {"cost": v["cost"], "effect": v["effect"]}
                        for k, v in sim.STRUCTURES.items()},
@@ -2386,7 +2382,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "text required"}))
             with _LOCK:
                 anchor.config_set("constitution", text)
-                anchor.record(_S["turn"], "constitution", "the human amended the constitution")
+                anchor.charter_invalidate()   # X.1: the next decision cites the NEW rules
+                after = anchor.charter(refresh=True)
+                anchor.record(_S["turn"], "constitution",
+                              f"the human amended the constitution → {after['stamp']}")
                 anchor.msg_send("internal", "Chief Governor",
                                 "The constitution was amended by the human — re-briefing the fleet.")
             return self._send(200, json.dumps({"ok": True, **_rules_data()}))

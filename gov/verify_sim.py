@@ -931,5 +931,76 @@ check("the console routes them, path-safely, from one file-server",
       all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
                                        "realpath")))
 
+# ── 21. charter provenance — which rules bound a decision, and which brain took it ──
+# A report written in March must be readable against March's rules, and "which model
+# decided this" must be answerable. A why-chain answers ON WHAT BASIS; it cannot
+# answer BY WHOM or UNDER WHICH RULES, and those are the questions asked of any
+# record that has to be defended after the fact.
+print("\n21. Charter provenance — the rules have a version, decisions cite it (Article X)")
+_ch = A.charter(refresh=True)
+check("the constitution declares a version", _ch["version"] != A.CHARTER_UNVERSIONED,
+      f"{_ch['stamp']} from {_ch['source']} ({_ch['bytes']:,} bytes)")
+check("the stamp carries a digest, not only a number people can forget to bump",
+      len(_ch["digest"]) == 12 and _ch["stamp"] == f"{_ch['version']}+{_ch['digest']}")
+check("one reader serves both the rules page and the stamp",
+      "anchor.charter_text()" in open(os.path.join(HERE, "sim_console.py")).read(),
+      "the text shown and the text stamped cannot be different documents")
+
+_did = A.reason_add(1, "tester", "probe", "checking provenance", authorized_by="policy")
+_rec = next(x for x in A.reasons_top(5) if x["id"] == _did)
+check("every decision records the brain that took it",
+      bool(_rec["model"]), f"model={_rec['model']!r}")
+check("every decision records the charter that bound it",
+      _rec["charter"] == _ch["stamp"], _rec["charter"])
+check("provenance is captured at reason_add, not asked of each caller (X.2)",
+      "model: str = \"\", charter_stamp: str = \"\"" in open(os.path.join(HERE, "anchor.py")).read(),
+      "a call site written next month cannot forget what it never had to supply")
+check("the lineage view carries it too, so why(x) answers who and under what",
+      A.lineage(_did)["decision"]["charter"] == _ch["stamp"])
+
+# X.3 — the failure the digest exists to catch: an amendment that does not bump the
+# version. The run stays governed; the LABEL stops being true, and a label that can
+# silently stop being true is worse than none, because it reads as evidence.
+_base = A.charter_text()
+try:
+    # Unique text → a digest never seen before, so the check makes its own conditions
+    # instead of depending on whether this exact drift was already reported once.
+    A.config_set("constitution", _base + f"\n\n## Article XI — smuggled in {stamp}\n")
+    A.charter_invalidate()
+    _drift = A.charter(refresh=True)
+    check("an amendment that does not bump the version is caught",
+          _drift["drifted"] and _drift["version"] == _ch["version"]
+          and _drift["digest"] != _ch["digest"],
+          f"{_ch['digest']} → {_drift['digest']} under the same version")
+    check("the drift is recorded as an event, not merely returned",
+          any("without bumping" in e for e in A.event_log(20)))
+    check("a live console amendment is named as the source, not the file",
+          _drift["source"] == "console amendment")
+    A.config_set("constitution", _base.replace("Version: 1.0", f"Version: 1.9.{stamp}")
+                 + f"\n\n## Article XI {stamp}\n")
+    A.charter_invalidate()
+    check("bumping the version alongside the edit clears the drift",
+          A.charter(refresh=True)["drifted"] is False)
+finally:
+    A.config_set("constitution", "")
+    A.charter_invalidate()
+check("reverting the override returns to the shipped rules",
+      A.charter(refresh=True)["stamp"] == _ch["stamp"], _ch["stamp"])
+
+# The migration lesson, applied again: provenance migrates on its own flag, so a
+# volume that can afford one ALTER but not both keeps the other.
+_saved_prov = A._PROV_COLS
+try:
+    A._PROV_COLS = False
+    _d2 = A.reason_add(1, "tester", "probe degraded", "no provenance columns")
+    check("without the provenance columns a decision is still recorded",
+          bool(_d2) and next(x for x in A.reasons_top(5) if x["id"] == _d2)["decision"]
+          == "probe degraded")
+    check("the readers degrade to empty provenance rather than raising",
+          next(x for x in A.reasons_top(5) if x["id"] == _d2)["model"] == ""
+          and A.lineage(_d2)["decision"]["charter"] == "")
+finally:
+    A._PROV_COLS = _saved_prov
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
