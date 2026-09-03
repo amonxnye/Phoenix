@@ -45,6 +45,9 @@ def _json(code: int, obj) -> tuple:
 def status() -> dict:
     out = dict(_ACTIVE)
     out["elapsed"] = round(time.time() - _ACTIVE["started"], 1) if _ACTIVE["started"] else 0
+    if out["status"] == "analysing" and analyse.PROGRESS.get("stage"):
+        pg = analyse.PROGRESS
+        out["note"] = f"{out['note']} · {pg['stage']} {pg['done']}/{pg['total']}"
     out["history"] = _ACTIVE["history"][-8:]
     out["queue"] = [q[1] for q in _QUEUE]
     return out
@@ -130,8 +133,11 @@ def handle_get(path: str) -> tuple:
         r = store.run(rid)
         if not r:
             return _json(404, {"error": "no such run"})
-        return _json(200, {"run": r, "findings": store.findings(run_id=rid),
-                           "gaps": store.gaps(run_id=rid), "decisions": store.decisions(rid)})
+        # The whole record, not the first 500 rows: a 50-minute swarm run writes more
+        # decisions than that, and a truncated trail reads as a shorter one.
+        return _json(200, {"run": r, "findings": store.findings(run_id=rid, limit=5000),
+                           "gaps": store.gaps(run_id=rid, limit=5000),
+                           "decisions": store.decisions(rid, limit=20000)})
     if p == "/api/mechanic/report":
         rid = (q.get("id") or [""])[0]
         if not store.run(rid):
@@ -248,6 +254,12 @@ def probe() -> dict:
 
 def start_watch() -> bool:
     """Called by the console once it is serving. The CLI never starts the watch."""
+    store.init()
+    n = store.reap_open_runs()
+    if n:
+        _ACTIVE["history"].append({"url": "", "status": "halted", "run_id": "",
+                                   "note": f"{n} run(s) interrupted by the last restart were closed",
+                                   "at": time.time()})
     return watch.start()
 
 

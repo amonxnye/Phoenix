@@ -36,6 +36,17 @@ def _persist(run_id, repo_id, f, ch, unit_ids) -> str:
     return store.finding_add(run_id, repo_id, f)
 
 
+PROGRESS = {"stage": "", "done": 0, "total": 0}   # read by the web status line
+
+
+def _prog(stage: str, total: int):
+    PROGRESS.update(stage=stage, done=0, total=total)
+
+    def step():
+        PROGRESS["done"] += 1
+    return step
+
+
 def run(root: str, name: str = "", url: str = "", budget_cents: int | None = None,
         commit_sha: str = "", trigger: str = "manual") -> dict:
     store.init()
@@ -159,7 +170,7 @@ def _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts) -> Non
     store.run_set(run_id, note=f"manifest: {man['calls']} analyst calls, "
                                 f"~{man['projected_panel_cents']}¢")
     bud.gate("panel", man["projected_panel_cents"])
-    pr = panel.run(wu, wc, idx, bud)
+    pr = panel.run(wu, wc, idx, bud, progress=_prog("panel", man["calls"]))
     for cov in pr["coverage"]:                       # the critic's coverage is measured
         store.decision_add(run_id, "panel", "critic", f"stress-tested {cov['covered']}/{cov['total']}",
                            f"unit {cov['unit']}" + (f"; not examined: {', '.join(cov['missed'])}"
@@ -180,7 +191,9 @@ def _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts) -> Non
     # gate 2 — review, re-projected now that the candidate count is known
     bud.gate("review", bud.project_review(len(pr["candidates"])))
     ctx_by_unit = {u["module"]: c for u, c in work}
-    rv = review.review_all(pr["candidates"], ctx_by_unit, idx, bud)
+    rv = review.review_all(pr["candidates"], ctx_by_unit, idx, bud,
+                           progress=_prog("review", len(pr["candidates"])))
+    PROGRESS.update(stage="governor", done=0, total=1)
     store.run_set(run_id, kill_rate=rv["kill_rate"])
     if rv["band_gap"]:
         store.gap_add(run_id, "review", rv["band_gap"])

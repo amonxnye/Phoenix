@@ -100,6 +100,28 @@ def injection_findings(unit: dict, source: str) -> list[dict]:
     return out
 
 
+def _salvage(t: str) -> list[dict]:
+    """A reply cut off mid-array still holds every item before the cut. Decode the
+    objects of the findings array one by one and keep the complete ones."""
+    i = t.find('"findings"')
+    j = t.find("[", i) if i >= 0 else -1
+    if j < 0:
+        return []
+    out, pos, dec = [], j + 1, json.JSONDecoder()
+    while True:
+        k = t.find("{", pos)
+        if k < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(t, k)
+        except json.JSONDecodeError:
+            break                                 # the cut item; everything before it kept
+        if isinstance(obj, dict):
+            out.append(obj)
+        pos = end
+    return out
+
+
 def _parse(text: str) -> list[dict]:
     t = (text or "").strip()
     if t.startswith("```"):
@@ -108,7 +130,7 @@ def _parse(text: str) -> list[dict]:
     try:
         d = json.loads(t)
     except json.JSONDecodeError:
-        return []
+        return _salvage(t)
     f = d.get("findings") if isinstance(d, dict) else d
     return [x for x in (f or []) if isinstance(x, dict)]
 
@@ -132,9 +154,13 @@ def _admit(raw: dict, unit: dict, idx, role: str) -> tuple[dict | None, str]:
     claim = (raw.get("claim") or "").strip()
     if not claim:
         return None, "no checkable claim"
-    lr = str(raw.get("line_range") or "")
-    if not re.fullmatch(r"\d+(-\d+)?", lr):
-        return None, f"line range {lr!r} is not a range"
+    m = re.search(r"\d+(?:\s*-\s*\d+)?", str(raw.get("line_range") or ""))
+    lr = re.sub(r"\s+", "", m.group(0)) if m else ""
+    if not lr and sym:                            # the index knows where the symbol is
+        ss = idx.symbol(sym)
+        lr = f"{ss['line']}-{ss['end_line']}"
+    if not lr:
+        return None, f"line range {raw.get('line_range')!r} is not a range and no symbol to place it"
     a = int(lr.split("-")[0])
     if a < 1 or a > max(1, unit["loc"]):
         return None, f"line {a} is outside the unit ({unit['loc']} lines)"
@@ -207,7 +233,7 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
     if not (out or "").strip():
         return {"candidates": [], "dropped": [(unit["module"], role, "reply was empty")],
                 "coverage": coverage}
-    if not raws and _parse_obj(out) is None:
+    if not raws and _parse_obj(out) is None and not _salvage(out):
         # Say what came back. A silent drop is how a clipped prompt hid for a whole run.
         return {"candidates": [], "dropped": [(unit["module"], role,
                                                f"reply was not the schema: {head!r}")],
@@ -225,7 +251,7 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
 
 
 def run(us: list[dict], contexts: list[str], idx, budget,
-        roles: tuple = tuple(ROLES)) -> dict:
+        roles: tuple = tuple(ROLES), progress=None) -> dict:
     """All units × all roles, in parallel, isolated. Returns candidates, what was
     dropped and why, and the call count."""
     from . import decompose
@@ -238,6 +264,8 @@ def run(us: list[dict], contexts: list[str], idx, budget,
             dropped.extend(res["dropped"])
             if res.get("coverage"):
                 coverage.append(res["coverage"])
+            if progress:
+                progress()
     for c in candidates:
         c["fingerprint"] = fingerprint(c)
     return {"candidates": candidates, "dropped": dropped, "calls": len(jobs),

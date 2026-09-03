@@ -17,7 +17,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from mechanic import charter, liveness, report, store          # noqa: E402
+from mechanic import charter, liveness, panel, report, store   # noqa: E402
 from mechanic.index import Index, build                        # noqa: E402
 
 PASS, FAIL = "\033[32mPASS\033[0m", "\033[31mFAIL\033[0m"
@@ -76,6 +76,8 @@ def dispatch(name):
     return getattr(__import__("dyn"), name)()   # …this can reach anything here
 ''',
     "lib.py": '''
+LIMIT = 3                             # a module-level constant is a symbol too
+
 def public_api():
     return 1
 
@@ -162,6 +164,19 @@ check("__all__ exports are roots", "lib.public_api" not in dead)
 check("everything a test file defines is a root", "tests.test_lib.test_covered" not in dead)
 check("the class with a foreign base is named",
       "app.Handler" in idx.foreign_base_classes())
+check("a module-level constant is an indexed symbol, so a true claim about it resolves",
+      (idx.symbol("lib.LIMIT") or {}).get("kind") == "variable" and "lib.LIMIT" not in dead,
+      "127 of 155 rejected candidates on the first real swarm run named constants")
+check("a multi-range or empty line_range is placed by the index, not rejected",
+      panel._admit({"symbol": "lib.public_api", "claim": "x", "line_range": "158-195, 197-239",
+                    "category": "quality"}, {"module": "lib", "file": "lib.py", "loc": 400},
+                   idx, "quality")[0]["line_range"] == "158-195"
+      and panel._admit({"symbol": "lib.public_api", "claim": "x", "line_range": "",
+                        "category": "quality"}, {"module": "lib", "file": "lib.py", "loc": 400},
+                       idx, "quality")[0]["line_range"].startswith(str(idx.symbol("lib.public_api")["line"])))
+check("a reply cut off mid-array keeps every complete finding before the cut",
+      len(panel._parse('{"findings": [{"title": "a", "claim": "x"}, {"title": "b", "claim": "y"}, {"title": "c", "cla')) == 2,
+      "5 replies on the first real swarm run were truncated JSON, discarded whole")
 check("a builtin base (Exception) is NOT a framework — the class is judged, not refused",
       "app.MyErr" not in idx.foreign_base_classes() and "app.MyErr.code" in dead,
       "the first public run refused 25 such classes; ConfigError(Exception) was one")
@@ -358,6 +373,12 @@ _pr = web.handle_post("/api/mechanic/probe", {})
 check("the probe answers in seconds whether the brain answers the panel, or why not",
       _pr[0] in (200, 503) and ("error" in _pr[2] or "reply_head" in _pr[2]),
       _pr[2][:80])
+_rid = store.repo_add("https://github.com/o/interrupted", name="interrupted")
+_orphan = store.run_open(_rid, "", "0.3+x")
+store.run_set(_orphan, status="analysing")
+check("a run left 'analysing' by a dead process is closed as halted at boot (IX)",
+      store.reap_open_runs() >= 1 and store.run(_orphan)["status"] == "halted"
+      and "restart" in store.run(_orphan)["note"])
 check("a repository's whole run history is on the API — nothing is deleted",
       web.handle_get("/api/mechanic/runs?repo=nope")[0] == 200
       and '"runs": []' in web.handle_get("/api/mechanic/runs?repo=nope")[2])
