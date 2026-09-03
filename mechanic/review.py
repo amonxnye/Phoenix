@@ -13,8 +13,11 @@ stamp; above 60% the analysts are noise. Either is recorded as a gap on the run.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from . import brainseam
+
+MAX_WORKERS = 4
 
 KILL_BAND = (0.15, 0.60)
 OUTCOMES = ("upheld", "refuted", "weakened")
@@ -92,15 +95,21 @@ def challenge(c: dict, ctx: str, idx, budget) -> dict:
             "admissible": True, "note": ""}
 
 
-def review_all(candidates: list[dict], contexts_by_unit: dict, idx, budget) -> dict:
+def review_all(candidates: list[dict], contexts_by_unit: dict, idx, budget,
+               progress=None) -> dict:
     """Challenge every candidate; annotate each; compute the kill rate and its verdict."""
     n = len(candidates)
-    for c in candidates:
+
+    def _do(c):
         r = challenge(c, contexts_by_unit.get(c["unit"], ""), idx, budget)
         c["challenge"] = r["outcome"]
         c["challenge_reason"] = r["reasoning"]
         c["challenge_note"] = r["note"]
         c["severity"] = r["severity"]
+        if progress:
+            progress()
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        list(ex.map(_do, candidates))
     killed = sum(1 for c in candidates if c["challenge"] == "refuted")
     rate = killed / n if n else 0.0
     band = ""

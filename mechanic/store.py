@@ -141,6 +141,22 @@ _EXTRA = {
 }
 
 
+def reap_open_runs() -> int:
+    """At boot: any run still 'indexing' or 'analysing' belonged to a process that no
+    longer exists. Close it as halted, with the reason. A run nobody will ever close
+    is the same defect as an unanswered request (Constitution IX)."""
+    c = _conn()
+    try:
+        cur = c.execute("UPDATE runs SET status='halted', finished_at=?, "
+                        "note='interrupted by a restart before it finished' "
+                        "WHERE status IN ('indexing','analysing','reviewing','adjudicating')",
+                        (time.time(),))
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
 def _next_id(c: sqlite3.Connection, table: str, prefix: str) -> str:
     n = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] + 1
     while c.execute(f"SELECT 1 FROM {table} WHERE id=?", (f"{prefix}{n:04d}",)).fetchone():

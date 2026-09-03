@@ -45,6 +45,9 @@ def _json(code: int, obj) -> tuple:
 def status() -> dict:
     out = dict(_ACTIVE)
     out["elapsed"] = round(time.time() - _ACTIVE["started"], 1) if _ACTIVE["started"] else 0
+    if out["status"] == "analysing" and analyse.PROGRESS.get("stage"):
+        pg = analyse.PROGRESS
+        out["note"] = f"{out['note']} · {pg['stage']} {pg['done']}/{pg['total']}"
     out["history"] = _ACTIVE["history"][-8:]
     out["queue"] = [q[1] for q in _QUEUE]
     return out
@@ -248,6 +251,12 @@ def probe() -> dict:
 
 def start_watch() -> bool:
     """Called by the console once it is serving. The CLI never starts the watch."""
+    store.init()
+    n = store.reap_open_runs()
+    if n:
+        _ACTIVE["history"].append({"url": "", "status": "halted", "run_id": "",
+                                   "note": f"{n} run(s) interrupted by the last restart were closed",
+                                   "at": time.time()})
     return watch.start()
 
 

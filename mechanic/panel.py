@@ -225,7 +225,7 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
 
 
 def run(us: list[dict], contexts: list[str], idx, budget,
-        roles: tuple = tuple(ROLES)) -> dict:
+        roles: tuple = tuple(ROLES), progress=None) -> dict:
     """All units × all roles, in parallel, isolated. Returns candidates, what was
     dropped and why, and the call count."""
     from . import decompose
@@ -238,6 +238,8 @@ def run(us: list[dict], contexts: list[str], idx, budget,
             dropped.extend(res["dropped"])
             if res.get("coverage"):
                 coverage.append(res["coverage"])
+            if progress:
+                progress()
     for c in candidates:
         c["fingerprint"] = fingerprint(c)
     return {"candidates": candidates, "dropped": dropped, "calls": len(jobs),

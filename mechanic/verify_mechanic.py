@@ -358,6 +358,12 @@ _pr = web.handle_post("/api/mechanic/probe", {})
 check("the probe answers in seconds whether the brain answers the panel, or why not",
       _pr[0] in (200, 503) and ("error" in _pr[2] or "reply_head" in _pr[2]),
       _pr[2][:80])
+_rid = store.repo_add("https://github.com/o/interrupted", name="interrupted")
+_orphan = store.run_open(_rid, "", "0.3+x")
+store.run_set(_orphan, status="analysing")
+check("a run left 'analysing' by a dead process is closed as halted at boot (IX)",
+      store.reap_open_runs() >= 1 and store.run(_orphan)["status"] == "halted"
+      and "restart" in store.run(_orphan)["note"])
 check("a repository's whole run history is on the API — nothing is deleted",
       web.handle_get("/api/mechanic/runs?repo=nope")[0] == 200
       and '"runs": []' in web.handle_get("/api/mechanic/runs?repo=nope")[2])
