@@ -120,7 +120,7 @@ def handle_get(path: str) -> tuple:
 
 def _worker(url: str, name: str) -> None:
     try:
-        _ACTIVE.update(status="cloning", note="shallow, read-only, credential-stripped")
+        _ACTIVE.update(status="fetching", note="archive over HTTPS, read-only, no credentials")
         c = ingest.clone(url)
         if "error" in c:
             _ACTIVE.update(status="failed", note=c["error"])
@@ -206,7 +206,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 tr.repo{cursor:pointer}tr.repo:hover td{background:#241a0f}tr.repo[aria-selected=true] td{background:#2c2013}
 .tag{border-radius:4px;padding:0 7px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid currentColor;white-space:nowrap}
 .mv{color:var(--green)}.jd{color:var(--blue)}.s-critical,.s-high{color:var(--bad)}.s-medium{color:var(--gold)}.s-low{color:var(--dim)}
-.st-complete{color:var(--green)}.st-halted,.st-failed{color:var(--bad)}.st-analysing,.st-cloning,.st-queued{color:var(--gold)}
+.st-complete{color:var(--green)}.st-halted,.st-failed{color:var(--bad)}.st-analysing,.st-fetching,.st-queued{color:var(--gold)}
 details{border-bottom:1px solid var(--line)}details[open]{background:#241a0f55}
 summary{padding:9px 14px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;list-style:none}
 summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
@@ -228,7 +228,7 @@ summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
     fix first. <b>Machine-verified</b> findings rest on a graph fact re-checked at report time and lead the
     list. A <b>refusal</b> is a place the analysis declined to conclude, and why &mdash; shown, not hidden.
     Nothing here writes to any repository.</div></div>
-  <div class=card><h2>Analyse a repository <em>public GitHub only &middot; shallow, read-only, credential-stripped clone &middot; one at a time</em></h2>
+  <div class=card><h2>Analyse a repository <em>public GitHub only &middot; read-only archive fetch, no credentials, no git &middot; one at a time</em></h2>
     <form id=f><input type=url id=url placeholder="https://github.com/owner/repo" required>
       <button id=go type=submit>Analyse</button><div id=st></div></form></div>
   <div class=card><h2>Repositories <em id=rn></em></h2><div id=repos><div class=empty>loading&hellip;</div></div></div>
@@ -254,9 +254,9 @@ async function summary(){
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
   const st=$('st'); st.className='';
   if(a.status==='idle'){st.textContent=a.history.length?lastLine(a.history):'';}
-  else if(['queued','cloning','analysing'].includes(a.status)){st.className='busy';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')+' · '+a.elapsed+'s'}
+  else if(['queued','fetching','analysing'].includes(a.status)){st.className='busy';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')+' · '+a.elapsed+'s'}
   else{st.className=a.status==='complete'?'ok':'bad';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')}
-  $('go').disabled=['queued','cloning','analysing'].includes(a.status);
+  $('go').disabled=['queued','fetching','analysing'].includes(a.status);
   return a;
 }
 function lastLine(h){const x=h[h.length-1];return x.url.replace('https://github.com/','')+' — '+x.status+(x.note?' · '+x.note:'')}
@@ -309,7 +309,7 @@ $('f').onsubmit=async e=>{e.preventDefault();
 };
 let timer=null;
 async function tick(){const a=await summary(); await repos(); await findings();
-  clearTimeout(timer); timer=setTimeout(tick, ['queued','cloning','analysing'].includes(a.status)?3000:20000)}
+  clearTimeout(timer); timer=setTimeout(tick, ['queued','fetching','analysing'].includes(a.status)?3000:20000)}
 tick();
 </script>
 </html>"""

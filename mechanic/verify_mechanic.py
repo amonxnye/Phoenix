@@ -277,8 +277,6 @@ else:
     check("a ≥100k-LOC corpus was available to measure against", False,
           f"{big} not present — the gate could not be measured here")
 
-shutil.rmtree(root, ignore_errors=True)
-
 # ── the UI: Milestone 6 pulled forward, and the rules a public form needs ─────
 # A shell on your own machine and a form on a public host are different threats. The
 # web layer keeps the CLI's single analysis path and adds exactly the rules that
@@ -293,13 +291,17 @@ check("only GitHub HTTPS URLs are accepted for cloning",
       and not ingest.accepted("/etc")[0],
       "the read-only guarantee is enforced for one host, not promised for all")
 os.environ["GITHUB_TOKEN"] = "hunter2"
-os.environ["MY_DEPLOY_KEY"] = "x"
-_env = ingest._clean_env()
-del os.environ["GITHUB_TOKEN"], os.environ["MY_DEPLOY_KEY"]
-check("the clone runs with every credential stripped (Charter §5)",
-      "GITHUB_TOKEN" not in _env and "MY_DEPLOY_KEY" not in _env and "PATH" in _env
-      and _env.get("GIT_TERMINAL_PROMPT") == "0",
-      "a write to the origin is impossible, not merely forbidden")
+_h = ingest.headers()
+del os.environ["GITHUB_TOKEN"]
+check("no request ever carries a credential, whatever the environment holds (Charter §5)",
+      "Authorization" not in _h and set(_h) == {"User-Agent", "Accept"},
+      "an HTTP GET of an archive cannot write; a write to the origin is impossible")
+check("ingestion needs no git — the deployed image has none, and the first public "
+      "run said so", "subprocess" not in open(os.path.join(HERE, "ingest.py")).read(),
+      "GitHub's archive endpoint, streamed with the standard library")
+check("an archive member that escapes the destination is refused",
+      ingest._safe("Repo-HEAD/../etc/passwd") == "" and ingest._safe("Repo-HEAD/") == ""
+      and ingest._safe("Repo-HEAD/a/b.py") == "a/b.py")
 
 _code, _ct, _body = web.handle_get("/mechanic")
 check("the page is served and carries the console's palette placeholders",
@@ -350,5 +352,6 @@ check("the mechanic run on itself reports no findings",
 check("…and exactly the one honest refusal: the AST visitor's framework-called methods",
       _self["gaps"] == 1)
 
+shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

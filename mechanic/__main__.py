@@ -7,7 +7,8 @@
     python -m mechanic repos
 
 `analyse` accepts a local path or a https://github.com/<owner>/<repo> URL. A URL is
-cloned shallow, read-only and credential-stripped (ingest.py), analysed, and deleted.
+fetched as an archive over HTTPS — read-only, no credentials, no git (ingest.py) —
+analysed, and deleted.
 The web page (web.py) drives exactly the same `analyse.run()`; there is one path.
 """
 
