@@ -167,7 +167,7 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> 
             resp = client.chat.completions.create(
                 model=p["model"], messages=messages,
                 max_tokens=max_tokens, temperature=temperature)
-            out, usage = resp.choices[0].message.content.strip(), resp.usage
+            out, usage = (resp.choices[0].message.content or "").strip(), resp.usage
         _log_call(p, purpose, t0, usage, True)
         return out
     except Exception as e:
