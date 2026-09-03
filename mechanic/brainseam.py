@@ -80,11 +80,28 @@ def data_block(text: str, field: str = "unit_source") -> str:
             "\nEND REPOSITORY TEXT")
 
 
+def provider_extras(model_name: str) -> dict:
+    """Provider-specific request fields for MECHANIC calls only.
+
+    deepseek-v4-* think by default at effort "high", and put the thinking in
+    `reasoning_content`, leaving `content` empty when the reply budget runs out.
+    Every analyst reply on the first two production runs was empty for exactly this
+    reason. The panel's job is structured extraction from a context it is handed; the
+    correctness comes from the index and the adversarial structure, not from a
+    thinking budget. So thinking is off for the mechanic's calls — and only sent to a
+    provider that understands the field."""
+    m = (model_name or "").lower()
+    if "deepseek" in m:
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
 def _real_ask(messages, max_tokens, temperature, purpose, tier):
     b = _load()
     if not b or not b.available():
         raise RuntimeError("no model configured")
-    return b._chat(messages, max_tokens, temperature, f"mechanic:{purpose}")
+    return b._chat(messages, max_tokens, temperature, f"mechanic:{purpose}",
+                   extra_body=provider_extras(b.brain_name()))
 
 
 # Replaceable: the suite installs a scripted model here and runs the whole swarm

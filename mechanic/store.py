@@ -43,6 +43,30 @@ def DB() -> str:
     return os.path.join(data_dir(), "mechanic.sqlite")
 
 
+def boot_marker() -> dict:
+    """{since, boots}: written at first sight, incremented per process. If `since` is
+    always "just now" and `boots` is always 1, the record is not surviving deploys —
+    whatever the environment variables say."""
+    p = os.path.join(data_dir(), "record.json")
+    try:
+        with open(p) as f:
+            m = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        m = {"since": time.time(), "boots": 0}
+    if not _BOOTED.get("done"):
+        m["boots"] = int(m.get("boots", 0)) + 1
+        _BOOTED["done"] = True
+        try:
+            with open(p, "w") as f:
+                json.dump(m, f)
+        except OSError:
+            pass
+    return {"since": float(m.get("since", 0)), "boots": int(m.get("boots", 1))}
+
+
+_BOOTED: dict = {}
+
+
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB(), timeout=10.0)
     c.row_factory = sqlite3.Row
