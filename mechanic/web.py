@@ -133,8 +133,11 @@ def handle_get(path: str) -> tuple:
         r = store.run(rid)
         if not r:
             return _json(404, {"error": "no such run"})
-        return _json(200, {"run": r, "findings": store.findings(run_id=rid),
-                           "gaps": store.gaps(run_id=rid), "decisions": store.decisions(rid)})
+        # The whole record, not the first 500 rows: a 50-minute swarm run writes more
+        # decisions than that, and a truncated trail reads as a shorter one.
+        return _json(200, {"run": r, "findings": store.findings(run_id=rid, limit=5000),
+                           "gaps": store.gaps(run_id=rid, limit=5000),
+                           "decisions": store.decisions(rid, limit=20000)})
     if p == "/api/mechanic/report":
         rid = (q.get("id") or [""])[0]
         if not store.run(rid):

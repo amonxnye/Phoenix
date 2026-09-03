@@ -189,12 +189,35 @@ class _Scan(ast.NodeVisitor):
             self.edges.add((self._here(), node.attr, "refs"))
         self.generic_visit(node)
 
+    def _variable(self, name: str, node):
+        """A module- or class-level assignment is a symbol too. The first swarm run
+        rejected 127 true claims about constants as 'unresolvable' because only
+        functions and classes were indexed."""
+        if self._stack and not self._class:
+            return                                # a local inside a function: not a symbol
+        if self._class and len(self._stack) > len(self._class):
+            return                                # a local inside a method
+        self.symbols.append({
+            "qualname": self._qual(name), "name": name, "kind": "variable",
+            "module": self.module, "file": self.path, "line": node.lineno,
+            "end_line": getattr(node, "end_lineno", node.lineno),
+            "in_class": self._class[-1] if self._class else "", "registered": 0,
+        })
+
     def visit_Assign(self, node):
         for t in node.targets:
-            if isinstance(t, ast.Name) and t.id == "__all__":
-                for el in getattr(node.value, "elts", []):
-                    if isinstance(el, ast.Constant) and isinstance(el.value, str):
-                        self.exported.add(el.value)
+            if isinstance(t, ast.Name):
+                if t.id == "__all__":
+                    for el in getattr(node.value, "elts", []):
+                        if isinstance(el, ast.Constant) and isinstance(el.value, str):
+                            self.exported.add(el.value)
+                else:
+                    self._variable(t.id, node)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        if isinstance(node.target, ast.Name):
+            self._variable(node.target.id, node)
         self.generic_visit(node)
 
 
