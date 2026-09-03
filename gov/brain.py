@@ -96,6 +96,8 @@ PROMPT_LIMITS = {
     "prompt":    6000,   # last line of defence: the assembled turn itself
 }
 _OVERRUN: dict[str, dict] = {}
+LAST_RAW: dict = {}          # what the provider returned on the last call — VII.4: measured
+EXTRA_BODY: dict = {}        # provider-specific request fields (e.g. a thinking toggle)
 
 
 def clip(field: str, text) -> str:
@@ -146,10 +148,15 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
         pass                                       # telemetry must never break a call
 
 
-def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> str:
+def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
+          extra_body: dict | None = None) -> str:
     """THE model call. Routes to the configured provider, logs cost + latency +
     errors to the anchor, returns the reply text. Raises on failure — callers keep
-    their own rule-based fallbacks."""
+    their own rule-based fallbacks.
+
+    `extra_body` is per call and provider-specific — the mechanic uses it to turn a
+    reasoning model's thinking off for structured-extraction prompts, without
+    changing how the settlement's own calls behave."""
     p = provider()
     if not p:
         raise RuntimeError("no model configured")
@@ -164,10 +171,22 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str) -> 
         else:
             from openai import OpenAI
             client = OpenAI(api_key=p["key"], base_url=p["base_url"])
-            resp = client.chat.completions.create(
-                model=p["model"], messages=messages,
-                max_tokens=max_tokens, temperature=temperature)
-            out, usage = (resp.choices[0].message.content or "").strip(), resp.usage
+            kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
+                  "temperature": temperature}
+            extras = dict(EXTRA_BODY, **(extra_body or {}))
+            if extras:
+                kw["extra_body"] = extras
+            resp = client.chat.completions.create(**kw)
+            msg = resp.choices[0].message
+            out, usage = (msg.content or "").strip(), resp.usage
+            # A reasoning model may spend the whole reply thinking and leave `content`
+            # empty. Record what came back so a silent reply is never a mystery again.
+            rc = getattr(msg, "reasoning_content", None) or ""
+            LAST_RAW.update(finish_reason=getattr(resp.choices[0], "finish_reason", ""),
+                            content_chars=len(out), reasoning_chars=len(rc),
+                            reasoning_head=rc[:160],
+                            completion_tokens=getattr(usage, "completion_tokens", None),
+                            model=p["model"], extra=extras)
         _log_call(p, purpose, t0, usage, True)
         return out
     except Exception as e:

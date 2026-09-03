@@ -197,11 +197,18 @@ def persistence() -> dict:
     import os
     d = store.data_dir()
     vol = os.environ.get("MECHANIC_DATA_DIR", "").strip() or os.environ.get("GOV_DATA_DIR", "").strip()
-    persistent = bool(vol) and d.startswith(vol)
-    return {"data_dir": d, "persistent": persistent,
-            "note": "" if persistent else ("the record lives inside the deployed image and is "
-                                          "wiped by every redeploy — mount a volume and set "
-                                          "GOV_DATA_DIR (or MECHANIC_DATA_DIR) to it")}
+    configured = bool(vol) and d.startswith(vol)
+    mark = store.boot_marker()
+    # Configuration is a claim; survival is the measurement. A marker written at the
+    # first boot either is still there after a redeploy or it is not.
+    survived = mark["boots"] > 1
+    return {"data_dir": d, "configured": configured, "record_since": mark["since"],
+            "boots": mark["boots"], "persistent": configured and survived,
+            "note": ("" if configured and survived else
+                     "the record has not yet been seen to survive a redeploy — " +
+                     ("GOV_DATA_DIR/MECHANIC_DATA_DIR is not set" if not configured else
+                      "the path is configured but a volume may not be attached; the "
+                      "settlement's call log also reset across deploys"))}
 
 
 def probe() -> dict:
@@ -227,7 +234,10 @@ def probe() -> dict:
         t0 = _t.time()
         res = panel._one(u, ctx, "quality", idx, bud, None)
         raw = panel.LAST_REPLY.get("text", "")
+        b = brainseam._load()
+        provider_raw = dict(getattr(b, "LAST_RAW", {}) or {}) if b else {}
         return {"ok": bool(raw.strip()), "model": brainseam.name(), "unit": u["module"],
+                "provider": provider_raw,
                 "prompt_chars": panel.LAST_REPLY.get("prompt_chars", 0),
                 "reply_chars": len(raw), "reply_head": raw.strip()[:200],
                 "candidates": len(res["candidates"]), "dropped": res["dropped"][:2],
@@ -379,7 +389,7 @@ async function summary(){
     ['refusals',s.gaps],['fixed upstream',s.fixed],['spent',((s.spend_cents||0)/100).toFixed(2)+' $']]
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
   const rec=d.record||{};
-  $('wl').innerHTML=(rec.persistent?'':`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
+  $('wl').innerHTML=(rec.persistent?`record since ${new Date(rec.record_since*1000).toLocaleDateString()} &middot; ${rec.boots} boots &middot; `:`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
     (d.brain?`brain <b>${esc(d.brain)}</b> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
     `watch ${w.running?'<b>running</b>':'stopped'} &middot; ${w.watched||0} watched &middot; ${w.cycles||0} cycles`+
     ((w.last||[]).length?'<br>'+w.last.slice(-3).map(x=>`${esc(x.repo)}: <span class="st-${esc(x.action)}">${esc(x.action)}</span> — ${esc(x.note)}`).join('<br>'):'');

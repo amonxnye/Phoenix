@@ -348,10 +348,12 @@ check("the queue is bounded — beyond it, 409 with the reason",
       f"{len(web._QUEUE)} queued, cap {web.QUEUE_MAX}")
 web._QUEUE.clear()
 _sum = json.loads(web.handle_get("/api/mechanic/summary")[2])
-check("the summary says where the record lives and whether a redeploy keeps it (VII.4)",
-      "record" in _sum and {"data_dir", "persistent"} <= set(_sum["record"])
-      and _sum["record"]["persistent"] is True,          # the suite sets MECHANIC_DATA_DIR
-      _sum["record"]["data_dir"])
+check("the summary says where the record lives, and MEASURES survival by a boot marker (VII.4)",
+      "record" in _sum and {"data_dir", "configured", "boots", "record_since", "persistent"}
+      <= set(_sum["record"]) and _sum["record"]["configured"] is True
+      and _sum["record"]["persistent"] is False,        # first boot: configured, not yet proven
+      f"configured={_sum['record']['configured']} boots={_sum['record']['boots']} — "
+      f"a configured path is a claim; a marker that survives a redeploy is the proof")
 _pr = web.handle_post("/api/mechanic/probe", {})
 check("the probe answers in seconds whether the brain answers the panel, or why not",
       _pr[0] in (200, 503) and ("error" in _pr[2] or "reply_head" in _pr[2]),
@@ -491,6 +493,11 @@ try:
           any(d["actor"] == "critic" and "stress-tested" in d["action"] for d in decs)
           and any("critic did not examine" in g["reason"] for g in gaps_),
           next((d["action"] for d in decs if d["actor"] == "critic"), "—"))
+    check("mechanic calls turn a DeepSeek model's default thinking OFF — and only DeepSeek's",
+          brainseam.provider_extras("deepseek-v4-flash") == {"thinking": {"type": "disabled"}}
+          and brainseam.provider_extras("claude-sonnet-5") == {}
+          and brainseam.provider_extras("rule-based") == {},
+          "every analyst reply on the first two production runs was empty: reasoning ate the budget")
     _b = brainseam._load()
     check("the brain's turn ceiling is raised to fit a unit's context, checklist and schema",
           (not _b) or (_b.PROMPT_LIMITS["prompt"] >= brainseam.TURN_CEILING
