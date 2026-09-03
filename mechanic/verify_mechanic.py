@@ -347,6 +347,15 @@ check("the queue is bounded — beyond it, 409 with the reason",
       _last[0] == 409 and "queue is full" in _last[2] and len(web._QUEUE) == web.QUEUE_MAX,
       f"{len(web._QUEUE)} queued, cap {web.QUEUE_MAX}")
 web._QUEUE.clear()
+_sum = json.loads(web.handle_get("/api/mechanic/summary")[2])
+check("the summary says where the record lives and whether a redeploy keeps it (VII.4)",
+      "record" in _sum and {"data_dir", "persistent"} <= set(_sum["record"])
+      and _sum["record"]["persistent"] is True,          # the suite sets MECHANIC_DATA_DIR
+      _sum["record"]["data_dir"])
+_pr = web.handle_post("/api/mechanic/probe", {})
+check("the probe answers in seconds whether the brain answers the panel, or why not",
+      _pr[0] in (200, 503) and ("error" in _pr[2] or "reply_head" in _pr[2]),
+      _pr[2][:80])
 check("a repository's whole run history is on the API — nothing is deleted",
       web.handle_get("/api/mechanic/runs?repo=nope")[0] == 200
       and '"runs": []' in web.handle_get("/api/mechanic/runs?repo=nope")[2])

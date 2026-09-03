@@ -100,7 +100,8 @@ def handle_get(path: str) -> tuple:
         from . import brainseam
         return _json(200, {"summary": store.summary(), "charter": charter.charter(),
                            "active": status(), "watch": watch.status(),
-                           "brain": brainseam.name() if brainseam.available() else ""})
+                           "brain": brainseam.name() if brainseam.available() else "",
+                           "record": persistence()})
     if p == "/api/mechanic/repos":
         return _json(200, {"repos": _repo_rows()})
     if p == "/api/mechanic/findings":
@@ -190,6 +191,51 @@ def _start(url: str, name: str, budget_cents: int) -> bool:
     return True
 
 
+def persistence() -> dict:
+    """Where the record lives, and whether a redeploy keeps it. Measured, not assumed:
+    the first three production runs each came back as ripa-run-0001."""
+    import os
+    d = store.data_dir()
+    vol = os.environ.get("MECHANIC_DATA_DIR", "").strip() or os.environ.get("GOV_DATA_DIR", "").strip()
+    persistent = bool(vol) and d.startswith(vol)
+    return {"data_dir": d, "persistent": persistent,
+            "note": "" if persistent else ("the record lives inside the deployed image and is "
+                                          "wiped by every redeploy — mount a volume and set "
+                                          "GOV_DATA_DIR (or MECHANIC_DATA_DIR) to it")}
+
+
+def probe() -> dict:
+    """One analyst call on one unit of the mechanic itself: does the configured model
+    answer the panel's prompt with the schema? Seconds, not minutes, and it says what
+    came back. Local path, fixed, never user-supplied."""
+    import os
+    import tempfile
+    import time as _t
+    from . import brainseam, budget as budget_mod, decompose, history, panel
+    from .index import Index, build
+    if not brainseam.available():
+        return {"ok": False, "error": "no model configured"}
+    here = os.path.dirname(os.path.abspath(__file__))
+    db = os.path.join(tempfile.gettempdir(), "mechanic-probe-index.sqlite")
+    build(here, db)
+    idx = Index(db)
+    try:
+        us = [u for u in decompose.units(idx) if u["module"] == "charter"] or decompose.units(idx)[:1]
+        u = us[0]
+        ctx = decompose.context(u, here, idx, history.facts(here, [u["file"]]))
+        bud = budget_mod.Budget(50)
+        t0 = _t.time()
+        res = panel._one(u, ctx, "quality", idx, bud, None)
+        raw = panel.LAST_REPLY.get("text", "")
+        return {"ok": bool(raw.strip()), "model": brainseam.name(), "unit": u["module"],
+                "prompt_chars": panel.LAST_REPLY.get("prompt_chars", 0),
+                "reply_chars": len(raw), "reply_head": raw.strip()[:200],
+                "candidates": len(res["candidates"]), "dropped": res["dropped"][:2],
+                "seconds": round(_t.time() - t0, 1), "cents": bud.spent_cents()}
+    finally:
+        idx.close()
+
+
 def start_watch() -> bool:
     """Called by the console once it is serving. The CLI never starts the watch."""
     return watch.start()
@@ -197,6 +243,12 @@ def start_watch() -> bool:
 
 def handle_post(path: str, body: dict) -> tuple:
     p = urlparse(path).path
+    if p == "/api/mechanic/probe":
+        try:
+            r = probe()
+        except Exception as e:                        # noqa: BLE001 — the probe reports, never raises
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return _json(200 if r.get("ok") else 503, r)
     if p == "/api/mechanic/watch":
         rid = (body.get("repo_id") or "").strip()
         if not any(r["id"] == rid for r in store.repos()):
@@ -326,7 +378,9 @@ async function summary(){
     ['findings',s.findings],['machine-verified',s.machine_verified],['judged',s.judged],
     ['refusals',s.gaps],['fixed upstream',s.fixed],['spent',((s.spend_cents||0)/100).toFixed(2)+' $']]
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
-  $('wl').innerHTML=(d.brain?`brain <b>${esc(d.brain)}</b> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
+  const rec=d.record||{};
+  $('wl').innerHTML=(rec.persistent?'':`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
+    (d.brain?`brain <b>${esc(d.brain)}</b> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
     `watch ${w.running?'<b>running</b>':'stopped'} &middot; ${w.watched||0} watched &middot; ${w.cycles||0} cycles`+
     ((w.last||[]).length?'<br>'+w.last.slice(-3).map(x=>`${esc(x.repo)}: <span class="st-${esc(x.action)}">${esc(x.action)}</span> — ${esc(x.note)}`).join('<br>'):'');
   const st=$('st'); st.className='';

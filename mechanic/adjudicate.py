@@ -74,7 +74,7 @@ def adjudicate(upheld: list[dict], centrality: dict, budget, charter_stamp: str)
                   f"adversarial review; they are listed in consequence order.\n\n{listing}\n\n"
                   f"{SCHEMA}")
         try:
-            d = json.loads((brainseam.ask([{"role": "user", "content": prompt}], 1200, 0.1,
+            d = json.loads((brainseam.ask([{"role": "user", "content": prompt}], 4000, 0.1,
                                           "governor", "strong", budget) or "{}")
                            .strip().strip("`").removeprefix("json").strip() or "{}")
         except Exception:                             # noqa: BLE001 — the rule stands in

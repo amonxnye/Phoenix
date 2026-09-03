@@ -34,10 +34,10 @@ def calibrate(model_name: str) -> str:
         PRICE.update(_ASSUMED)
         PRICED_FOR = "assumed tiers"
     return PRICED_FOR
-PANEL_OUT_TOKENS = 700                             # per analyst call, reserved
+PANEL_OUT_TOKENS = 1500                            # per analyst call, projected (reasoning included)
 REVIEW_IN_TOKENS = 2500                            # candidate + context + facts
-REVIEW_OUT_TOKENS = 400
-GOVERNOR_OUT_TOKENS = 1200
+REVIEW_OUT_TOKENS = 800
+GOVERNOR_OUT_TOKENS = 1500
 
 
 class OverBudget(Exception):

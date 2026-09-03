@@ -48,6 +48,9 @@ ROLES = {
 CHECKLIST_ROLES = ("critic",)
 PER_UNIT_CAP = 8
 MAX_WORKERS = 4
+OUT_TOKENS = 4000
+OUT_TOKENS_CRITIC = 6000
+LAST_REPLY: dict = {}                              # the most recent raw reply, for the probe
 
 SCHEMA = (
     'Reply with STRICT JSON only, no prose: {"findings": [ {"title": str, '
@@ -182,11 +185,17 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
     prompt = (f"Role: {role} analyst on the Software Mechanic panel.\n{ROLES[role]}\n\n"
               f"{ctx}{extra}\n\n{SCHEMA}")
     try:
-        out = brainseam.ask([{"role": "user", "content": prompt}], 1200 if checklist else 900,
-                            0.3, f"panel:{role}", "cheap", budget)
+        # A reasoning model spends max_tokens thinking before it writes. On the first
+        # production run every reply came back EMPTY at 900–1200: the budget was gone
+        # before the JSON began. Output tokens on a cheap-class model cost nothing that
+        # matters next to a silent run.
+        out = brainseam.ask([{"role": "user", "content": prompt}],
+                            OUT_TOKENS_CRITIC if checklist else OUT_TOKENS, 0.3,
+                            f"panel:{role}", "cheap", budget)
     except Exception as e:                            # noqa: BLE001 — recorded, not raised
         return {"candidates": [], "dropped": [(unit["module"], role, f"call failed: {e}")],
                 "coverage": None}
+    LAST_REPLY.update(text=out or "", prompt_chars=len(prompt), role=role, unit=unit["module"])
     coverage = None
     if checklist:
         ids = {i["id"] for i in checklist}

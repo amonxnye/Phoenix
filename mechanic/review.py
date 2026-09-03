@@ -66,7 +66,7 @@ def challenge(c: dict, ctx: str, idx, budget) -> dict:
               f"faith, to refute it using the graph facts and the source.\n\n"
               f"CANDIDATE: {cand}\n\nGRAPH FACTS:\n{_facts(c, idx)}\n\n{ctx}\n\n{SCHEMA}")
     try:
-        out = brainseam.ask([{"role": "user", "content": prompt}], 500, 0.2,
+        out = brainseam.ask([{"role": "user", "content": prompt}], 2500, 0.2,
                             "review", "strong", budget)
     except Exception as e:                            # noqa: BLE001
         return {"outcome": "upheld", "reasoning": f"challenger unavailable: {e}",
