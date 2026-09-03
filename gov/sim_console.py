@@ -1829,6 +1829,17 @@ class QuietServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def _mechanic_web():
+    """The Software Mechanic mounts here. It owns its pages and its API (mechanic/web.py);
+    the console lends it the process, the port, the palette and the token gate."""
+    import sys as _sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    from mechanic import web
+    return web
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json", download=None):
         payload = body.encode() if isinstance(body, str) else body
@@ -2249,6 +2260,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "model": brain._model(),
                                                    "error": str(e)[:600]}))
+        if self.path == "/mechanic" or self.path.startswith("/api/mechanic"):
+            code, ctype, body = _mechanic_web().handle_get(self.path)
+            if ctype.startswith("text/html"):
+                self._count_view()
+                body = _page(body)                 # the house palette, like every page
+            return self._send(code, body, ctype)
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
@@ -2269,6 +2286,9 @@ class Handler(BaseHTTPRequestHandler):
                 anchor.metric_bump("public_chats")
             else:
                 return self._send(401, json.dumps({"error": "console token required"}))
+        if self.path.startswith("/api/mechanic/"):      # POWER: gated by the token above
+            code, ctype, body = _mechanic_web().handle_post(self.path, self._read_json())
+            return self._send(code, body, ctype)
         if self.path == "/api/resume":
             body = self._read_json()
             uid, decision = body.get("unit_id"), body.get("decision")
@@ -2897,7 +2917,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -3416,7 +3436,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 </style>
 <header>
   <h1>&#9670; DECISION FLOW</h1>
-  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -3620,7 +3640,7 @@ summary:hover{background:#241a0f}
 .turn .n{color:var(--dim);font-size:11px;white-space:nowrap}
 </style>
 <header><h1>&#9670; CONVERSATIONS</h1>
-  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a>
+  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a>
   <a href="/chats">Chats</a><a href="/logs">Logs</a>
   <span class=meta id=meta>loading&hellip;</span></header>
 <main>

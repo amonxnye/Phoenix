@@ -278,5 +278,77 @@ else:
           f"{big} not present — the gate could not be measured here")
 
 shutil.rmtree(root, ignore_errors=True)
+
+# ── the UI: Milestone 6 pulled forward, and the rules a public form needs ─────
+# A shell on your own machine and a form on a public host are different threats. The
+# web layer keeps the CLI's single analysis path and adds exactly the rules that
+# difference demands — each one checked here without touching the network.
+print("\nWeb — the landing page drives the same path, behind the same gate")
+import json                                                              # noqa: E402
+from mechanic import analyse, ingest, web                              # noqa: E402
+
+check("only GitHub HTTPS URLs are accepted for cloning",
+      ingest.accepted("https://github.com/o/r.git") == (True, "o/r")
+      and not ingest.accepted("https://gitlab.com/o/r")[0]
+      and not ingest.accepted("/etc")[0],
+      "the read-only guarantee is enforced for one host, not promised for all")
+os.environ["GITHUB_TOKEN"] = "hunter2"
+os.environ["MY_DEPLOY_KEY"] = "x"
+_env = ingest._clean_env()
+del os.environ["GITHUB_TOKEN"], os.environ["MY_DEPLOY_KEY"]
+check("the clone runs with every credential stripped (Charter §5)",
+      "GITHUB_TOKEN" not in _env and "MY_DEPLOY_KEY" not in _env and "PATH" in _env
+      and _env.get("GIT_TERMINAL_PROMPT") == "0",
+      "a write to the origin is impossible, not merely forbidden")
+
+_code, _ct, _body = web.handle_get("/mechanic")
+check("the page is served and carries the console's palette placeholders",
+      _code == 200 and _ct.startswith("text/html") and "/*TOKENS*/" in _body
+      and "/*PALETTE_JS*/" in _body and ":root{--bg:" in _body,
+      "house palette when mounted, fallback palette standalone")
+_code, _ct, _body = web.handle_get("/api/mechanic/summary")
+_j = json.loads(_body)
+check("the summary endpoint reports fleet, charter and what is running",
+      _code == 200 and {"summary", "charter", "active"} <= set(_j)
+      and _j["active"]["status"] == "idle")
+check("unknown runs and routes are 404, not 500",
+      web.handle_get("/api/mechanic/run?id=nope")[0] == 404
+      and web.handle_get("/api/mechanic/nope")[0] == 404)
+check("a local path is refused from the web — that privilege stays with the CLI",
+      web.handle_post("/api/mechanic/analyse", {"path": "/etc"})[0] == 400)
+check("a non-GitHub URL is refused before any clone is attempted",
+      web.handle_post("/api/mechanic/analyse", {"url": "https://gitlab.com/o/r"})[0] == 400)
+web._LOCK.acquire()
+try:
+    _code, _, _body = web.handle_post("/api/mechanic/analyse", {"url": "https://github.com/o/r"})
+finally:
+    web._LOCK.release()
+check("a second analysis while one runs gets 409, not a queue that fills the disk",
+      _code == 409 and "one at a time" in _body)
+
+_src = open(os.path.join(HERE, "__main__.py")).read()
+check("the CLI is a thin wrapper over the same analyse.run the web uses",
+      "analyse.run(" in _src and "def _sha(" not in _src and "liveness.analyse" not in _src,
+      "one path; the button cannot drift from the command")
+_console = os.path.join(os.path.dirname(HERE), "gov", "sim_console.py")
+if os.path.exists(_console):
+    _cs = open(_console).read()
+    check("the console mounts the mechanic through a delegating shim",
+          '"/mechanic"' in _cs and "_mechanic_web().handle_get" in _cs
+          and "_mechanic_web().handle_post" in _cs)
+    check("the analyse trigger sits BEHIND the console's token gate",
+          _cs.index("console token required") < _cs.index("_mechanic_web().handle_post"),
+          "POWER when CONSOLE_TOKEN is set; spectating stays free")
+
+# The regression that matters most: the mechanic on itself. Every earlier false
+# positive and every true one it found in its own code is pinned here at zero.
+_self = analyse.run(HERE, name="mechanic-self")
+check("the mechanic run on itself reports no findings",
+      _self["status"] == "complete" and _self["findings"] == 0,
+      f"{_self['findings']} finding(s), {_self['gaps']} refusal(s) — "
+      f"the console-facing entry points are declared, so nothing looks dead")
+check("…and exactly the one honest refusal: the AST visitor's framework-called methods",
+      _self["gaps"] == 1)
+
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
