@@ -12,9 +12,11 @@ volume) redeploys. It only ever *records and recalls* — it proposes nothing
 irreversible; the governor still gates every action that spends or can't be undone.
 """
 
+import hashlib as _hashlib
 import json
 import os
 import random as _rand
+import re as _re
 import sqlite3
 import time
 
@@ -53,6 +55,7 @@ def _conn() -> sqlite3.Connection:
 
 _EDGE_COLS = False       # does `messages` carry the graph columns? Set by init().
 _CONV_COLS = False       # ... and the ACCP envelope columns? Set by init(), separately.
+_PROV_COLS = False       # ... and `decisions` the provenance columns? Set separately.
                          # False means the migration could not run (full or read-only
                          # volume) — the graph degrades to empty, the world keeps going.
 
@@ -164,6 +167,19 @@ def init() -> None:
                 c.execute("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conv)")
         except sqlite3.Error:
             _CONV_COLS = False                     # no envelope; the transcript remains
+        # Decision provenance migrates SEPARATELY and fails separately (Article X.3):
+        # a volume that can afford one ALTER but not both keeps the other. Bundling
+        # migrations means one full disk costs every feature that shares the bundle.
+        global _PROV_COLS
+        try:
+            have = {r[1] for r in c.execute("PRAGMA table_info(decisions)")}
+            for col in ("model", "charter"):
+                if col not in have:
+                    c.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT DEFAULT ''")
+            _PROV_COLS = {"model", "charter"} <= {
+                r[1] for r in c.execute("PRAGMA table_info(decisions)")}
+        except sqlite3.Error:
+            _PROV_COLS = False                     # decisions still record WHAT and WHY
         c.commit()
         _migrate_legacy(c)
         # one-time: lift the old reasoning stream into the decisions table
@@ -522,19 +538,115 @@ def careers_count() -> tuple[int, int]:
         c.close()
 
 
+# ── charter provenance: which rules were in force, and which brain decided ────
+#
+# Article X. A report written in March must be readable against the rules that
+# applied in March, and "which model decided this" must be answerable — the two
+# questions a compliance reader asks that a decision log without them cannot.
+#
+# The declared version alone is not enough. The constitution is editable live from
+# the console, so a number a human forgets to bump is a number that quietly stops
+# describing the text. Every decision therefore carries `version+digest`: the
+# version for people, the digest for proof, and a mismatch between a version and
+# the text last seen under it is itself recorded as an event.
+
+CHARTER_UNVERSIONED = "unversioned"
+_CHARTER: dict = {"stamp": "", "at": 0.0, "info": {}}
+_CHARTER_TTL = 15.0                                # cheap; amendments invalidate it
+
+
+def charter_text() -> str:
+    """The constitution ACTUALLY in force — the live console edit when one exists,
+    the shipped file otherwise. One reader, so the stamp can never describe a
+    different text than the rules page shows."""
+    override = config_get("constitution", "")
+    if override:
+        return override
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CONSTITUTION.md")
+    try:
+        with open(p) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def charter(refresh: bool = False) -> dict:
+    """Identify the rules in force: {version, digest, stamp, source, drifted}.
+
+    `drifted` is true when the text has changed since this version number was last
+    seen — an amendment that did not bump the version. It is a finding, not an
+    error: the run is still governed, but the label on the rules is no longer
+    trustworthy, and a reader deserves to know which."""
+    now = time.time()
+    if not refresh and _CHARTER["stamp"] and now - _CHARTER["at"] < _CHARTER_TTL:
+        return dict(_CHARTER["info"])
+    text = charter_text()
+    digest = _hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else "000000000000"
+    m = _re.search(r"^Version:\s*([0-9][\w.\-+]*)\s*$", text, _re.M)
+    version = m.group(1) if m else CHARTER_UNVERSIONED
+    source = "console amendment" if config_get("constitution", "") else "CONSTITUTION.md"
+    drifted = False
+    if text:
+        key = f"charter_digest:{version}"
+        seen = config_get(key, "")
+        if not seen:
+            config_set(key, digest)                # first sight of this version
+        elif seen != digest:
+            drifted = True
+            if config_get(f"charter_drift:{digest}", "") != "1":
+                config_set(f"charter_drift:{digest}", "1")   # report the drift ONCE
+                try:
+                    record(-1, "charter",
+                           f"the constitution changed without bumping its version — "
+                           f"{version} was {seen}, is now {digest} ({source})")
+                except Exception:
+                    pass
+    info = {"version": version, "digest": digest, "stamp": f"{version}+{digest}",
+            "source": source, "drifted": drifted, "bytes": len(text)}
+    _CHARTER.update({"stamp": info["stamp"], "at": now, "info": info})
+    return dict(info)
+
+
+def charter_invalidate() -> None:
+    """Called the moment the constitution is amended, so the next decision is
+    stamped with the rules that just came into force rather than the cached ones."""
+    _CHARTER.update({"stamp": "", "at": 0.0, "info": {}})
+
+
+def _deciding_model() -> str:
+    """Which brain is answering right now. Imported late — brain imports anchor."""
+    try:
+        import brain
+        return brain.brain_name()
+    except Exception:
+        return "rule-based"                        # telemetry never breaks a decision
+
+
 def reason_add(turn: int, actor: str, decision: str, why: str,
                derived_from: list | None = None, authorized_by: str = "",
-               effect_event: int | None = None) -> int:
+               effect_event: int | None = None,
+               model: str = "", charter_stamp: str = "") -> int:
     """Open a first-class decision: what, why, derived from which inputs (refs like
     'skill:12', 'event:345', 'yield:food'), authorized by whom ('human', 'board:2/3',
-    'policy'). Returns the decision id so the caller can close it with its effect."""
+    'policy'). Returns the decision id so the caller can close it with its effect.
+
+    The deciding model and the charter in force are captured HERE rather than asked
+    of each caller, so every existing call site gains provenance without editing —
+    and so a call site written next month cannot forget (Article X.2)."""
+    if _PROV_COLS:
+        model = model or _deciding_model()
+        charter_stamp = charter_stamp or charter()["stamp"]
     c = _conn()
     try:
-        cur = c.execute(
-            "INSERT INTO decisions(turn, actor, decision, why, derived_from, "
-            "authorized_by, effect_event, outcome, ts) VALUES(?,?,?,?,?,?,?, '', ?)",
-            (turn, actor, decision[:240], why[:500],
-             json.dumps(derived_from or []), authorized_by, effect_event, time.time()))
+        cols = ["turn", "actor", "decision", "why", "derived_from",
+                "authorized_by", "effect_event", "outcome", "ts"]
+        vals = [turn, actor, decision[:240], why[:500], json.dumps(derived_from or []),
+                authorized_by, effect_event, "", time.time()]
+        if _PROV_COLS:
+            cols += ["model", "charter"]
+            vals += [model[:120], charter_stamp[:64]]
+        cur = c.execute(f"INSERT INTO decisions({','.join(cols)}) "
+                        f"VALUES({','.join('?' * len(vals))})", vals)
         c.commit()
         return cur.lastrowid
     finally:
@@ -558,21 +670,23 @@ def decision_close(decision_id: int, effect_event: int | None = None,
 
 
 def reasons_top(limit: int = 100) -> list[dict]:
+    prov = ", model, charter" if _PROV_COLS else ", '', ''"
     c = _conn()
     try:
         rows = c.execute(
             "SELECT id, turn, actor, decision, why, derived_from, authorized_by, "
-            "effect_event, outcome, ts FROM decisions ORDER BY id DESC LIMIT ?",
+            f"effect_event, outcome, ts{prov} FROM decisions ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
         out = []
-        for i, t, a, d, w, df, ab, ee, oc, ts in rows:
+        for i, t, a, d, w, df, ab, ee, oc, ts, md, ch in rows:
             try:
                 df = json.loads(df or "[]")
             except json.JSONDecodeError:
                 df = []
             out.append({"id": i, "turn": t, "actor": a, "decision": d, "why": w,
                         "derived_from": df, "authorized_by": ab or "",
-                        "effect_event": ee, "outcome": oc or "", "ts": ts})
+                        "effect_event": ee, "outcome": oc or "", "ts": ts,
+                        "model": md or "", "charter": ch or ""})
         return out
     finally:
         c.close()
@@ -612,12 +726,13 @@ def lineage(decision_id: int) -> dict:
     the causal chain of events above its effect. The machine-readable story."""
     c = _conn()
     try:
+        prov = ", model, charter" if _PROV_COLS else ", '', ''"
         row = c.execute("SELECT turn, actor, decision, why, derived_from, authorized_by, "
-                        "effect_event, outcome FROM decisions WHERE id=?",
+                        f"effect_event, outcome{prov} FROM decisions WHERE id=?",
                         (decision_id,)).fetchone()
         if not row:
             return {}
-        t, actor, dec, why, df, ab, ee, oc = row
+        t, actor, dec, why, df, ab, ee, oc, md, ch = row
         try:
             refs = json.loads(df or "[]")
         except json.JSONDecodeError:
@@ -648,7 +763,10 @@ def lineage(decision_id: int) -> dict:
                 frontier = nxt
         return {"decision": {"id": decision_id, "turn": t, "actor": actor,
                              "decision": dec, "why": why, "authorized_by": ab or "policy",
-                             "outcome": oc or ""},
+                             "outcome": oc or "",
+                             # who ruled, and under which rules — the two questions a
+                             # compliance reader asks that a why-chain alone cannot answer
+                             "model": md or "", "charter": ch or ""},
                 "derived_from": back, "effect_chain": chain, "consequences": forward}
     finally:
         c.close()

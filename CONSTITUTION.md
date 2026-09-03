@@ -1,5 +1,7 @@
 # The Constitution
 
+Version: 1.0
+
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
 that enforces it, so "the rules" and "the system" are the same thing.
@@ -293,6 +295,26 @@ Everything below is those two laws, applied.
 > Enforced by `sim_console.py` (failed-turn counter, `_binding_constraint`, stall
 > escalation, the unconditional watchdog restart, the disk gauge), surfaced on
 > `/agents` SYSTEM HEALTH and in every work report.
+
+## Article X — The rules are versioned, and every decision names the ones that bound it
+
+1. **The constitution has a version, and the version is checked against the text.** A
+   declared number is for people; a digest of the rules actually in force is the proof.
+   Both are read from one place (`anchor.charter_text`), so the rules shown on `/rules`
+   and the rules stamped onto a decision can never be different documents. Editing the
+   constitution live from the console changes the version in force immediately
+   (`anchor.charter_invalidate`), not at the next restart.
+2. **Every decision records which brain took it and which charter bound it.** A why-chain
+   answers *on what basis*; it cannot answer *by whom* or *under which rules*, and those
+   are the two questions asked of any record that must be defended later. Provenance is
+   captured where decisions are opened, never asked of each caller — a call site written
+   next month cannot forget what it was never asked to supply (`anchor.reason_add`).
+3. **A version that stops describing its text is reported, not trusted.** An amendment
+   that does not bump the version is drift: the run is still governed, but the label is
+   no longer true, so the mismatch is recorded once as an event and surfaced with the
+   rules. Silence here would make the version worse than no version at all — it would
+   look like evidence.
+> Enforced by `anchor.py` (`charter`, `reason_add`) and `sim_console.py` (`/rules`).
 
 ## Amending this constitution
 
