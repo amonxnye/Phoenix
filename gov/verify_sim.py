@@ -1053,7 +1053,9 @@ try:
           any("without bumping" in e for e in A.event_log(20)))
     check("a live console amendment is named as the source, not the file",
           _drift["source"] == "console amendment")
-    A.config_set("constitution", _base.replace("Version: 1.0", f"Version: 1.9.{stamp}")
+    # bump whatever version the file currently declares — the check must not pin one
+    A.config_set("constitution", re.sub(r"^Version: .*$", f"Version: 9.9.{stamp}", _base,
+                                        count=1, flags=re.M)
                  + f"\n\n## Article XI {stamp}\n")
     A.charter_invalidate()
     check("bumping the version alongside the edit clears the drift",

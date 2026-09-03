@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.0
+Version: 1.1
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
