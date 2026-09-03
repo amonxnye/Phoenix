@@ -21,10 +21,19 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def data_dir() -> str:
-    d = os.environ.get("MECHANIC_DATA_DIR", "").strip()
-    if d:
-        os.makedirs(d, exist_ok=True)
-        return d
+    """Where the fleet's record lives. In order: MECHANIC_DATA_DIR; the settlement's
+    mounted volume (GOV_DATA_DIR/mechanic), so a redeploy does not wipe the history —
+    the first production run came back as ripa-run-0001 twice, because it had; then
+    the package directory, for a local checkout with nothing configured."""
+    for d in (os.environ.get("MECHANIC_DATA_DIR", "").strip(),
+              os.path.join(os.environ.get("GOV_DATA_DIR", "").strip() or "\x00", "mechanic")):
+        if d and not d.startswith("\x00"):
+            try:
+                os.makedirs(d, exist_ok=True)
+                if os.access(d, os.W_OK):
+                    return d
+            except OSError:
+                continue                          # an unwritable volume falls through
     d = os.path.join(_HERE, "data")
     os.makedirs(d, exist_ok=True)
     return d

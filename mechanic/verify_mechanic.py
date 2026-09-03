@@ -59,6 +59,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):                 # invoked by the stdlib, never by this repo
         return helper()
 
+class MyErr(Exception):               # a BUILTIN base is not a framework…
+    def code(self):                   # …so this uncalled method is judged: dead
+        return 7
+
 def main():
     t = threading.Thread(target=used_as_callback)
     cfg = getattr(t, "daemon", False) # constant name: a spelling of t.daemon
@@ -158,12 +162,16 @@ check("__all__ exports are roots", "lib.public_api" not in dead)
 check("everything a test file defines is a root", "tests.test_lib.test_covered" not in dead)
 check("the class with a foreign base is named",
       "app.Handler" in idx.foreign_base_classes())
+check("a builtin base (Exception) is NOT a framework — the class is judged, not refused",
+      "app.MyErr" not in idx.foreign_base_classes() and "app.MyErr.code" in dead,
+      "the first public run refused 25 such classes; ConfigError(Exception) was one")
 
 # ── 4. the analyst applies the Charter to the graph's answer ─────────────────
 print("\n4. Liveness — the Charter's honesty rules, enforced in code")
 res = liveness.analyse(idx, root)
 titles = {f["symbol"] for f in res["findings"]}
-check("exactly the dead symbols are reported, nothing live", titles == {"app.dead_one", "app.dead_big"},
+check("exactly the dead symbols are reported, nothing live",
+      titles == {"app.dead_one", "app.dead_big", "app.MyErr.code"},
       ", ".join(sorted(titles)))
 check("every finding is machine-verified and says so",
       all(f["basis"] == "machine-verified" for f in res["findings"]))
@@ -217,7 +225,7 @@ check("findings come back machine-verified first, then by severity",
 store.run_close(run_id)
 summ = store.summary()
 check("the fleet summary counts what the landing page will need",
-      summ["repos"] == 1 and summ["findings"] == 2 and summ["gaps"] == 2, str(summ))
+      summ["repos"] == 1 and summ["findings"] == 3 and summ["gaps"] == 2, str(summ))
 
 # ── 6. the report separates what is proven from what is judged ───────────────
 print("\n6. The report — proven and judged never mixed, refusals shown")
@@ -341,6 +349,20 @@ if os.path.exists(_console):
     check("the analyse trigger sits BEHIND the console's token gate",
           _cs.index("console token required") < _cs.index("_mechanic_web().handle_post"),
           "POWER when CONSOLE_TOKEN is set; spectating stays free")
+
+_saved = {k: os.environ.pop(k, None) for k in ("MECHANIC_DATA_DIR", "GOV_DATA_DIR")}
+_vol = tempfile.mkdtemp(prefix="mechanic-volume-")
+try:
+    os.environ["GOV_DATA_DIR"] = _vol
+    check("with no MECHANIC_DATA_DIR the record lives on the settlement's volume",
+          store.data_dir() == os.path.join(_vol, "mechanic"),
+          "a redeploy must not reset the fleet to ripa-run-0001 — it did, twice")
+finally:
+    for k, v in _saved.items():
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+    shutil.rmtree(_vol, ignore_errors=True)
 
 # The regression that matters most: the mechanic on itself. Every earlier false
 # positive and every true one it found in its own code is pinned here at zero.

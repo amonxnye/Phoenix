@@ -17,8 +17,15 @@ analyst above can refuse rather than assert.
 """
 
 import ast
+import builtins
 import os
 import sqlite3
+
+# Base classes that dispatch to nothing of the user's but dunders: a subclass of one
+# of these can be judged like any other class (see Index.foreign_base_classes).
+_BUILTIN_TYPES = {n for n, v in builtins.__dict__.items() if isinstance(v, type)}
+# (written without getattr(x, variable) — the index would refuse its own module,
+#  and did, the first time this line was written)
 
 # Constructs that can invoke code the call graph cannot see. Presence of any of these
 # in a module means "unreachable" is unprovable there — not that it is false.
@@ -319,13 +326,18 @@ class Index:
         return [dict(r) for r in self.db.execute("SELECT * FROM modules ORDER BY name")]
 
     def foreign_base_classes(self) -> set[str]:
-        """Classes inheriting from something this repo does not define. Their methods
-        may be invoked by the framework that owns the base — `do_GET` is never called
-        by our code, and reporting it dead would be wrong."""
+        """Classes inheriting from a FRAMEWORK this repo does not define. Their methods
+        may be invoked by that framework — `do_GET` is never called by our code, and
+        reporting it dead would be wrong.
+
+        A builtin base is not a framework. `Exception`, `object`, `dict` never look up
+        a user-defined method by name; only dunders, which are roots already. The first
+        public run refused 25 classes, and the samples were `ConfigError(Exception)` —
+        a refusal that disclosed nothing and hid an uncalled method as live."""
         local = {r[0] for r in self.db.execute("SELECT name FROM symbols WHERE kind='class'")}
         out = set()
         for src, dst in self.db.execute("SELECT src, dst FROM edges WHERE kind='inherits'"):
-            if dst not in local:
+            if dst not in local and dst not in _BUILTIN_TYPES:
                 out.add(src)
         return out
 
