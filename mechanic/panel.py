@@ -153,6 +153,17 @@ def _admit(raw: dict, unit: dict, idx, role: str) -> tuple[dict | None, str]:
     }, ""
 
 
+def _parse_obj(text: str):
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        t = t[4:] if t.lower().startswith("json") else t
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        return None
+
+
 def _parse_covered(text: str) -> list[str]:
     t = (text or "").strip().strip("`")
     t = t[4:] if t.lower().startswith("json") else t
@@ -183,8 +194,14 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
         coverage = {"unit": unit["module"], "covered": len(seen), "total": len(ids),
                     "missed": sorted(ids - seen)[:12]}
     raws = _parse(out)
-    if not raws and (out or "").strip() not in ("", "[]", '{"findings": []}'):
-        return {"candidates": [], "dropped": [(unit["module"], role, "reply was not the schema")],
+    head = (out or "").strip().replace("\n", " ")[:120]
+    if not (out or "").strip():
+        return {"candidates": [], "dropped": [(unit["module"], role, "reply was empty")],
+                "coverage": coverage}
+    if not raws and _parse_obj(out) is None:
+        # Say what came back. A silent drop is how a clipped prompt hid for a whole run.
+        return {"candidates": [], "dropped": [(unit["module"], role,
+                                               f"reply was not the schema: {head!r}")],
                 "coverage": coverage}
     cands, dropped = [], []
     for raw in raws[:PER_UNIT_CAP]:

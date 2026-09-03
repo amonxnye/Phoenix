@@ -119,7 +119,10 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         store.run_close(run_id, "complete",
                         note=f"{counts['findings']} findings ({counts['judged']} judged), "
                              f"{counts['gaps']} refusals, {bud.spent_cents()}¢, {secs:.1f}s")
-        store.repo_set(repo_id, loc=sum(u["loc"] for u in us), languages="python")
+        # A completed run records the commit it analysed, whoever asked for it — so a
+        # watch cycle that follows a manual run sees "unchanged" and spends nothing.
+        store.repo_set(repo_id, loc=sum(u["loc"] for u in us), languages="python",
+                       **({"last_sha": commit_sha} if commit_sha and store._EXT else {}))
         return {"run_id": run_id, "repo_id": repo_id, "name": name, "symbols": s["symbols"],
                 "modules": s["modules"], "findings": counts["findings"],
                 "judged": counts["judged"], "gaps": counts["gaps"],

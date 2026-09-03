@@ -32,6 +32,10 @@ __all__ = ["handle_get", "handle_post", "status", "start_watch", "PAGE"]
 _LOCK = threading.Lock()
 _ACTIVE = {"status": "idle", "url": "", "name": "", "started": 0.0, "note": "",
            "run_id": "", "history": []}
+# A bounded queue of URLs, not of clones: waiting costs nothing on disk, so "one
+# analysis at a time" no longer means "come back later". 409 only when it is full.
+_QUEUE: list[tuple] = []
+QUEUE_MAX = 6
 
 
 def _json(code: int, obj) -> tuple:
@@ -42,6 +46,7 @@ def status() -> dict:
     out = dict(_ACTIVE)
     out["elapsed"] = round(time.time() - _ACTIVE["started"], 1) if _ACTIVE["started"] else 0
     out["history"] = _ACTIVE["history"][-8:]
+    out["queue"] = [q[1] for q in _QUEUE]
     return out
 
 
@@ -112,6 +117,13 @@ def handle_get(path: str) -> tuple:
         for f in finds:
             f["trail"] = trail.get(f["run_id"], {}).get(f["id"], [])
         return _json(200, {"findings": finds, "gaps": gaps})
+    if p == "/api/mechanic/runs":
+        rid = (q.get("repo") or [""])[0]
+        rows = store.runs(rid, 30) if rid else []
+        for r in rows:
+            r["findings"] = len(store.findings(run_id=r["id"]))
+            r["refusals"] = len(store.gaps(run_id=r["id"]))
+        return _json(200, {"repo": rid, "runs": rows})
     if p == "/api/mechanic/run":
         rid = (q.get("id") or [""])[0]
         r = store.run(rid)
@@ -164,6 +176,18 @@ def _worker(url: str, name: str, budget_cents: int = -1) -> None:
                                    "at": time.time()})
         _ACTIVE["history"] = _ACTIVE["history"][-8:]
         _LOCK.release()
+        if _QUEUE:                                # the next one waits for no one
+            _start(*_QUEUE.pop(0))
+
+
+def _start(url: str, name: str, budget_cents: int) -> bool:
+    if not _LOCK.acquire(blocking=False):
+        return False
+    _ACTIVE.update(status="queued", url=url, name=name, started=time.time(), note="",
+                   run_id="")
+    threading.Thread(target=_worker, args=(url, name, budget_cents), daemon=True,
+                     name="mechanic-analyse").start()
+    return True
 
 
 def start_watch() -> bool:
@@ -199,14 +223,17 @@ def handle_post(path: str, body: dict) -> tuple:
         budget_cents = max(0, min(int(body.get("budget_cents", -1)), 1500))
     except (TypeError, ValueError):
         budget_cents = -1
-    if not _LOCK.acquire(blocking=False):
-        return _json(409, {"error": f"one at a time — {_ACTIVE['name'] or 'a repository'} "
-                                    f"is {_ACTIVE['status']}", "active": status()})
-    _ACTIVE.update(status="queued", url=url, name=name, started=time.time(), note="",
-                   run_id="")
-    threading.Thread(target=_worker, args=(url, name, budget_cents), daemon=True,
-                     name="mechanic-analyse").start()
-    return _json(202, {"accepted": name, "active": status()})
+    if _start(url, name, budget_cents):
+        return _json(202, {"accepted": name, "active": status()})
+    if url == _ACTIVE.get("url") or any(q[0] == url for q in _QUEUE):
+        return _json(409, {"error": f"{name} is already {'running' if url == _ACTIVE.get('url') else 'queued'}",
+                           "active": status()})
+    if len(_QUEUE) >= QUEUE_MAX:
+        return _json(409, {"error": f"queue is full ({QUEUE_MAX}) — {_ACTIVE['name']} is "
+                                    f"{_ACTIVE['status']}; try again when one finishes",
+                           "active": status()})
+    _QUEUE.append((url, name, budget_cents))
+    return _json(202, {"accepted": name, "queued": len(_QUEUE), "active": status()})
 
 
 # ── the page ─────────────────────────────────────────────────────────────────
@@ -254,6 +281,7 @@ summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
 .gap{padding:7px 14px;border-bottom:1px solid var(--line);color:var(--sub)}.gap b{color:var(--gold)}
 details.tr{border:0;margin-top:6px}details.tr summary{padding:2px 0;color:var(--dim)}details.tr p{margin:2px 0 2px 12px}
 select.iv{background:#120d06;color:var(--ink);border:1px solid var(--line);border-radius:4px;font:inherit;font-size:11px}
+#runs:empty{display:none}
 .st-unchanged{color:var(--dim)}.st-analysed{color:var(--green)}.st-paused,.st-error{color:var(--bad)}
 .filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
 .ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
@@ -275,6 +303,7 @@ select.iv{background:#120d06;color:var(--ink);border:1px solid var(--line);borde
       <select id=bud title="budget for the judged analysis"><option value=0>machine-verified only ($0)</option><option value=100>$1</option><option value=300 selected>$3</option><option value=1500>$15 max</option></select>
       <button id=go type=submit>Analyse</button><div id=st></div></form></div>
   <div class=card><h2>Repositories <em id=rn></em></h2><div id=repos><div class=empty>loading&hellip;</div></div></div>
+  <div class=card id=runs></div>
   <div class=card><h2>Findings <em>machine-verified first, then by severity</em></h2>
     <div class=filters id=filters></div><div id=finds><div class=empty>loading&hellip;</div></div></div>
   <div class=card><h2>Where the analysis declined to conclude <em id=gn></em></h2><div id=gaps></div></div>
@@ -304,7 +333,9 @@ async function summary(){
   if(a.status==='idle'){st.textContent=a.history.length?lastLine(a.history):'';}
   else if(['queued','fetching','analysing'].includes(a.status)){st.className='busy';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')+' · '+a.elapsed+'s'}
   else{st.className=a.status==='complete'?'ok':'bad';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')}
-  $('go').disabled=['queued','fetching','analysing'].includes(a.status);
+  if((a.queue||[]).length) st.textContent+=' · queued next: '+a.queue.join(', ');
+  $('go').disabled=false; $('go').title=['queued','fetching','analysing'].includes(a.status)?'one analysis runs at a time — this will queue':'';
+  $('go').textContent=['queued','fetching','analysing'].includes(a.status)?'Queue':'Analyse';
   return a;
 }
 function lastLine(h){const x=h[h.length-1];return x.url.replace('https://github.com/','')+' — '+x.status+(x.note?' · '+x.note:'')}
@@ -322,13 +353,23 @@ async function repos(){
       <td><label class=loc><input type=checkbox class=w data-id="${esc(r.id)}" ${r.watch?'checked':''}> every
         <select class=iv data-id="${esc(r.id)}">${[[3600,'1h'],[21600,'6h'],[86400,'day'],[604800,'week']].map(([v,l])=>`<option value=${v} ${(r.interval_s||21600)==v?'selected':''}>${l}</option>`).join('')}</select>
         ${r.halts?`<br><span class=st-halted>${r.halts} halt(s)</span>`:''}</label></td></tr>`).join('')+'</tbody></table>';
-  $('repos').querySelectorAll('tr.repo td:not(:last-child)').forEach(td=>td.onclick=()=>{const tr=td.parentElement;REPO=REPO===tr.dataset.id?'':tr.dataset.id;findings();repos()});
+  $('repos').querySelectorAll('tr.repo td:not(:last-child)').forEach(td=>td.onclick=()=>{const tr=td.parentElement;REPO=REPO===tr.dataset.id?'':tr.dataset.id;findings();repos();runsFor()});
+  runsFor();
   $('repos').querySelectorAll('input.w,select.iv').forEach(el=>el.onchange=async()=>{
     const id=el.dataset.id, on=$('repos').querySelector(`input.w[data-id="${id}"]`).checked, iv=$('repos').querySelector(`select.iv[data-id="${id}"]`).value;
     const r=await fetch('/api/mechanic/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_id:id,watch:on,interval_s:+iv})});
     if(!r.ok){const d=await r.json();$('st').className='bad';$('st').textContent=d.error||('HTTP '+r.status)} tick();});
 }
 
+async function runsFor(){
+  const box=$('runs'); if(!REPO){box.innerHTML='';return}
+  const d=await j('/api/mechanic/runs?repo='+encodeURIComponent(REPO)); const rs=d.runs||[];
+  box.innerHTML=`<h2>Runs for this repository <em>${rs.length} on record — nothing is ever deleted</em></h2>`+
+    (rs.length?`<table><thead><tr><th>run</th><th>trigger</th><th>status</th><th class=n>findings</th><th class=n>refusals</th><th class=n>spent</th><th>commit</th><th>when</th><th>note</th></tr></thead><tbody>`+
+    rs.map(r=>`<tr><td>${esc(r.id)}</td><td>${esc(r.trigger||'manual')}</td><td><span class="st-${esc(r.status)}">${esc(r.status)}</span></td>
+      <td class=n>${r.findings}</td><td class=n>${r.refusals}</td><td class=n>${((r.spend_cents||0)/100).toFixed(2)} $</td>
+      <td class=loc>${esc((r.commit_sha||'').slice(0,10))}</td><td>${ago(r.finished_at||r.started_at)}</td><td class=loc>${esc(r.note||'')}</td></tr>`).join('')+'</tbody></table>':'<div class=empty>no runs yet</div>');
+}
 async function findings(){
   ALL=await j('/api/mechanic/findings'+(REPO?'?repo='+encodeURIComponent(REPO):''));
   const counts={all:ALL.findings.length,'machine-verified':0,judged:0};

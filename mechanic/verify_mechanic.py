@@ -333,8 +333,23 @@ try:
     _code, _, _body = web.handle_post("/api/mechanic/analyse", {"url": "https://github.com/o/r"})
 finally:
     web._LOCK.release()
-check("a second analysis while one runs gets 409, not a queue that fills the disk",
-      _code == 409 and "one at a time" in _body)
+check("a second analysis while one runs is QUEUED — a URL costs nothing on disk",
+      _code == 202 and '"queued": 1' in _body and web._QUEUE and web._QUEUE[0][0] == "https://github.com/o/r")
+web._LOCK.acquire()
+try:
+    _dup = web.handle_post("/api/mechanic/analyse", {"url": "https://github.com/o/r"})[0]
+    for i in range(web.QUEUE_MAX + 2):
+        _last = web.handle_post("/api/mechanic/analyse", {"url": f"https://github.com/o/r{i}"})
+finally:
+    web._LOCK.release()
+check("the same URL is not queued twice", _dup == 409)
+check("the queue is bounded — beyond it, 409 with the reason",
+      _last[0] == 409 and "queue is full" in _last[2] and len(web._QUEUE) == web.QUEUE_MAX,
+      f"{len(web._QUEUE)} queued, cap {web.QUEUE_MAX}")
+web._QUEUE.clear()
+check("a repository's whole run history is on the API — nothing is deleted",
+      web.handle_get("/api/mechanic/runs?repo=nope")[0] == 200
+      and '"runs": []' in web.handle_get("/api/mechanic/runs?repo=nope")[2])
 
 _src = open(os.path.join(HERE, "__main__.py")).read()
 check("the CLI is a thin wrapper over the same analyse.run the web uses",
@@ -467,6 +482,15 @@ try:
           any(d["actor"] == "critic" and "stress-tested" in d["action"] for d in decs)
           and any("critic did not examine" in g["reason"] for g in gaps_),
           next((d["action"] for d in decs if d["actor"] == "critic"), "—"))
+    _b = brainseam._load()
+    check("the brain's turn ceiling is raised to fit a unit's context, checklist and schema",
+          (not _b) or (_b.PROMPT_LIMITS["prompt"] >= brainseam.TURN_CEILING
+                       and brainseam.LIMITS["unit_source"] + brainseam.LIMITS["checklist"] + 3000
+                       < _b.PROMPT_LIMITS["prompt"]),
+          "the first production run lost the schema off ~250 prompts to a 6,000-char cut")
+    check("an analyst prompt ends with the schema — the part a cut would remove first",
+          all(t.rstrip().endswith("when a checklist was given.")
+              for p_, _, t in SEEN["prompts"] if p_.startswith("panel:")))
     prompts = [t for p_, _, t in SEEN["prompts"] if p_.startswith("panel:")]
     check("analysts are isolated — no panel prompt carries another unit or any candidate",
           all(t.count("UNIT ") == 1 for t in prompts) and not any("CANDIDATE" in t for t in prompts),
@@ -481,8 +505,10 @@ try:
     check("a candidate with no checkable claim is dropped, with the reason recorded",
           any(d["action"] == "dropped before review" and "no checkable claim" in d["rationale"]
               for d in decs))
-    check("a reply that is not the schema is dropped and counted, not crashed on",
-          any("not the schema" in d["rationale"] for d in decs))
+    check("a reply that is not the schema is dropped, counted, and QUOTED",
+          any("not the schema" in d["rationale"] and "this is not json" in d["rationale"]
+              for d in decs),
+          "the record says what came back, so a clipped prompt can never hide again")
     check("the challenger refutes with a resolvable fact and the candidate dies",
           any(d["stage"] == "review" and d["action"] == "refuted" and "helper()" in d["rationale"]
               for d in decs)

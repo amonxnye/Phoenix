@@ -33,6 +33,9 @@ def _load():
     try:
         import brain                                  # noqa: PLC0415 — the seam
         _brain = brain
+        brain.PROMPT_LIMITS["prompt"] = max(brain.PROMPT_LIMITS.get("prompt", 0), TURN_CEILING)
+        for k, v in LIMITS.items():
+            brain.PROMPT_LIMITS.setdefault(k, v)
     except Exception:                                 # noqa: BLE001 — no brain, no crash
         _brain = False
     return _brain
@@ -40,8 +43,14 @@ def _load():
 
 # Mechanic-specific ceilings, registered into the brain's table so clip() and the
 # overrun readout treat them like any other field.
-LIMITS = {"unit_source": 7000, "unit_deps": 600, "unit_history": 400,
+LIMITS = {"unit_source": 12000, "unit_deps": 600, "unit_history": 400,
           "candidate": 1400, "review_facts": 900, "finding_set": 5000, "checklist": 2500}
+# The brain clips every ASSEMBLED turn to PROMPT_LIMITS["prompt"] — 6,000 chars, sized
+# for the settlement's one-line prompts. A swarm prompt is source + checklist + schema,
+# and the schema comes last. On the first production run the ceiling cut the schema
+# off ~250 prompts and every analyst answered nothing. The ceiling stays a ceiling;
+# it is raised, once, to what one unit's context can legitimately need.
+TURN_CEILING = 24000
 
 
 def available() -> bool:
