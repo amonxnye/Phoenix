@@ -20,6 +20,7 @@ import ast
 import builtins
 import os
 import sqlite3
+import threading
 
 # Base classes that dispatch to nothing of the user's but dunders: a subclass of one
 # of these can be judged like any other class (see Index.foreign_base_classes).
@@ -262,14 +263,44 @@ def build(root: str, db_path: str, skip: tuple = (".git", "node_modules", "vendo
 
 # ── the query API agents use instead of grepping ─────────────────────────────
 
+class _Rows(list):
+    """Materialised result rows that still answer like a cursor."""
+
+    def fetchone(self):
+        return self[0] if self else None
+
+    def fetchall(self):
+        return list(self)
+
+
+class _Locked:
+    """One connection, one lock: every query runs and is materialised inside the lock,
+    so rows never cross threads half-read. Read-only, so this costs nothing that
+    matters and buys correctness under the panel's thread pool."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        conn.row_factory = sqlite3.Row
+        self._conn, self._lock = conn, threading.Lock()
+
+    def execute(self, sql: str, args=()) -> _Rows:
+        with self._lock:
+            return _Rows(self._conn.execute(sql, args).fetchall())
+
+    def close(self):
+        with self._lock:
+            self._conn.close()
+
+
 class Index:
     """Read-only queries over a built index. These are the graph facts the Charter
     admits as evidence (§2) — each one is cheap, exact, and re-checkable at report
     time."""
 
     def __init__(self, db_path: str):
-        self.db = sqlite3.connect(db_path)
-        self.db.row_factory = sqlite3.Row
+        # The panel queries the index from worker threads. SQLite refuses a
+        # connection used off its creating thread, which halted the first swarm run;
+        # the index is read-only, so one connection behind one lock is correct.
+        self.db = _Locked(sqlite3.connect(db_path, check_same_thread=False))
 
     def close(self):
         self.db.close()
@@ -317,6 +348,16 @@ class Index:
             "ON e.src LIKE m.name || '%' WHERE e.dst=? AND e.kind='calls' AND m.is_test=1",
             (sym["name"],))
         return sorted(r[0] for r in rows)
+
+    def external_calls(self, module: str) -> list[str]:
+        """Names this module calls that no symbol in the repository defines — the
+        stdlib, third-party libraries, methods on objects from outside. Every one is a
+        place the repository trusts something it does not control."""
+        local = {r[0] for r in self.db.execute("SELECT name FROM symbols")}
+        rows = self.db.execute(
+            "SELECT DISTINCT dst FROM edges WHERE kind='calls' AND (src=? OR src LIKE ?)",
+            (module, module + ".%"))
+        return sorted(r[0] for r in rows if r[0] not in local and r[0] not in _BUILTIN_TYPES)
 
     def dynamic_reasons(self, module: str) -> str:
         r = self.db.execute("SELECT dynamic FROM modules WHERE name=?", (module,)).fetchone()

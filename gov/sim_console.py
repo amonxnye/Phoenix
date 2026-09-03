@@ -1837,6 +1837,8 @@ def _mechanic_web():
     if root not in _sys.path:
         _sys.path.insert(0, root)
     from mechanic import web
+    if os.environ.get("MECHANIC_WATCH", "1") != "0":
+        web.start_watch()                      # idempotent; the watch loop lives here
     return web
 
 

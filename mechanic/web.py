@@ -21,13 +21,13 @@ import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
-from . import analyse, charter, ingest, store
+from . import analyse, charter, ingest, store, watch
 
 # The interface the console calls. Declared, because the mechanic run on itself
 # reported these unreachable — correctly: their caller lives outside the package. An
 # `__all__` is how the index is told where execution enters (Charter §4), and it is
 # the fix the finding itself proposed.
-__all__ = ["handle_get", "handle_post", "status", "PAGE"]
+__all__ = ["handle_get", "handle_post", "status", "start_watch", "PAGE"]
 
 _LOCK = threading.Lock()
 _ACTIVE = {"status": "idle", "url": "", "name": "", "started": 0.0, "note": "",
@@ -92,12 +92,25 @@ def handle_get(path: str) -> tuple:
     if p == "/mechanic":
         return 200, "text/html; charset=utf-8", PAGE
     if p == "/api/mechanic/summary":
+        from . import brainseam
         return _json(200, {"summary": store.summary(), "charter": charter.charter(),
-                           "active": status()})
+                           "active": status(), "watch": watch.status(),
+                           "brain": brainseam.name() if brainseam.available() else ""})
     if p == "/api/mechanic/repos":
         return _json(200, {"repos": _repo_rows()})
     if p == "/api/mechanic/findings":
         finds, gaps = _findings_current((q.get("repo") or [""])[0])
+        trail = {}
+        for f in finds:
+            trail.setdefault(f["run_id"], {})
+        for run_id in trail:
+            for d in store.decisions(run_id):
+                if d.get("finding_id"):
+                    trail[run_id].setdefault(d["finding_id"], []).append(
+                        {"stage": d["stage"], "actor": d["actor"], "action": d["action"],
+                         "rationale": d["rationale"], "model": d["model"]})
+        for f in finds:
+            f["trail"] = trail.get(f["run_id"], {}).get(f["id"], [])
         return _json(200, {"findings": finds, "gaps": gaps})
     if p == "/api/mechanic/run":
         rid = (q.get("id") or [""])[0]
@@ -118,7 +131,7 @@ def handle_get(path: str) -> tuple:
 
 # ── POST: the one thing the page can DO ──────────────────────────────────────
 
-def _worker(url: str, name: str) -> None:
+def _worker(url: str, name: str, budget_cents: int = -1) -> None:
     try:
         _ACTIVE.update(status="fetching", note="archive over HTTPS, read-only, no credentials")
         c = ingest.clone(url)
@@ -134,11 +147,13 @@ def _worker(url: str, name: str) -> None:
             return
         _ACTIVE.update(status="analysing", note=f"{c['size_mb']} MB at {c['sha'][:12]}")
         try:
-            res = analyse.run(c["path"], name=c["name"], url=url, commit_sha=c["sha"])
+            res = analyse.run(c["path"], name=c["name"], url=url, commit_sha=c["sha"],
+                              budget_cents=None if budget_cents < 0 else budget_cents)
         finally:
             ingest.remove(c["tmp"])               # the source was only ever borrowed
         _ACTIVE.update(status=res["status"], run_id=res["run_id"],
-                       note=f"{res['findings']} finding(s), {res['gaps']} refusal(s), "
+                       note=f"{res['findings']} finding(s) ({res.get('judged', 0)} judged), "
+                            f"{res['gaps']} refusal(s), {res.get('spend_cents', 0)}¢, "
                             f"{res['seconds']}s" if res["status"] == "complete"
                        else res.get("error", "halted"))
     except Exception as e:                        # noqa: BLE001 — never a silent thread
@@ -151,8 +166,27 @@ def _worker(url: str, name: str) -> None:
         _LOCK.release()
 
 
+def start_watch() -> bool:
+    """Called by the console once it is serving. The CLI never starts the watch."""
+    return watch.start()
+
+
 def handle_post(path: str, body: dict) -> tuple:
-    if urlparse(path).path != "/api/mechanic/analyse":
+    p = urlparse(path).path
+    if p == "/api/mechanic/watch":
+        rid = (body.get("repo_id") or "").strip()
+        if not any(r["id"] == rid for r in store.repos()):
+            return _json(404, {"error": "no such repository"})
+        on = 1 if body.get("watch") else 0
+        try:
+            interval = max(900, min(7 * 86400, int(body.get("interval_s") or watch.DEFAULT_INTERVAL_S)))
+        except (TypeError, ValueError):
+            interval = watch.DEFAULT_INTERVAL_S
+        store.repo_set(rid, watch=on, interval_s=interval, halts=0,
+                       last_checked=0 if on else time.time())
+        return _json(200, {"repo_id": rid, "watch": on, "interval_s": interval,
+                           "watch_status": watch.status()})
+    if p != "/api/mechanic/analyse":
         return _json(404, {"error": "not found"})
     if body.get("path"):
         return _json(400, {"error": "local paths are a CLI privilege, not a web one — "
@@ -161,12 +195,16 @@ def handle_post(path: str, body: dict) -> tuple:
     ok, name = ingest.accepted(url)
     if not ok:
         return _json(400, {"error": name})
+    try:                                          # optional; the ceiling is the default
+        budget_cents = max(0, min(int(body.get("budget_cents", -1)), 1500))
+    except (TypeError, ValueError):
+        budget_cents = -1
     if not _LOCK.acquire(blocking=False):
         return _json(409, {"error": f"one at a time — {_ACTIVE['name'] or 'a repository'} "
                                     f"is {_ACTIVE['status']}", "active": status()})
     _ACTIVE.update(status="queued", url=url, name=name, started=time.time(), note="",
                    run_id="")
-    threading.Thread(target=_worker, args=(url, name), daemon=True,
+    threading.Thread(target=_worker, args=(url, name, budget_cents), daemon=True,
                      name="mechanic-analyse").start()
     return _json(202, {"accepted": name, "active": status()})
 
@@ -214,6 +252,9 @@ summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
 .body{padding:4px 14px 12px 30px;color:var(--ink)}.body p{margin:6px 0}.fix{border-left:3px solid var(--green);padding-left:10px}
 .ev{color:var(--dim);font-size:11px}code{color:var(--sub)}
 .gap{padding:7px 14px;border-bottom:1px solid var(--line);color:var(--sub)}.gap b{color:var(--gold)}
+details.tr{border:0;margin-top:6px}details.tr summary{padding:2px 0;color:var(--dim)}details.tr p{margin:2px 0 2px 12px}
+select.iv{background:#120d06;color:var(--ink);border:1px solid var(--line);border-radius:4px;font:inherit;font-size:11px}
+.st-unchanged{color:var(--dim)}.st-analysed{color:var(--green)}.st-paused,.st-error{color:var(--bad)}
 .filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
 .ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
 .ghost[aria-pressed=true]{border-color:var(--gold);color:var(--gold);background:#2c2013}
@@ -224,12 +265,14 @@ summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
 <main>
   <div class=card><h2>The fleet under watch <em id=ch></em></h2>
     <div class=kpi id=kpi></div>
+    <div class=note id=wl></div>
     <div class=note>A mechanic, not a surgeon: it opens the machine, measures what it finds, and says what to
     fix first. <b>Machine-verified</b> findings rest on a graph fact re-checked at report time and lead the
     list. A <b>refusal</b> is a place the analysis declined to conclude, and why &mdash; shown, not hidden.
     Nothing here writes to any repository.</div></div>
   <div class=card><h2>Analyse a repository <em>public GitHub only &middot; read-only archive fetch, no credentials, no git &middot; one at a time</em></h2>
     <form id=f><input type=url id=url placeholder="https://github.com/owner/repo" required>
+      <select id=bud title="budget for the judged analysis"><option value=0>machine-verified only ($0)</option><option value=100>$1</option><option value=300 selected>$3</option><option value=1500>$15 max</option></select>
       <button id=go type=submit>Analyse</button><div id=st></div></form></div>
   <div class=card><h2>Repositories <em id=rn></em></h2><div id=repos><div class=empty>loading&hellip;</div></div></div>
   <div class=card><h2>Findings <em>machine-verified first, then by severity</em></h2>
@@ -249,9 +292,14 @@ async function summary(){
   const d=await j('/api/mechanic/summary'); const s=d.summary, a=d.active;
   $('ch').textContent='charter '+d.charter.stamp+(d.charter.drifted?' · DRIFTED':'');
   $('meta').textContent=a.status==='idle'?'idle':(a.name+' · '+a.status+' · '+a.elapsed+'s');
-  $('kpi').innerHTML=[['repositories',s.repos],['runs',s.runs],['findings',s.findings],
-    ['machine-verified',s.machine_verified],['refusals',s.gaps],['fixed upstream',s.fixed]]
+  const w=d.watch||{};
+  $('kpi').innerHTML=[['repositories',s.repos],['watched',s.watched],['runs',s.runs],
+    ['findings',s.findings],['machine-verified',s.machine_verified],['judged',s.judged],
+    ['refusals',s.gaps],['fixed upstream',s.fixed],['spent',((s.spend_cents||0)/100).toFixed(2)+' $']]
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
+  $('wl').innerHTML=(d.brain?`brain <b>${esc(d.brain)}</b> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
+    `watch ${w.running?'<b>running</b>':'stopped'} &middot; ${w.watched||0} watched &middot; ${w.cycles||0} cycles`+
+    ((w.last||[]).length?'<br>'+w.last.slice(-3).map(x=>`${esc(x.repo)}: <span class="st-${esc(x.action)}">${esc(x.action)}</span> — ${esc(x.note)}`).join('<br>'):'');
   const st=$('st'); st.className='';
   if(a.status==='idle'){st.textContent=a.history.length?lastLine(a.history):'';}
   else if(['queued','fetching','analysing'].includes(a.status)){st.className='busy';st.textContent=a.name+' — '+a.status+(a.note?' · '+a.note:'')+' · '+a.elapsed+'s'}
@@ -265,13 +313,20 @@ async function repos(){
   const d=await j('/api/mechanic/repos'); const rs=d.repos||[];
   $('rn').textContent=rs.length+' watched';
   if(!rs.length){$('repos').innerHTML='<div class=empty>No repositories yet. Paste a GitHub URL above.</div>';return}
-  $('repos').innerHTML=`<table><thead><tr><th>repository</th><th class=n>LOC</th><th>last run</th><th class=n>findings</th><th class=n>refusals</th><th>when</th></tr></thead><tbody>`+
+  $('repos').innerHTML=`<table><thead><tr><th>repository</th><th class=n>LOC</th><th>last run</th><th class=n>findings</th><th class=n>refusals</th><th>when</th><th>watch</th></tr></thead><tbody>`+
     rs.map(r=>`<tr class=repo data-id="${esc(r.id)}" aria-selected="${r.id===REPO}">
-      <td><b>${esc(r.name)}</b><br><span class=loc>${esc(r.url.replace('https://github.com/',''))}</span></td>
+      <td><b>${esc(r.name)}</b><br><span class=loc>${esc(r.url.replace('https://github.com/',''))}${r.last_sha?' @ '+esc(r.last_sha.slice(0,10)):''}</span></td>
       <td class=n>${(r.loc||0).toLocaleString()}</td>
       <td><span class="st-${esc(r.last_status)}">${esc(r.last_status||'—')}</span><br><span class=loc>${esc(r.note)}</span></td>
-      <td class=n>${r.findings}</td><td class=n>${r.refusals}</td><td>${ago(r.last_at)}</td></tr>`).join('')+'</tbody></table>';
-  $('repos').querySelectorAll('tr.repo').forEach(tr=>tr.onclick=()=>{REPO=REPO===tr.dataset.id?'':tr.dataset.id;findings();repos()});
+      <td class=n>${r.findings}</td><td class=n>${r.refusals}</td><td>${ago(r.last_at)}</td>
+      <td><label class=loc><input type=checkbox class=w data-id="${esc(r.id)}" ${r.watch?'checked':''}> every
+        <select class=iv data-id="${esc(r.id)}">${[[3600,'1h'],[21600,'6h'],[86400,'day'],[604800,'week']].map(([v,l])=>`<option value=${v} ${(r.interval_s||21600)==v?'selected':''}>${l}</option>`).join('')}</select>
+        ${r.halts?`<br><span class=st-halted>${r.halts} halt(s)</span>`:''}</label></td></tr>`).join('')+'</tbody></table>';
+  $('repos').querySelectorAll('tr.repo td:not(:last-child)').forEach(td=>td.onclick=()=>{const tr=td.parentElement;REPO=REPO===tr.dataset.id?'':tr.dataset.id;findings();repos()});
+  $('repos').querySelectorAll('input.w,select.iv').forEach(el=>el.onchange=async()=>{
+    const id=el.dataset.id, on=$('repos').querySelector(`input.w[data-id="${id}"]`).checked, iv=$('repos').querySelector(`select.iv[data-id="${id}"]`).value;
+    const r=await fetch('/api/mechanic/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_id:id,watch:on,interval_s:+iv})});
+    if(!r.ok){const d=await r.json();$('st').className='bad';$('st').textContent=d.error||('HTTP '+r.status)} tick();});
 }
 
 async function findings(){
@@ -294,15 +349,17 @@ function drawFinds(){
       <span class="tag s-${esc(f.severity)}">${esc(f.severity)}</span>
       <span class=ttl>${esc(f.title)}</span>
       <span class=loc>${esc(ev.file||'')}${ev.line_range?':'+esc(ev.line_range):''}</span>
-      <span class=rp>${esc(f.repo)} &middot; ${esc(f.id)}</span></summary>
+      <span class=rp>${esc(f.repo)} &middot; ${esc(f.id)}${f.rank?' &middot; rank '+f.rank:''}${(f.seen_runs||1)>1?' &middot; seen '+f.seen_runs+' cycles':''}${f.upstream&&f.upstream!=='open'?' &middot; <span class=mv>'+esc(f.upstream)+'</span>':''}</span></summary>
       <div class=body><p>${esc(f.description)}</p>
       ${f.recommendation?`<p class=fix><b>Proposed fix.</b> ${esc(f.recommendation)}</p>`:''}
       ${(f.evidence||[]).map(e=>`<p class=ev>evidence: <code>${esc(e.file)}${e.line_range?':'+esc(e.line_range):''}</code> — ${esc(e.reason)}</p>`).join('')}
+      ${f.basis==='judged'?`<p class=ev>proposed by <b>${esc(f.proposed_by)}</b> &middot; challenge: <b>${esc(f.challenge||'—')}</b>${f.challenge_reason?' — '+esc(f.challenge_reason):''}</p>`:''}
+      ${(f.trail||[]).length?`<details class=tr><summary class=ev>decision record (${f.trail.length})</summary>${f.trail.map(t=>`<p class=ev>${esc(t.stage)} &middot; ${esc(t.actor)} &middot; <b>${esc(t.action)}</b>${t.rationale?' — '+esc(t.rationale):''}${t.model?' <i>('+esc(t.model)+')</i>':''}</p>`).join('')}</details>`:''}
       </div></details>`}).join('');
 }
 
 $('f').onsubmit=async e=>{e.preventDefault();
-  const r=await fetch('/api/mechanic/analyse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value})});
+  const r=await fetch('/api/mechanic/analyse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value,budget_cents:+$('bud').value})});
   const d=await r.json(); const st=$('st');
   if(!r.ok){st.className='bad';st.textContent=d.error||('HTTP '+r.status);return}
   st.className='busy';st.textContent=d.accepted+' — queued'; $('url').value=''; tick();

@@ -83,9 +83,38 @@ def init() -> None:
         CREATE INDEX IF NOT EXISTS idx_gap_run ON gaps(run_id);
         CREATE INDEX IF NOT EXISTS idx_dec_run ON decisions(run_id);
         """)
+        # Columns added for the swarm and the watch. Migrated with the same discipline
+        # the settlement learned the hard way: ask the schema what it has, never assume,
+        # and a migration that cannot run costs the FEATURE, never the record.
+        global _EXT
+        try:
+            _EXT = True
+            for table, cols in _EXTRA.items():
+                have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                for col, decl in cols:
+                    if col not in have:
+                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                _EXT = _EXT and all(col in have for col, _ in cols)
+        except sqlite3.Error:
+            _EXT = False
         c.commit()
     finally:
         c.close()
+
+
+_EXT = False
+_EXTRA = {
+    "repos": [("watch", "INT DEFAULT 0"), ("interval_s", "INT DEFAULT 21600"),
+              ("last_sha", "TEXT DEFAULT ''"), ("last_checked", "REAL DEFAULT 0"),
+              ("halts", "INT DEFAULT 0")],
+    "runs": [("trigger", "TEXT DEFAULT 'manual'"), ("kill_rate", "REAL DEFAULT 0"),
+             ("stage_costs", "TEXT DEFAULT ''")],
+    "findings": [("fingerprint", "TEXT DEFAULT ''"), ("proposed_by", "TEXT DEFAULT ''"),
+                 ("challenge", "TEXT DEFAULT ''"), ("challenge_reason", "TEXT DEFAULT ''"),
+                 ("rank", "INT DEFAULT 0"), ("first_seen_run", "TEXT DEFAULT ''"),
+                 ("seen_runs", "INT DEFAULT 1")],
+}
 
 
 def _next_id(c: sqlite3.Connection, table: str, prefix: str) -> str:
@@ -139,13 +168,19 @@ def repos() -> list[dict]:
 
 # ── runs ─────────────────────────────────────────────────────────────────────
 
-def run_open(repo_id: str, commit_sha: str, charter: str, budget_cents: int = 0) -> str:
+def run_open(repo_id: str, commit_sha: str, charter: str, budget_cents: int = 0,
+             trigger: str = "manual") -> str:
     c = _conn()
     try:
         rid = _next_id(c, "runs", "ripa-run-")
-        c.execute("INSERT INTO runs(id, repo_id, commit_sha, charter, started_at, "
-                  "status, budget_cents) VALUES(?,?,?,?,?,'indexing',?)",
-                  (rid, repo_id, commit_sha, charter, time.time(), budget_cents))
+        if _EXT:
+            c.execute("INSERT INTO runs(id, repo_id, commit_sha, charter, started_at, "
+                      "status, budget_cents, trigger) VALUES(?,?,?,?,?,'indexing',?,?)",
+                      (rid, repo_id, commit_sha, charter, time.time(), budget_cents, trigger))
+        else:
+            c.execute("INSERT INTO runs(id, repo_id, commit_sha, charter, started_at, "
+                      "status, budget_cents) VALUES(?,?,?,?,?,'indexing',?)",
+                      (rid, repo_id, commit_sha, charter, time.time(), budget_cents))
         c.commit()
         return rid
     finally:
@@ -230,14 +265,22 @@ def finding_add(run_id: str, repo_id: str, f: dict) -> str:
     c = _conn()
     try:
         fid = _next_id(c, "findings", "ripa-fnd-")
-        c.execute(
-            "INSERT INTO findings(id, run_id, repo_id, unit_id, category, severity, "
-            "confidence, basis, title, description, recommendation, evidence, "
-            "disclosure, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (fid, run_id, repo_id, f.get("unit_id", ""), f["category"], f["severity"],
-             float(f.get("confidence", 1.0)), f.get("basis", "judged"), f["title"],
-             f.get("description", ""), f.get("recommendation", ""),
-             json.dumps(f["evidence"]), f.get("disclosure", "public"), time.time()))
+        cols = ["id", "run_id", "repo_id", "unit_id", "category", "severity", "confidence",
+                "basis", "title", "description", "recommendation", "evidence", "disclosure",
+                "created_at"]
+        vals = [fid, run_id, repo_id, f.get("unit_id", ""), f["category"], f["severity"],
+                float(f.get("confidence", 1.0)), f.get("basis", "judged"), f["title"],
+                f.get("description", ""), f.get("recommendation", ""),
+                json.dumps(f["evidence"]), f.get("disclosure", "public"), time.time()]
+        if _EXT:
+            cols += ["fingerprint", "proposed_by", "challenge", "challenge_reason", "rank",
+                     "first_seen_run", "seen_runs"]
+            vals += [f.get("fingerprint", ""), f.get("proposed_by", ""),
+                     f.get("challenge", ""), f.get("challenge_reason", ""),
+                     int(f.get("rank") or 0), f.get("first_seen_run", ""),
+                     int(f.get("seen_runs") or 1)]
+        c.execute(f"INSERT INTO findings({','.join(cols)}) VALUES({','.join('?' * len(vals))})",
+                  vals)
         c.commit()
         return fid
     finally:
@@ -271,9 +314,19 @@ def findings(run_id: str = "", repo_id: str = "", basis: str = "",
     return rows
 
 
-# (An updater for a finding's upstream status belongs here — and arrives with the
-# disclosure router at Milestone 6, which is the first thing that will call it. The
-# mechanic, run on itself, flagged the early version as unreachable. It was right.)
+def finding_set(finding_id: str, **fields) -> None:
+    """The one in-place edit the record allows: news from outside (upstream status) and
+    the cycle bookkeeping the watch keeps. Removed once as unreachable — correctly, it
+    had no caller then. The watch's carry-over is its caller now."""
+    if not fields:
+        return
+    c = _conn()
+    try:
+        cols = ", ".join(f"{k}=?" for k in fields)
+        c.execute(f"UPDATE findings SET {cols} WHERE id=?", (*fields.values(), finding_id))
+        c.commit()
+    finally:
+        c.close()
 
 
 # ── refusals and decisions ───────────────────────────────────────────────────
@@ -341,6 +394,9 @@ def summary() -> dict:
                                     "machine-verified"),
             "gaps": one("SELECT COUNT(*) FROM gaps"),
             "fixed": one("SELECT COUNT(*) FROM findings WHERE upstream=?", "fixed"),
+            "judged": one("SELECT COUNT(*) FROM findings WHERE basis=?", "judged"),
+            "spend_cents": one("SELECT COALESCE(SUM(spend_cents),0) FROM runs"),
+            "watched": one("SELECT COUNT(*) FROM repos WHERE watch=1") if _EXT else 0,
         }
     finally:
         c.close()
