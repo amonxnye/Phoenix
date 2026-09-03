@@ -1,5 +1,7 @@
 # The Constitution
 
+Version: 1.1
+
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
 that enforces it, so "the rules" and "the system" are the same thing.
@@ -198,6 +200,22 @@ Everything below is those two laws, applied.
    carries the authority that carried it — policy, board quorum, the human, or tacit
    consent — and the pipeline from proposal to measured outcome is counted from the
    permanent record rather than asserted (`anchor.flow_stats`, surfaced on `/flow`).
+8. **A message declares what it is, and an exchange can be read as a whole.** Every
+   message carries an intent (`request`, `response`, `notify`, `ack`, `error`), a
+   conversation it belongs to, and a hop count; a reply names the message it answers.
+   A transcript proves words were exchanged; only an envelope shows who asked, who
+   answered, and who was ignored (`anchor.msg_send`, `anchor.conversations`, surfaced
+   on `/comms`). Adapted from ACCP, which profiles agent messaging over RFC 5322 —
+   we take the envelope and leave the transport, since our agents share a database.
+9. **An unanswered request is a governed state, not a gap in the log.** The second law
+   binds agent traffic as it binds the human gate: a request with no reply is named
+   `unanswered` and shown first, ahead of anything merely recent (`anchor._outcome`).
+   A conversation nobody closed is the same defect as a decision nobody took.
+10. **No exchange may run forever, and a failure may not answer a failure.** A reply
+   past `anchor.MAX_HOPS` is refused, and an `error` may never answer an `error`
+   (ACCP §7) — two agents faulting at each other is a loop, not a conversation. Both
+   refusals are recorded when they bite, because a refusal nobody can see is not
+   governance (`anchor._envelope`).
 > Enforced by `governor.py`, `anchor.py`, `sim_console.py`; tracing via `LANGCHAIN_*` env vars.
 
 ---
@@ -277,6 +295,26 @@ Everything below is those two laws, applied.
 > Enforced by `sim_console.py` (failed-turn counter, `_binding_constraint`, stall
 > escalation, the unconditional watchdog restart, the disk gauge), surfaced on
 > `/agents` SYSTEM HEALTH and in every work report.
+
+## Article X — The rules are versioned, and every decision names the ones that bound it
+
+1. **The constitution has a version, and the version is checked against the text.** A
+   declared number is for people; a digest of the rules actually in force is the proof.
+   Both are read from one place (`anchor.charter_text`), so the rules shown on `/rules`
+   and the rules stamped onto a decision can never be different documents. Editing the
+   constitution live from the console changes the version in force immediately
+   (`anchor.charter_invalidate`), not at the next restart.
+2. **Every decision records which brain took it and which charter bound it.** A why-chain
+   answers *on what basis*; it cannot answer *by whom* or *under which rules*, and those
+   are the two questions asked of any record that must be defended later. Provenance is
+   captured where decisions are opened, never asked of each caller — a call site written
+   next month cannot forget what it was never asked to supply (`anchor.reason_add`).
+3. **A version that stops describing its text is reported, not trusted.** An amendment
+   that does not bump the version is drift: the run is still governed, but the label is
+   no longer true, so the mismatch is recorded once as an event and surfaced with the
+   rules. Silence here would make the version worse than no version at all — it would
+   look like evidence.
+> Enforced by `anchor.py` (`charter`, `reason_add`) and `sim_console.py` (`/rules`).
 
 ## Amending this constitution
 

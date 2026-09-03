@@ -336,7 +336,8 @@ _saved_cols = A._EDGE_COLS
 try:
     A._EDGE_COLS = False
     check("a world without the graph columns still records messages",
-          A.msg_send("internal", f"{_a} → {_b}", "sent while degraded") is None)
+          A.msg_send("internal", f"{_a} → {_b}", "sent while degraded") is not None,
+          "the id comes back either way — losing the graph must not also lose threading")
     check("the graph degrades to empty rather than raising",
           A.comm_edges(10) == [] and A.comm_recent(10) == []
           and A.msg_follow(_a, _b) is False)
@@ -344,6 +345,82 @@ try:
           any("sent while degraded" in m["body"] for m in A.msg_thread("internal", 20)))
 finally:
     A._EDGE_COLS = _saved_cols
+
+# ── 12b. the ACCP envelope: an exchange you can audit, not a stream of prose ──
+# A transcript proves words were exchanged. It cannot say which message was a
+# question, which answered it, or which asked and was ignored — and on the live
+# record 86% of addressed messages were never acted on, with no way to tell the
+# difference between a remark nobody needed and a request nobody answered.
+print("\n12b. Conversations — intent, hops, and how an exchange ended (VII.8-10)")
+_conv_of = A.msg_conv
+def _summary(conv):
+    return next((c for c in A.conversations(200) if c["conv"] == conv), {"outcome": "?"})
+_q = A.msg_send("internal", f"{_a} → {_b}", "shall we shift to gold?", to=_b, intent="request")
+_r = A.msg_send("internal", f"{_b} → {_a}", "agreed, shifting", to=_a,
+                intent="response", reply_to=_q)
+check("a reply joins its parent's conversation rather than starting a new one",
+      bool(_q) and bool(_r) and
+      len({m["intent"] for m in A.conversation(_conv_of(_r))}) == 2,
+      f"messages {_q} → {_r} share one conversation")
+check("a reply counts one hop further than what it answers",
+      [m["hops"] for m in A.conversation(_conv_of(_r))] == [1, 2])
+check("an answered request reads as answered",
+      _summary(_conv_of(_r))["outcome"] == "answered")
+
+_lonely = A.msg_send("internal", f"{_a} → {_c}", "can you cover the mill?", to=_c,
+                     intent="request")
+check("a request nobody replied to is named, not merely absent (VII.9)",
+      _summary(_conv_of(_lonely))["outcome"] == "unanswered",
+      "the second law applied to agent traffic, not only to the human gate")
+check("unanswered outranks recent — the row worth reading is not buried",
+      [c["outcome"] for c in A.conversations(60)].index("unanswered")
+      < max((i for i, c in enumerate(A.conversations(60))
+             if c["outcome"] in ("answered", "one-way")), default=99),
+      "worst outcome first, then newest")
+
+# VII.10 — the two refusals. A hop count nobody enforces is a field, not a limit.
+_chain, _refused_at = A.msg_send("internal", "a→b", "open", to="b", intent="request"), 0
+for _i in range(A.MAX_HOPS + 4):
+    _nxt = A.msg_send("internal", "b→a", f"turn {_i}", to="a",
+                      intent="response", reply_to=_chain)
+    if _nxt is None:
+        _refused_at = _i + 2
+        break
+    _chain = _nxt
+check("an exchange cannot run forever — the ceiling actually refuses",
+      _refused_at == A.MAX_HOPS + 1, f"refused at hop {_refused_at}, ceiling {A.MAX_HOPS}")
+check("the refusal is recorded, not silent (a refusal nobody sees is not governance)",
+      any("exceeds the ceiling" in e for e in A.event_log(40)))
+
+_e1 = A.msg_send("internal", "a→b", "gather failed", to="b", intent="error")
+check("an error may not answer an error (ACCP §7)",
+      A.msg_send("internal", "b→a", "your error errored", to="a",
+                 intent="error", reply_to=_e1) is None,
+      "two agents faulting at each other is a loop, not a conversation")
+check("but an error may still be answered normally",
+      A.msg_send("internal", "b→a", "acknowledged, retrying", to="a",
+                 intent="ack", reply_to=_e1) is not None)
+check("an unknown intent degrades to notify rather than entering the record",
+      A.conversation(_conv_of(A.msg_send("internal", "x", "hi", intent="telepathy")))[0]
+      ["intent"] == "notify")
+
+# Losing the envelope must cost the FEATURE, never the transcript — the same rule
+# the edge columns learned the hard way, checked separately because it migrates
+# separately. A volume that can afford one migration but not both keeps the other.
+_saved_conv = A._CONV_COLS
+try:
+    A._CONV_COLS = False
+    check("a world without the envelope columns still records messages",
+          A.msg_send("internal", "z", "sent without an envelope") is not None)
+    check("the conversation views degrade to empty rather than raising",
+          A.conversations(5) == [] and A.conversation("c1") == []
+          and A.conv_stats()["convs"] == 0)
+    check("the transcript survives losing the envelope",
+          any("sent without an envelope" in m["body"] for m in A.msg_thread("internal", 20)))
+finally:
+    A._CONV_COLS = _saved_conv
+check("the console reports the envelope it ACTUALLY has, never asserts it (VII.4)",
+      '"enabled": anchor._CONV_COLS' in open(os.path.join(HERE, "sim_console.py")).read())
 
 # Telemetry may never refuse the thing it is counting. A full volume made every
 # console page answer 502 while /api/* — which does not count views — stayed up:
@@ -930,6 +1007,79 @@ _console_src2 = open(os.path.join(HERE, "sim_console.py")).read()
 check("the console routes them, path-safely, from one file-server",
       all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
                                        "realpath")))
+
+# ── 21. charter provenance — which rules bound a decision, and which brain took it ──
+# A report written in March must be readable against March's rules, and "which model
+# decided this" must be answerable. A why-chain answers ON WHAT BASIS; it cannot
+# answer BY WHOM or UNDER WHICH RULES, and those are the questions asked of any
+# record that has to be defended after the fact.
+print("\n21. Charter provenance — the rules have a version, decisions cite it (Article X)")
+_ch = A.charter(refresh=True)
+check("the constitution declares a version", _ch["version"] != A.CHARTER_UNVERSIONED,
+      f"{_ch['stamp']} from {_ch['source']} ({_ch['bytes']:,} bytes)")
+check("the stamp carries a digest, not only a number people can forget to bump",
+      len(_ch["digest"]) == 12 and _ch["stamp"] == f"{_ch['version']}+{_ch['digest']}")
+check("one reader serves both the rules page and the stamp",
+      "anchor.charter_text()" in open(os.path.join(HERE, "sim_console.py")).read(),
+      "the text shown and the text stamped cannot be different documents")
+
+_did = A.reason_add(1, "tester", "probe", "checking provenance", authorized_by="policy")
+_rec = next(x for x in A.reasons_top(5) if x["id"] == _did)
+check("every decision records the brain that took it",
+      bool(_rec["model"]), f"model={_rec['model']!r}")
+check("every decision records the charter that bound it",
+      _rec["charter"] == _ch["stamp"], _rec["charter"])
+check("provenance is captured at reason_add, not asked of each caller (X.2)",
+      "model: str = \"\", charter_stamp: str = \"\"" in open(os.path.join(HERE, "anchor.py")).read(),
+      "a call site written next month cannot forget what it never had to supply")
+check("the lineage view carries it too, so why(x) answers who and under what",
+      A.lineage(_did)["decision"]["charter"] == _ch["stamp"])
+
+# X.3 — the failure the digest exists to catch: an amendment that does not bump the
+# version. The run stays governed; the LABEL stops being true, and a label that can
+# silently stop being true is worse than none, because it reads as evidence.
+_base = A.charter_text()
+try:
+    # Unique text → a digest never seen before, so the check makes its own conditions
+    # instead of depending on whether this exact drift was already reported once.
+    A.config_set("constitution", _base + f"\n\n## Article XI — smuggled in {stamp}\n")
+    A.charter_invalidate()
+    _drift = A.charter(refresh=True)
+    check("an amendment that does not bump the version is caught",
+          _drift["drifted"] and _drift["version"] == _ch["version"]
+          and _drift["digest"] != _ch["digest"],
+          f"{_ch['digest']} → {_drift['digest']} under the same version")
+    check("the drift is recorded as an event, not merely returned",
+          any("without bumping" in e for e in A.event_log(20)))
+    check("a live console amendment is named as the source, not the file",
+          _drift["source"] == "console amendment")
+    # bump whatever version the file currently declares — the check must not pin one
+    A.config_set("constitution", re.sub(r"^Version: .*$", f"Version: 9.9.{stamp}", _base,
+                                        count=1, flags=re.M)
+                 + f"\n\n## Article XI {stamp}\n")
+    A.charter_invalidate()
+    check("bumping the version alongside the edit clears the drift",
+          A.charter(refresh=True)["drifted"] is False)
+finally:
+    A.config_set("constitution", "")
+    A.charter_invalidate()
+check("reverting the override returns to the shipped rules",
+      A.charter(refresh=True)["stamp"] == _ch["stamp"], _ch["stamp"])
+
+# The migration lesson, applied again: provenance migrates on its own flag, so a
+# volume that can afford one ALTER but not both keeps the other.
+_saved_prov = A._PROV_COLS
+try:
+    A._PROV_COLS = False
+    _d2 = A.reason_add(1, "tester", "probe degraded", "no provenance columns")
+    check("without the provenance columns a decision is still recorded",
+          bool(_d2) and next(x for x in A.reasons_top(5) if x["id"] == _d2)["decision"]
+          == "probe degraded")
+    check("the readers degrade to empty provenance rather than raising",
+          next(x for x in A.reasons_top(5) if x["id"] == _d2)["model"] == ""
+          and A.lineage(_d2)["decision"]["charter"] == "")
+finally:
+    A._PROV_COLS = _saved_prov
 
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
