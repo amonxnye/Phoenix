@@ -282,20 +282,14 @@ class Index:
     def callers_of(self, qualname: str) -> list[str]:
         """Who calls this. Resolution is by name, which is what Python itself does at
         the call site — so a same-named symbol elsewhere WILL show up here. That
-        imprecision is the reason `ambiguous` exists below, and the reason liveness
-        treats a name it cannot disambiguate as unprovable rather than dead."""
+        imprecision errs in the safe direction for liveness: a shared name can make a
+        dead symbol look alive, never a live one look dead."""
         sym = self.symbol(qualname)
         if not sym:
             return []
         rows = self.db.execute(
             "SELECT DISTINCT src FROM edges WHERE dst=? AND kind='calls'", (sym["name"],))
         return sorted(r[0] for r in rows if r[0] != qualname)
-
-    def ambiguous(self, name: str) -> int:
-        """How many distinct symbols share this bare name. >1 means a call edge to it
-        cannot be attributed to one definition."""
-        return self.db.execute("SELECT COUNT(*) FROM symbols WHERE name=?",
-                               (name,)).fetchone()[0]
 
     def dependencies_of(self, module: str) -> list[str]:
         return sorted(r[0] for r in self.db.execute(

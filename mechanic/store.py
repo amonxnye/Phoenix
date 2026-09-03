@@ -262,14 +262,9 @@ def findings(run_id: str = "", repo_id: str = "", basis: str = "",
     return rows
 
 
-def finding_set(finding_id: str, **fields) -> None:
-    c = _conn()
-    try:
-        cols = ", ".join(f"{k}=?" for k in fields)
-        c.execute(f"UPDATE findings SET {cols} WHERE id=?", (*fields.values(), finding_id))
-        c.commit()
-    finally:
-        c.close()
+# (An updater for a finding's upstream status belongs here — and arrives with the
+# disclosure router at Milestone 6, which is the first thing that will call it. The
+# mechanic, run on itself, flagged the early version as unreachable. It was right.)
 
 
 # ── refusals and decisions ───────────────────────────────────────────────────
