@@ -16,7 +16,7 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               history, liveness, panel, report, review, store)
+               fixer, history, liveness, panel, report, review, slop, store)
 from .index import Index, build
 
 
@@ -64,7 +64,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                             budget_cents=budget_cents, trigger=trigger)
     db = os.path.join(store.data_dir(), f"index-{run_id}.sqlite")
     t0 = time.time()
-    counts = {"findings": 0, "judged": 0, "gaps": 0}
+    counts = {"findings": 0, "judged": 0, "gaps": 0, "patches": 0}
     try:
         s = build(root, db)
         for p, why in s["unreadable"]:
@@ -96,7 +96,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                                   errors="replace") as fh:
                             mv.extend(panel.injection_findings(u, fh.read()))
                     except OSError:
-                        pass
+                        pass                          # unreadable file: already a recorded gap from build()
             dv = deps.analyse(root)                  # known-vulnerable dependencies (R17)
             for g in dv["gaps"]:
                 store.gap_add(run_id, g["scope"], g["reason"])
@@ -104,6 +104,8 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
             for f in dv["findings"]:
                 f["symbol"] = f["title"].split("`")[1].split("@")[0]   # fingerprint by package
             mv.extend(dv["findings"])
+            sl = slop.analyse(us, root)              # the tells of unreviewed generation, as facts
+            mv.extend(sl["findings"])
             for f in mv:
                 f["fingerprint"] = panel.fingerprint(f)
                 fid = _persist(run_id, repo_id, f, ch, unit_ids)
@@ -121,7 +123,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 store.gap_add(run_id, "panel", "judged analysis not run: budget is 0")
                 counts["gaps"] += 1
             else:
-                _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts)
+                _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts, root)
         finally:
             idx.close()
         secs = time.time() - t0
@@ -137,6 +139,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         return {"run_id": run_id, "repo_id": repo_id, "name": name, "symbols": s["symbols"],
                 "modules": s["modules"], "findings": counts["findings"],
                 "judged": counts["judged"], "gaps": counts["gaps"],
+                "patches": counts["patches"],
                 "spend_cents": bud.spent_cents(), "seconds": round(secs, 1),
                 "status": "complete"}
     except budget_mod.OverBudget as e:
@@ -160,7 +163,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 "error": f"{type(e).__name__}: {e}"}
 
 
-def _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts) -> None:
+def _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts, root) -> None:
     stamp, model = ch["stamp"], brainseam.name()
     work = [(u, c) for u, c in zip(us, contexts) if not u["is_test"]]
     wu, wc = [w[0] for w in work], [w[1] for w in work]
@@ -232,6 +235,33 @@ def _swarm(run_id, repo_id, us, contexts, idx, bud, ch, unit_ids, counts) -> Non
                        f"signature {ad['signature']} over {len(ad['accepted'])} finding(s); "
                        f"kill rate {rv['kill_rate']:.0%} of {rv['reviewed']}",
                        model=model, charter=stamp)
+
+    # gate 4 — proposed patches for the top findings by consequence, verified in memory
+    top = store.findings(run_id=run_id)[:fixer.FIX_TOP]
+    top = [f for f in top if f.get("file") or (f.get("evidence") or [{}])[0].get("file")]
+    for f in top:
+        f["file"] = f.get("file") or f["evidence"][0]["file"]
+        f["line_range"] = f.get("line_range") or f["evidence"][0].get("line_range", "")
+    try:
+        bud.gate("fixer", fixer.project_cents(len(top), budget_mod))
+    except budget_mod.OverBudget as e:
+        store.gap_add(run_id, "fixer", f"patches not proposed: {e}")
+        counts["gaps"] += 1
+        return
+    PROGRESS.update(stage="fixer", done=0, total=len(top))
+    ok = 0
+    for f in top:
+        r = fixer.propose(f, root, bud)
+        store.finding_set(f["id"], patch=r["patch"], patch_status=r["status"], patch_note=r["note"])
+        store.decision_add(run_id, "fixer", "fixer", f"patch {r['status']}", r["note"],
+                           finding_id=f["id"], model=model, charter=stamp)
+        if r["status"] != "applies-and-parses":
+            store.gap_add(run_id, f["id"], f"proposed patch rejected — {r['note']}")
+            counts["gaps"] += 1
+        else:
+            ok += 1
+        PROGRESS["done"] += 1
+    counts["patches"] = ok
 
 
 def render(run_id: str) -> str:

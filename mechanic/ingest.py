@@ -54,7 +54,8 @@ def headers(accept: str = "application/x-gzip") -> dict:
             "Accept": accept}
 
 
-def _ctx() -> ssl.SSLContext:
+def ssl_context() -> ssl.SSLContext:
+    """The one TLS context every outbound call uses (deps.py borrows it)."""
     for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
         p = os.environ.get(var, "")
         if p and os.path.exists(p):
@@ -64,7 +65,7 @@ def _ctx() -> ssl.SSLContext:
 
 def _open(url: str, timeout: float, accept: str = "application/x-gzip"):
     req = urllib.request.Request(url, headers=headers(accept))
-    return urllib.request.urlopen(req, timeout=timeout, context=_ctx())
+    return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
 
 
 def resolve_sha(owner: str, repo: str) -> str:

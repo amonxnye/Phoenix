@@ -356,6 +356,8 @@ summary::-webkit-details-marker{display:none}summary:hover{background:#241a0f}
 details.tr{border:0;margin-top:6px}details.tr summary{padding:2px 0;color:var(--dim)}details.tr p{margin:2px 0 2px 12px}
 select.iv{background:#120d06;color:var(--ink);border:1px solid var(--line);border-radius:4px;font:inherit;font-size:11px}
 #runs:empty{display:none}
+pre.diff{margin:6px 0 0 12px;padding:8px 10px;background:#120d06;border:1px solid var(--line);border-radius:6px;font-size:11px;line-height:1.45;overflow-x:auto;white-space:pre}
+.s-slop{color:#c9a0dc}
 .st-unchanged{color:var(--dim)}.st-analysed{color:var(--green)}.st-paused,.st-error{color:var(--bad)}
 .filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
 .ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
@@ -398,7 +400,7 @@ async function summary(){
   const w=d.watch||{};
   $('kpi').innerHTML=[['repositories',s.repos],['watched',s.watched],['runs',s.runs],
     ['findings',s.findings],['machine-verified',s.machine_verified],['judged',s.judged],
-    ['refusals',s.gaps],['fixed upstream',s.fixed],['spent',((s.spend_cents||0)/100).toFixed(2)+' $']]
+    ['refusals',s.gaps],['slop',s.slop],['patches',s.patches],['fixed upstream',s.fixed],['spent',((s.spend_cents||0)/100).toFixed(2)+' $']]
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
   const rec=d.record||{};
   $('wl').innerHTML=(rec.persistent?`record since ${new Date(rec.record_since*1000).toLocaleDateString()} &middot; ${rec.boots} boots &middot; `:`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
@@ -463,7 +465,7 @@ function drawFinds(){
   $('finds').innerHTML=fs.map(f=>{const ev=(f.evidence||[])[0]||{};
     return `<details><summary>
       <span class="tag ${f.basis==='machine-verified'?'mv':'jd'}">${esc(f.basis)}</span>
-      <span class="tag s-${esc(f.severity)}">${esc(f.severity)}</span>
+      <span class="tag s-${esc(f.severity)}">${esc(f.severity)}</span>${f.category==='slop'?'<span class="tag s-slop">slop</span>':''}
       <span class=ttl>${esc(f.title)}</span>
       <span class=loc>${esc(ev.file||'')}${ev.line_range?':'+esc(ev.line_range):''}</span>
       <span class=rp>${esc(f.repo)} &middot; ${esc(f.id)}${f.rank?' &middot; rank '+f.rank:''}${(f.seen_runs||1)>1?' &middot; seen '+f.seen_runs+' cycles':''}${f.upstream&&f.upstream!=='open'?' &middot; <span class=mv>'+esc(f.upstream)+'</span>':''}</span></summary>
@@ -471,6 +473,8 @@ function drawFinds(){
       ${f.recommendation?`<p class=fix><b>Proposed fix.</b> ${esc(f.recommendation)}</p>`:''}
       ${(f.evidence||[]).map(e=>`<p class=ev>evidence: <code>${esc(e.file)}${e.line_range?':'+esc(e.line_range):''}</code> — ${esc(e.reason)}</p>`).join('')}
       ${f.basis==='judged'?`<p class=ev>proposed by <b>${esc(f.proposed_by)}</b> &middot; challenge: <b>${esc(f.challenge||'—')}</b>${f.challenge_reason?' — '+esc(f.challenge_reason):''}</p>`:''}
+      ${f.patch_status==='applies-and-parses'?`<details class=tr open><summary class=ev>proposed patch — <b class=mv>applies and parses</b> (verified in memory, never applied) &middot; ${esc(f.patch_note)}</summary><pre class=diff>${esc(f.patch)}</pre></details>`
+        :f.patch_status?`<p class=ev>proposed patch <b class=s-high>rejected</b> — ${esc(f.patch_note)}</p>`:''}
       ${(f.trail||[]).length?`<details class=tr><summary class=ev>decision record (${f.trail.length})</summary>${f.trail.map(t=>`<p class=ev>${esc(t.stage)} &middot; ${esc(t.actor)} &middot; <b>${esc(t.action)}</b>${t.rationale?' — '+esc(t.rationale):''}${t.model?' <i>('+esc(t.model)+')</i>':''}</p>`).join('')}</details>`:''}
       </div></details>`}).join('');
 }

@@ -137,7 +137,8 @@ _EXTRA = {
     "findings": [("fingerprint", "TEXT DEFAULT ''"), ("proposed_by", "TEXT DEFAULT ''"),
                  ("challenge", "TEXT DEFAULT ''"), ("challenge_reason", "TEXT DEFAULT ''"),
                  ("rank", "INT DEFAULT 0"), ("first_seen_run", "TEXT DEFAULT ''"),
-                 ("seen_runs", "INT DEFAULT 1")],
+                 ("seen_runs", "INT DEFAULT 1"), ("patch", "TEXT DEFAULT ''"),
+                 ("patch_status", "TEXT DEFAULT ''"), ("patch_note", "TEXT DEFAULT ''")],
 }
 
 
@@ -437,6 +438,9 @@ def summary() -> dict:
             "judged": one("SELECT COUNT(*) FROM findings WHERE basis=?", "judged"),
             "spend_cents": one("SELECT COALESCE(SUM(spend_cents),0) FROM runs"),
             "watched": one("SELECT COUNT(*) FROM repos WHERE watch=1") if _EXT else 0,
+            "slop": one("SELECT COUNT(*) FROM findings WHERE category=?", "slop"),
+            "patches": one("SELECT COUNT(*) FROM findings WHERE patch_status=?",
+                           "applies-and-parses") if _EXT else 0,
         }
     finally:
         c.close()

@@ -1,6 +1,6 @@
 # The Mechanic's Charter
 
-Version: 0.3
+Version: 0.4
 
 The rules the analysis operates under. Loaded into every analyst's instructions and
 recorded against every run, so a report written in March can be read against the rules
@@ -181,3 +181,28 @@ safe only because:
   *unconfirmed*, never fixed: a model not repeating itself is not evidence.
 
 > Enforced by `watch.py` (`cycle`, `carry_over`, `MAX_HALTS`).
+
+## 13. A proposed fix is a patch, verified, and never applied
+
+For the top findings by consequence the fixer proposes a unified diff for the one file
+the finding names. It reaches the page only after two machine checks: it **applies
+cleanly** to the current file, and the patched file **still parses**. A patch that
+fails either is a recorded refusal naming the reason, not a fix. The repository on
+disk is never modified; the checks run on a copy in memory. It is proposed under the
+run's budget as a fourth gate.
+
+> Enforced by `fixer.py` (`parse`, `apply`, `propose`) and `analyse.py`.
+
+## 14. Slop is reported as fact where it can be, and judged where it cannot
+
+The mechanic does not claim to know who wrote a line. It states facts that reviewed
+code rarely keeps: an exception swallowed with **no stated reason**, an import never
+used, a function body duplicated elsewhere, a stub that shipped, a docstring that only
+restates the name, code kept as comments. Each is machine-verified and cites its
+lines. A swallow with a stated reason is a decision, not slop.
+
+The judgement calls — restating comments, guards against the impossible, wrappers
+that add nothing — belong to the panel's slop analyst, whose candidates are challenged
+and governed like any other.
+
+> Enforced by `slop.py` and `panel.py` (`ROLES["slop"]`).
