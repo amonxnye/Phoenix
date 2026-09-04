@@ -57,6 +57,7 @@ class _Scan(ast.NodeVisitor):
         self.findings: list[dict] = []
         self.bodies: list[tuple[str, str, int, int, str]] = []   # (hash, qual, line, end, name)
         self._stack: list[str] = []
+        self._bases: list[bool] = []                  # per enclosing class: has bases?
 
     def _qual(self, name):
         return ".".join([self.unit["module"], *self._stack, name])
@@ -101,7 +102,11 @@ class _Scan(ast.NodeVisitor):
                        (isinstance(d, ast.Attribute) and "abstract" in d.attr.lower())
                        for d in node.decorator_list)
         overload = any(isinstance(d, ast.Name) and d.id == "overload" for d in node.decorator_list)
-        if stub and not abstract and not overload and not node.name.startswith("test_"):
+        override = bool(self._bases and self._bases[-1])   # a no-op method in a subclass
+        if stub and not abstract and not overload and not override \
+                and not node.name.startswith("test_"):
+            # (a `pass` method in a class WITH bases is how Python silences inherited
+            #  behaviour — log_message in an HTTP handler — so it is an override, not a stub)
             self.findings.append(_finding(
                 self.unit, "stub body", node.lineno, end,
                 f"`{node.name}` has no body — a stub that shipped",
@@ -137,7 +142,9 @@ class _Scan(ast.NodeVisitor):
 
     def visit_ClassDef(self, node):
         self._stack.append(node.name)
+        self._bases.append(bool(node.bases))
         self.generic_visit(node)
+        self._bases.pop()
         self._stack.pop()
 
 

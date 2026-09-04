@@ -712,6 +712,11 @@ check("structurally duplicated function bodies are found across names",
 check("a stub that shipped, and a docstring that restates the name",
       any("stub" in f["claim"] for f in _sl["findings"])
       and any("restates" in f["claim"] for f in _sl["findings"]))
+check("a no-op method in a subclass is an override (log_message in an HTTP handler), not a stub",
+      not any("stub" in f["claim"] and "log_message" in f["title"] for f in slop.analyse(
+          [{"module": "h", "file": "h.py", "is_test": 0}], (lambda d: (open(os.path.join(d, "h.py"), "w").write(
+              "import http.server\nclass H(http.server.BaseHTTPRequestHandler):\n"
+              "    def log_message(self, *a):\n        pass\n"), d)[1])(tempfile.mkdtemp()))["findings"]))
 check("commented-out code is found; prose comments are not",
       any("commented-out" in f["claim"] for f in _sl["findings"]))
 check("every slop finding is machine-verified with a line range and a fix",
