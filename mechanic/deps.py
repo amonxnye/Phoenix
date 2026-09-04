@@ -19,9 +19,10 @@ is marked fixed upstream.
 import json
 import os
 import re
-import ssl
 import urllib.error
 import urllib.request
+
+from .ingest import ssl_context
 
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 OSV_VULN = "https://api.osv.dev/v1/vulns/{id}"
@@ -101,25 +102,17 @@ def inventory(root: str) -> list[dict]:
 
 # ── the answer: OSV.dev, consumed ────────────────────────────────────────────
 
-def _ctx():
-    for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
-        p = os.environ.get(var, "")
-        if p and os.path.exists(p):
-            return ssl.create_default_context(cafile=p)
-    return ssl.create_default_context()
-
-
 def _post(url: str, body: dict) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "phoenix-software-mechanic/0.1"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=_ctx()) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=ssl_context()) as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
 def _get(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "phoenix-software-mechanic/0.1"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=_ctx()) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=ssl_context()) as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 

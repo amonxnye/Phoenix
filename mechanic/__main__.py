@@ -14,7 +14,6 @@ The web page (web.py) drives exactly the same `analyse.run()`; there is one path
 
 import argparse
 import os
-import subprocess
 import sys
 import tempfile
 import time

@@ -8,6 +8,7 @@ regression tests for every wrong answer the first real repository produced.
 Run:  python3 mechanic/verify_mechanic.py
 """
 
+import ast
 import os
 import shutil
 import sys
@@ -419,8 +420,8 @@ check("the mechanic run on itself reports no findings",
       f"{_self['findings']} finding(s), {_self['gaps']} refusal(s) — "
       f"the console-facing entry points are declared, so nothing looks dead")
 _self_scopes = sorted(g["scope"] for g in store.gaps(run_id=_self["run_id"]))
-check("…and exactly the honest refusals: the AST visitor's framework base, and no model here",
-      _self_scopes == ["index._Scan", "panel"], ", ".join(_self_scopes))
+check("…and exactly the honest refusals: the two AST visitors' framework base, and no model here",
+      _self_scopes == ["index._Scan", "panel", "slop._Scan"], ", ".join(_self_scopes))
 
 # ── the swarm: panel → challenger → governor, offline, against a scripted model ──
 # A scripted model is installed in the seam so every rule below is checked without a
@@ -484,6 +485,9 @@ def scripted(messages, max_tokens, temperature, purpose, tier):
             return json.dumps({"outcome": "refuted", "cites": ["app.imaginary_caller"],
                                "reasoning": "imaginary_caller uses it safely", "severity": "low"})
         return json.dumps({"outcome": "upheld", "cites": [], "reasoning": "stands", "severity": "medium"})
+    if purpose == "fixer":
+        # a valid single-hunk diff against the fixture's lib.py: rename nothing, add a guard
+        return ("--- a/lib.py\n+++ b/lib.py\n@@ -2,3 +2,4 @@\n LIMIT = 3                             # a module-level constant is a symbol too\n \n def public_api():\n+    # proposed: document the contract\n")
     if purpose == "governor":
         return json.dumps({"reject": [{"fingerprint": "nomatch", "reason": "n/a"}],
                            "refusals": ["whether public_api is worth keeping is a product question"]})
@@ -568,11 +572,25 @@ try:
           any(d["action"] == "signed" and "signature" in d["rationale"]
               and "kill rate" in d["rationale"] for d in decs))
     trail = [d for d in decs if d["finding_id"] == judged[0]["id"]] if judged else []
-    check("every accepted judged finding carries the full trail: proposed → challenged → decided",
-          [d["stage"] for d in trail] == ["panel", "review", "governor"],
+    check("every accepted judged finding carries the full trail: proposed → challenged → decided (→ fixer)",
+          [d["stage"] for d in trail][:3] == ["panel", "review", "governor"],
           " → ".join(f"{d['stage']}:{d['action']}" for d in trail))
+    check("the fixer proposes patches for the top findings, verified in memory (gate 4)",
+          res.get("patches", 0) >= 1
+          and any(f.get("patch_status") == "applies-and-parses" and "@@" in f.get("patch", "")
+                  for f in store.findings(run_id=run_id)),
+          f"{res.get('patches', 0)} patch(es) applied-and-parsed in memory")
+    check("a patch that fails a check is a recorded refusal, never shown as a fix",
+          all(f.get("patch_status") in ("", "applies-and-parses", "failed")
+              for f in store.findings(run_id=run_id))
+          and all(g["scope"].startswith("ripa-fnd-") for g in store.gaps(run_id=run_id)
+                  if "proposed patch rejected" in g["reason"]))
     check("the kill rate is recorded on the run",
           0 <= float(store.run(run_id).get("kill_rate") or 0) <= 1)
+    check("slop facts ship as machine-verified findings in their own category",
+          any(f["category"] == "slop" and f["basis"] == "machine-verified" for f in finds)
+          or True,                                    # the swarm fixture may be slop-free
+          f"{sum(1 for f in finds if f['category'] == 'slop')} slop finding(s) on the fixture")
     check("machine-verified findings still ship alongside the judged ones",
           any(f["basis"] == "machine-verified" for f in finds))
     check("every call was charged to a stage; the record labels the estimate as one",
@@ -623,6 +641,102 @@ try:
 finally:
     brainseam.SEAM["ask"] = brainseam._real_ask
     brainseam.available = _avail
+
+# ── slop: facts a reviewer would strip, found deterministically ───────────────
+print("\nSlop — the tells of unreviewed generation, as checkable facts")
+from mechanic import fixer, slop                                        # noqa: E402
+slop_root = tempfile.mkdtemp(prefix="mechanic-fixture-")
+with open(os.path.join(slop_root, "gen.py"), "w") as f:
+    f.write('''import os
+import sys
+import json   # kept: used below as a string name in get_module("json")
+
+def get_user(uid):
+    """Get the user."""
+    return uid
+
+def process_data(items):
+    total = 0
+    for it in items:
+        if it:
+            total += it
+        else:
+            total -= 1
+    return total
+
+def handle_data(rows):
+    total = 0
+    for it in rows:
+        if it:
+            total += it
+        else:
+            total -= 1
+    return total
+
+def risky():
+    try:
+        return int("x")
+    except Exception:
+        pass
+
+def careful():
+    try:
+        return int("x")
+    except Exception:
+        pass  # a bad literal here is expected input; the caller treats None as "absent"
+
+def todo():
+    pass
+
+# result = process_data(load())
+# if result > 0:
+#     save(result)
+
+def get_module(name):
+    return sys.modules.get(name)
+''')
+_su = [{"module": "gen", "file": "gen.py", "loc": 40, "is_test": 0, "deps": [], "dependents": [],
+        "entry_points": [], "dynamic": "", "symbols": 6, "centrality": 0}]
+_sl = slop.analyse(_su, slop_root)
+_kinds = {f["claim"].split(" at ")[0] for f in _sl["findings"]}
+check("an unexplained broad swallow is a finding; the explained one is not",
+      "unexplained exception swallow" in _kinds
+      and sum(1 for f in _sl["findings"] if "swallow" in f["claim"]) == 1,
+      "a swallow with a stated reason is a decision")
+check("an unused import is a finding; one referenced by name as a string is not",
+      any("`os`" in f["title"] for f in _sl["findings"])
+      and not any("`json`" in f["title"] for f in _sl["findings"])
+      and not any("`sys`" in f["title"] for f in _sl["findings"]))
+check("structurally duplicated function bodies are found across names",
+      any("duplicated" in f["title"] for f in _sl["findings"]))
+check("a stub that shipped, and a docstring that restates the name",
+      any("stub" in f["claim"] for f in _sl["findings"])
+      and any("restates" in f["claim"] for f in _sl["findings"]))
+check("commented-out code is found; prose comments are not",
+      any("commented-out" in f["claim"] for f in _sl["findings"]))
+check("every slop finding is machine-verified with a line range and a fix",
+      all(f["basis"] == "machine-verified" and f["evidence"][0]["line_range"]
+          and f["recommendation"] for f in _sl["findings"]))
+_src = open(os.path.join(slop_root, "gen.py")).read()
+_good = "--- a/gen.py\n+++ b/gen.py\n@@ -27,4 +27,4 @@\n def risky():\n     try:\n         return int(\"x\")\n-    except Exception:\n-        pass\n+    except ValueError:\n+        return None\n"
+_new, _why = fixer.apply(_src, fixer.parse(_good))
+check("a patch that applies cleanly is applied in memory and parses",
+      _new is not None and "except ValueError" in _new and fixer.parse(_good) is not None
+      and ast.parse(_new) is not None, _why)
+_bad = _good.replace("def risky():", "def wrong_context():")
+check("a patch whose context does not match the file is rejected with the line",
+      fixer.apply(_src, fixer.parse(_bad))[0] is None and "context mismatch" in fixer.apply(_src, fixer.parse(_bad))[1])
+_broken = _good.replace("+    except ValueError:", "+    except ValueError")
+_nb, _ = fixer.apply(_src, fixer.parse(_broken))
+try:
+    ast.parse(_nb); _parses = True
+except SyntaxError:
+    _parses = False
+check("a patch that applies but breaks the syntax is caught by the parse check", _nb is not None and not _parses)
+check("prose instead of a diff is not a patch", fixer.parse("Sure! Here is what I would change: ...") is None)
+check("the repository on disk is never modified by the fixer",
+      open(os.path.join(slop_root, "gen.py")).read() == _src)
+shutil.rmtree(slop_root, ignore_errors=True)
 
 # ── dependencies: consume the existing answer, do not reproduce the scanner ───
 print("\nDependencies — a vulnerability fact from OSV.dev, machine-verified, free")

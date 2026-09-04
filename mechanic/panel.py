@@ -44,6 +44,14 @@ ROLES = {
                "line. You must examine every item on the checklist and list the ids you "
                "examined in \"covered\"; an item you do not list is recorded as not "
                "examined."),
+    "slop": ("You look for the signature of unreviewed machine-generated code — the "
+             "tells a maintainer would strip on first read: comments that restate the next "
+             "line, apologetic or narrating comments, guards against conditions that cannot "
+             "occur, wrappers that forward one call and add nothing, generic names "
+             "(data, result, helper, utils, handle_x), copy-pasted blocks with one token "
+             "changed, docstrings that describe the obvious, style that shifts mid-file. "
+             "Cite the lines. Do not report a construct merely for being verbose; report "
+             "what a reviewer would delete."),
 }
 CHECKLIST_ROLES = ("critic",)
 PER_UNIT_CAP = 8
@@ -54,7 +62,7 @@ LAST_REPLY: dict = {}                              # the most recent raw reply, 
 
 SCHEMA = (
     'Reply with STRICT JSON only, no prose: {"findings": [ {"title": str, '
-    '"category": one of ["quality","security","drift"], "severity": one of '
+    '"category": one of ["quality","security","drift","slop"], "severity": one of '
     '["critical","high","medium","low"], "confidence": number 0-1, '
     '"symbol": str (the qualified name from the unit, or ""), '
     '"line_range": "start-end", "claim_kind": one of ["graph","history","text",'
