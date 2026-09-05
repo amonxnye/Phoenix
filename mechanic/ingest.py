@@ -31,6 +31,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from . import net
+
 GITHUB = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 ARCHIVE = "https://codeload.github.com/{owner}/{repo}/tar.gz/HEAD"
 COMMIT = "https://api.github.com/repos/{owner}/{repo}/commits/HEAD"
@@ -63,9 +65,29 @@ def ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-def _open(url: str, timeout: float, accept: str = "application/x-gzip"):
+def _open(url: str, timeout: float, accept: str = "application/x-gzip", what: str = "github"):
     req = urllib.request.Request(url, headers=headers(accept))
-    return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+    return net.urlopen(req, timeout, ssl_context(), what)
+
+
+class _TooBig(Exception):
+    """Not a network failure: never retried."""
+
+
+def _download(url: str, cap: int) -> io.BytesIO:
+    """The whole archive into memory, under the cap. Raises on any failure so the
+    retry policy can restart the download from the beginning — a stream cut halfway
+    is a failed attempt, not a truncated archive."""
+    buf = io.BytesIO()
+    req = urllib.request.Request(url, headers=headers())
+    with net.netretry._OPEN(req, timeout=TIMEOUT_S, context=ssl_context()) as r:
+        while True:
+            chunk = r.read(_CHUNK)
+            if not chunk:
+                return buf
+            buf.write(chunk)
+            if buf.tell() > cap:
+                raise _TooBig()
 
 
 def resolve_sha(owner: str, repo: str) -> str:
@@ -98,16 +120,12 @@ def fetch(url: str) -> dict:
     tmp = tempfile.mkdtemp(prefix="mechanic-fetch-")   # distinct from the suite's fixtures
     dest = os.path.join(tmp, repo)
     try:
-        buf = io.BytesIO()
-        with _open(ARCHIVE.format(owner=owner, repo=repo), TIMEOUT_S) as r:
-            while True:
-                chunk = r.read(_CHUNK)
-                if not chunk:
-                    break
-                buf.write(chunk)
-                if buf.tell() > cap:
-                    remove(tmp)
-                    return {"error": f"archive exceeds the {MAX_MB} MB ceiling — stopped"}
+        try:
+            buf = net.call(lambda: _download(ARCHIVE.format(owner=owner, repo=repo), cap),
+                           what="github archive")
+        except _TooBig:
+            remove(tmp)
+            return {"error": f"archive exceeds the {MAX_MB} MB ceiling — stopped"}
         buf.seek(0)
         total = 0
         with tarfile.open(fileobj=buf, mode="r:gz") as tf:
@@ -138,10 +156,10 @@ def fetch(url: str) -> dict:
                404: "no such public repository (private ones are invisible to a "
                     "credential-less request, which is the point)",
                429: "GitHub is rate-limiting archive downloads — try again shortly"}
-        return {"error": why.get(e.code, f"GitHub answered HTTP {e.code}")}
+        return {"error": why.get(e.code, f"GitHub answered HTTP {e.code}") + net.describe(e)}
     except (urllib.error.URLError, OSError, tarfile.TarError, EOFError) as e:
         remove(tmp)
-        return {"error": f"download failed: {type(e).__name__}: {e}"[:220]}
+        return {"error": f"download failed{net.describe(e)}: {type(e).__name__}: {e}"[:220]}
     if not os.path.isdir(dest):
         remove(tmp)
         return {"error": "archive contained no tree"}
