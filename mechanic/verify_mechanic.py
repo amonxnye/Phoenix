@@ -523,6 +523,21 @@ try:
           and brainseam.provider_extras("claude-sonnet-5") == {}
           and brainseam.provider_extras("rule-based") == {},
           "every analyst reply on the first two production runs was empty: reasoning ate the budget")
+    # A provider that refuses (DeepSeek's 402 on production: every call failed in 68 s,
+    # and the run read as 51¢ spent). A failed call is refunded and counted.
+    _bq = budget.Budget(100)
+    _seam = brainseam.SEAM["ask"]
+    brainseam.SEAM["ask"] = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("402 Insufficient Balance"))
+    try:
+        try:
+            brainseam.ask([{"role": "user", "content": "x" * 4000}], 500, 0, "panel:quality", "cheap", _bq)
+        except RuntimeError:
+            pass
+    finally:
+        brainseam.SEAM["ask"] = _seam
+    check("a call the provider refuses is refunded and counted as failed, never recorded as spend",
+          _bq.spent == 0.0 and _bq.failed == {"panel:quality": 1} and _bq.tokens["panel:quality"] == [0, 0],
+          f"spent {_bq.spent}, failed {_bq.failed}")
     check("an Ollama tag behind a gateway gets Ollama's `think` off; a bare name gets nothing",
           brainseam.provider_extras("qwen3:30b") == {"think": False}
           and brainseam.provider_extras("deepseek-r1:8b") == {"think": False}

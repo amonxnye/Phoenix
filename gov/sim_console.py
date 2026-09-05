@@ -300,7 +300,7 @@ def _propose_development():
         if prop:
             prop["source"] = "template"
     else:
-        prop["source"] = "deepseek+knowledge"
+        prop["source"] = f"{brain.brain_name()}+knowledge"
     if not prop or prop.get("name") in existing:
         return
     bv = board.vote(f"development: {prop['name']}", _board_ctx(True))
@@ -2250,15 +2250,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/braincheck":
             # Diagnostic: one raw model call, error surfaced verbatim (not swallowed).
             if not brain.available():
-                return self._send(200, json.dumps({"ok": False, "why": "no DEEPSEEK_API_KEY in env"}))
+                return self._send(200, json.dumps({"ok": False, "why": "no BRAIN_API_KEY in env"}))
             try:
-                client = brain._deepseek_client()
-                out = client.chat.completions.create(
-                    model=brain._model(),
-                    messages=[{"role": "user", "content": "Reply with the single word: alive"}],
-                    max_tokens=200,
-                ).choices[0].message.content.strip()
-                return self._send(200, json.dumps({"ok": True, "model": brain._model(), "reply": out}))
+                p = brain.provider()
+                out = brain._chat([{"role": "user", "content": "Reply with the single word: alive"}],
+                                  200, 0.0, "braincheck")
+                return self._send(200, json.dumps({"ok": True, "model": p["model"],
+                                                   "base_url": p["base_url"], "reply": out,
+                                                   "raw": dict(brain.LAST_RAW)}))
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "model": brain._model(),
                                                    "error": str(e)[:600]}))
@@ -2450,7 +2449,7 @@ class Handler(BaseHTTPRequestHandler):
                 draft = brain.think("the Chief Governor", _situation(),
                                     f"Draft one new constitution article (title + one rule) about: {note or 'improving governance'}.")
             if not draft:
-                draft = ("## Proposed article\n\n- (No model configured — set DEEPSEEK_API_KEY to have the "
+                draft = ("## Proposed article\n\n- (No model configured — set BRAIN_API_KEY to have the "
                          "Chief Governor draft amendments. Meanwhile, edit the text directly.)")
             return self._send(200, json.dumps({"draft": draft}))
         if self.path == "/api/ingest":
@@ -2459,7 +2458,7 @@ class Handler(BaseHTTPRequestHandler):
             if not topic:
                 return self._send(400, json.dumps({"error": "topic required"}))
             fact = brain.research(topic) or (body.get("fact") or "").strip()   # model call: no lock
-            source = "deepseek" if (brain.available() and fact) else (body.get("source") or "operator")
+            source = brain.brain_name() if (brain.available() and fact) else (body.get("source") or "operator")
             if not fact:
                 return self._send(400, json.dumps({"error": "no model configured; provide a fact"}))
             # Article VI.2: the source is recorded AND CHECKED; unverified

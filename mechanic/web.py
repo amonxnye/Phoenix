@@ -177,7 +177,9 @@ def _worker(url: str, name: str, budget_cents: int = -1) -> None:
         _ACTIVE.update(status=res["status"], run_id=res["run_id"],
                        note=f"{res['findings']} finding(s) ({res.get('judged', 0)} judged), "
                             f"{res['gaps']} refusal(s), {res.get('spend_cents', 0)}¢, "
-                            f"{res['seconds']}s" if res["status"] == "complete"
+                            f"{res['seconds']}s"
+                            + (f", {res['failed_calls']} calls FAILED at the provider"
+                               if res.get("failed_calls") else "") if res["status"] == "complete"
                        else res.get("error", "halted"))
     except Exception as e:                        # noqa: BLE001 — never a silent thread
         _ACTIVE.update(status="failed", note=f"{type(e).__name__}: {e}")

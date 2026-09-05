@@ -149,7 +149,7 @@ if __name__ == "__main__":
     anchor.init()
     economy.init()
     if not brain.available():
-        print("no brain configured (BRAIN_* / DEEPSEEK_API_KEY) — the worker needs a model")
+        print("no brain configured (BRAIN_API_KEY) — the worker needs a model")
         sys.exit(1)
     import json
     print(json.dumps(work_cycle(a.agent, a.module), indent=2))

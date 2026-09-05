@@ -134,15 +134,8 @@ def provider_extras(model_name: str) -> dict:
     correctness comes from the index and the adversarial structure, not from a
     thinking budget. So thinking is off for the mechanic's calls — and only sent to a
     provider that understands the field."""
-    m = (model_name or "").lower()
-    if "deepseek" in m and ":" not in m:
-        return {"thinking": {"type": "disabled"}}    # DeepSeek's own API
-    if ":" in m:
-        # An Ollama tag (qwen3:30b, deepseek-r1:8b) behind an OpenAI-compatible gateway.
-        # `think` is Ollama's field; a gateway that ignores it still gets the answer
-        # parsed, because the brain splits inline <think> blocks out of the reply.
-        return {"think": False}
-    return {}
+    b = _load()
+    return b.default_extras(model_name) if b else {}   # one rule, kept in the brain
 
 
 def _real_ask(messages, max_tokens, temperature, purpose, tier):
@@ -166,7 +159,12 @@ def ask(messages: list, max_tokens: int, temperature: float, purpose: str,
     prompt_chars = sum(len(m.get("content", "")) for m in messages)
     if budget is not None:
         budget.charge(purpose, tier, prompt_chars // 4, max_tokens)   # reserve first
-    out = SEAM["ask"](messages, max_tokens, temperature, purpose, tier) or ""
+    try:
+        out = SEAM["ask"](messages, max_tokens, temperature, purpose, tier) or ""
+    except Exception:
+        if budget is not None:                    # never billed: the reservation comes back
+            budget.refund(purpose, tier, prompt_chars // 4, max_tokens)
+        raise
     if budget is not None:
         budget.charge(purpose, tier, 0, len(out) // 4 - max_tokens)   # settle to actual
     return out

@@ -71,6 +71,7 @@ class Budget:
         self.spent = 0.0
         self.by_stage: dict[str, float] = {}
         self.tokens: dict[str, list] = {}         # stage → [in, out]
+        self.failed: dict[str, int] = {}          # stage → calls that raised (not billed)
 
     def charge(self, stage: str, tier: str, in_tok: int, out_tok: int) -> None:
         c = _cents(tier, max(0, in_tok), out_tok)  # out_tok may be a negative settlement
@@ -79,6 +80,18 @@ class Budget:
         t = self.tokens.setdefault(stage, [0, 0])
         t[0] += max(0, in_tok)
         t[1] += out_tok
+
+    def refund(self, stage: str, tier: str, in_tok: int, out_tok: int) -> None:
+        """A call that raised was never billed by the provider. Reverse its reservation
+        so `spent` is what was bought, and count the failure — a run whose every call
+        failed must read as 0¢ and N failures, not as a run that cost money."""
+        c = _cents(tier, max(0, in_tok), max(0, out_tok))
+        self.spent = max(0.0, self.spent - c)
+        self.by_stage[stage] = max(0.0, self.by_stage.get(stage, 0.0) - c)
+        t = self.tokens.setdefault(stage, [0, 0])
+        t[0] -= max(0, in_tok)
+        t[1] -= max(0, out_tok)
+        self.failed[stage] = self.failed.get(stage, 0) + 1
 
     def spent_cents(self) -> int:
         return int(round(self.spent))
@@ -108,5 +121,6 @@ class Budget:
         return {"budget_cents": self.cents, "spent_cents": self.spent_cents(),
                 "by_stage": {k: round(v, 2) for k, v in self.by_stage.items()},
                 "tokens": dict(self.tokens),
+                "failed_calls": dict(self.failed),     # raised at the provider; not billed
                 "priced_for": PRICED_FOR,
                 "note": "tokens estimated at 4 chars each; prices are assumptions"}

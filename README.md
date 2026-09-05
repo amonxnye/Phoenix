@@ -149,8 +149,9 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 
 | Variable | Purpose |
 |---|---|
-| `DEEPSEEK_API_KEY` | simplest path — DeepSeek's OpenAI-compatible API |
-| `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
+| `BRAIN_API_KEY` | simplest path — the platform's own gateway (`api.ripaplatform.com`, default model `qwen3:30b`) |
+| `BRAIN_BASE_URL` / `BRAIN_MODEL` | optional: any other OpenAI-compatible endpoint or model, or native Anthropic |
+| `DEEPSEEK_API_KEY` | the original provider, used only when `BRAIN_API_KEY` is unset |
 | `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | the mechanic alone on its own hosted server (an Ollama gateway); the settlement keeps its provider |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |

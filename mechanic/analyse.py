@@ -129,9 +129,11 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         secs = time.time() - t0
         store.run_set(run_id, spend_cents=bud.spent_cents(),
                       stage_costs=json.dumps(bud.record()))
+        failed = sum(bud.failed.values())
         store.run_close(run_id, "complete",
                         note=f"{counts['findings']} findings ({counts['judged']} judged), "
-                             f"{counts['gaps']} refusals, {bud.spent_cents()}¢, {secs:.1f}s")
+                             f"{counts['gaps']} refusals, {bud.spent_cents()}¢, {secs:.1f}s"
+                             + (f", {failed} calls failed at the provider" if failed else ""))
         # A completed run records the commit it analysed, whoever asked for it — so a
         # watch cycle that follows a manual run sees "unchanged" and spends nothing.
         store.repo_set(repo_id, loc=sum(u["loc"] for u in us), languages="python",
@@ -139,7 +141,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         return {"run_id": run_id, "repo_id": repo_id, "name": name, "symbols": s["symbols"],
                 "modules": s["modules"], "findings": counts["findings"],
                 "judged": counts["judged"], "gaps": counts["gaps"],
-                "patches": counts["patches"],
+                "patches": counts["patches"], "failed_calls": failed,
                 "spend_cents": bud.spent_cents(), "seconds": round(secs, 1),
                 "status": "complete"}
     except budget_mod.OverBudget as e:
