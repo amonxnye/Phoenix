@@ -784,6 +784,34 @@ check("an empty catalogue is handled without inventing a rule",
 import inspect as _inspect
 _BIG = "x" * 40_000
 _sent: list = []
+# ── provider selection: the platform's own gateway is the default, DeepSeek the fallback ──
+_envs = {k: os.environ.get(k) for k in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "DEEPSEEK_API_KEY")}
+try:
+    for k in _envs:
+        os.environ.pop(k, None)
+    os.environ["BRAIN_API_KEY"] = "sk-test"
+    _p = B.provider()
+    check("BRAIN_API_KEY alone selects the platform's own gateway and its default model",
+          _p == {"kind": "openai", "base_url": B.DEFAULT_BASE_URL, "key": "sk-test",
+                 "model": B.DEFAULT_MODEL}, str(_p))
+    os.environ["DEEPSEEK_API_KEY"] = "sk-old"
+    check("…and wins over a DEEPSEEK_API_KEY that is still set",
+          B.provider()["base_url"] == B.DEFAULT_BASE_URL)
+    os.environ.pop("BRAIN_API_KEY")
+    check("without BRAIN_API_KEY the original provider is the fallback, not a silent no-model",
+          B.provider()["base_url"] == "https://api.deepseek.com")
+    os.environ["BRAIN_API_KEY"], os.environ["BRAIN_MODEL"] = "sk-test", "llama3.1:8b"
+    check("BRAIN_MODEL picks another model the gateway serves", B.provider()["model"] == "llama3.1:8b")
+    check("thinking is off project-wide: Ollama's field for a tag, DeepSeek's for its API, else nothing",
+          B.default_extras("qwen3:30b") == {"think": False}
+          and B.default_extras("deepseek-v4-flash") == {"thinking": {"type": "disabled"}}
+          and B.default_extras("claude-sonnet-5") == {})
+finally:
+    for k, v in _envs.items():
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+
 _saved = {n: getattr(B, n) for n in ("provider", "_deepseek_available", "_anthropic_chat")}
 B.provider = lambda: {"kind": "anthropic", "base_url": "t", "model": "t", "key": "t"}
 B._deepseek_available = lambda: True

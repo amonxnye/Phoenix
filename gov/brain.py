@@ -6,10 +6,12 @@ models) and every call's real cost — provider tokens, latency, failures — is
 to the anchor.
 
 Provider selection (first match wins):
-  BRAIN_BASE_URL + BRAIN_API_KEY [+ BRAIN_MODEL]  — any OpenAI-compatible endpoint
-      (DeepSeek, OpenAI, GLM/Zhipu, Gemini's compat endpoint, ...), or the native
-      Anthropic API when the base URL contains 'anthropic'.
-  DEEPSEEK_API_KEY                                — the original default (DeepSeek).
+  BRAIN_API_KEY [+ BRAIN_BASE_URL, BRAIN_MODEL]   — the platform's own hosted gateway
+      (RupertCloud AI Systems, OpenAI-compatible over Ollama) by default; any other
+      OpenAI-compatible endpoint by base URL, or the native Anthropic API when the
+      base URL contains 'anthropic'.
+  DEEPSEEK_API_KEY                                — the original provider, kept as a
+      fallback for a deployment that has not switched.
 
 Rule-based is the fallback and runs with no key. The model only ever *proposes* —
 every irreversible action still stops at the human gate, so a bad decision here is
@@ -21,6 +23,8 @@ import os
 import time as _time
 
 RESOURCES = ("food", "wood", "gold")
+DEFAULT_BASE_URL = "https://api.ripaplatform.com/v1"    # the platform's own gateway
+DEFAULT_MODEL = "qwen3:30b"                             # the largest model it serves today
 
 
 def _model() -> str:
@@ -41,9 +45,11 @@ def provider() -> dict | None:
     """The configured provider, or None (rule-based). {kind, base_url, key, model}."""
     base = os.environ.get("BRAIN_BASE_URL", "").strip()
     key = os.environ.get("BRAIN_API_KEY", "").strip()
-    if base and key:
+    if key:
+        base = base or DEFAULT_BASE_URL
         kind = "anthropic" if "anthropic" in base else "openai"
-        default_model = ("claude-sonnet-5" if kind == "anthropic" else _model())
+        default_model = ("claude-sonnet-5" if kind == "anthropic"
+                         else DEFAULT_MODEL if base == DEFAULT_BASE_URL else _model())
         return {"kind": kind, "base_url": base, "key": key,
                 "model": os.environ.get("BRAIN_MODEL", "").strip() or default_model}
     if os.environ.get("DEEPSEEK_API_KEY"):
@@ -98,6 +104,23 @@ PROMPT_LIMITS = {
 _OVERRUN: dict[str, dict] = {}
 LAST_RAW: dict = {}          # what the provider returned on the last call — VII.4: measured
 EXTRA_BODY: dict = {}        # provider-specific request fields (e.g. a thinking toggle)
+
+
+def default_extras(model_name: str) -> dict:
+    """Request fields every call sends for this model, before any per-call extras.
+
+    Thinking is OFF project-wide. Every prompt here is structured extraction or a
+    short in-character reply; the correctness comes from the gates, the index and
+    the record, not from a hidden reasoning budget — and a reasoning model that
+    spends its reply thinking leaves `content` empty (every analyst reply on the
+    mechanic's first two production runs). An Ollama tag (qwen3:30b) gets Ollama's
+    `think`; DeepSeek's own API gets its `thinking` field; anything else gets nothing."""
+    m = (model_name or "").lower()
+    if ":" in m:
+        return {"think": False}
+    if "deepseek" in m:
+        return {"thinking": {"type": "disabled"}}
+    return {}
 
 
 def clip(field: str, text) -> str:
@@ -208,7 +231,7 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                             max_retries=1)
             kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
                   "temperature": temperature}
-            extras = dict(EXTRA_BODY, **(extra_body or {}))
+            extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
             if extras:
                 kw["extra_body"] = extras
             resp = client.chat.completions.create(**kw)
