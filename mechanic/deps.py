@@ -22,6 +22,7 @@ import re
 import urllib.error
 import urllib.request
 
+from . import net
 from .ingest import ssl_context
 
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
@@ -106,13 +107,13 @@ def _post(url: str, body: dict) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "phoenix-software-mechanic/0.1"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=ssl_context()) as r:
+    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv query") as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
 def _get(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "phoenix-software-mechanic/0.1"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=ssl_context()) as r:
+    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv vuln") as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
@@ -178,7 +179,8 @@ def analyse(root: str) -> dict:
         return {"findings": [], "packages": len(inv),
                 "gaps": [{"scope": "dependencies",
                           "reason": f"{len(inv)} declared dependencies could not be checked — "
-                                    f"OSV.dev unreachable: {type(e).__name__}: {str(e)[:80]}"}]}
+                                    f"OSV.dev unreachable{net.describe(e)}: "
+                                    f"{type(e).__name__}: {str(e)[:80]}"}]}
     findings, details_left = [], MAX_DETAILS
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     for p in inv:

@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -307,7 +308,7 @@ else:
 # difference demands — each one checked here without touching the network.
 print("\nWeb — the landing page drives the same path, behind the same gate")
 import json                                                              # noqa: E402
-from mechanic import analyse, ingest, web                              # noqa: E402
+from mechanic import analyse, ingest, net, web                         # noqa: E402
 
 check("only GitHub HTTPS URLs are accepted for cloning",
       ingest.accepted("https://github.com/o/r.git") == (True, "o/r")
@@ -323,6 +324,21 @@ check("no request ever carries a credential, whatever the environment holds (Cha
 check("ingestion needs no git — the deployed image has none, and the first public "
       "run said so", "subprocess" not in open(os.path.join(HERE, "ingest.py")).read(),
       "GitHub's archive endpoint, streamed with the standard library")
+# The archive download and OSV queries run under the project's retry policy: a
+# server that cuts the stream or answers 5xx is retried; the error names the attempts.
+_slept, net.netretry._SLEEP = [], lambda s: _slept.append(s)
+_open0, _hits = net.netretry._OPEN, {"n": 0}
+def _dead(req, timeout=None, context=None):
+    _hits["n"] += 1
+    raise urllib.error.URLError("connection reset")
+net.netretry._OPEN = _dead
+try:
+    _r = ingest.fetch("https://github.com/RupertCloud/SilkCode")
+finally:
+    net.netretry._OPEN, net.netretry._SLEEP = _open0, time.sleep
+check("an archive download that keeps failing is retried NET_RETRIES times with backoff, and says so",
+      "error" in _r and _hits["n"] == net.netretry.RETRIES + 1 and len(_slept) == net.netretry.RETRIES
+      and f"after {_hits['n']} attempts" in _r["error"], _r.get("error", "")[:120])
 check("an archive member that escapes the destination is refused",
       ingest._safe("Repo-HEAD/../etc/passwd") == "" and ingest._safe("Repo-HEAD/") == ""
       and ingest._safe("Repo-HEAD/a/b.py") == "a/b.py")

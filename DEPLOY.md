@@ -28,7 +28,8 @@ framework. Everything it needs is already in the repo.
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | The original provider; used only when `BRAIN_API_KEY` is unset. Remove it once the switch is made so a missing key fails loudly instead of falling back |
 | `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | The mechanic alone on its own server, e.g. `https://api.ripaplatform.com/v1` + `qwen3:30b`; the settlement keeps its provider. All three are required — a gateway never picks the model |
 | `MECHANIC_PRICE` | `self-hosted` (0¢, the default for an Ollama tag), `cheap` or `strong` — which price table meters the mechanic's budget |
-| `BRAIN_TIMEOUT_S` | Per-request timeout for OpenAI-compatible calls (default 300) |
+| `BRAIN_TIMEOUT_S` | Per-attempt timeout for model calls (default 300) |
+| `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, GitHub archive, OSV.dev) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried |
 
 ## State persistence
 

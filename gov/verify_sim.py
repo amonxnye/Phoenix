@@ -784,6 +784,53 @@ check("an empty catalogue is handled without inventing a rule",
 import inspect as _inspect
 _BIG = "x" * 40_000
 _sent: list = []
+# ── the retry policy: timeouts and 5xx retried with backoff, refusals not ──────
+import netretry as N
+_slept, N._SLEEP = [], lambda s: _slept.append(s)
+try:
+    _n = {"k": 0}
+    def _flaky():
+        _n["k"] += 1
+        if _n["k"] < 3:
+            raise TimeoutError("server timed out")
+        return "alive"
+    _out = N.call(_flaky, what="probe")
+    check("a request that times out is retried with backoff and then succeeds",
+          _out == "alive" and N.LAST["attempts"] == 3 and len(_slept) == 2
+          and 0.7 <= _slept[0] <= 1.3 and 1.4 <= _slept[1] <= 2.6,
+          f"attempts {N.LAST['attempts']}, waits {[round(s, 2) for s in _slept]}")
+    class _Http(Exception):
+        def __init__(self, code): super().__init__(f"HTTP {code}"); self.status_code = code
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Http(524)), what="edge")
+        _gave = False
+    except _Http as e:
+        _gave = e.attempts == N.RETRIES + 1
+    check("a server that keeps answering 524 is retried NET_RETRIES times, then given up on, counted",
+          _gave and len(_slept) == N.RETRIES and N.LAST["gave_up"].startswith("after"),
+          f"{N.LAST.get('attempts')} attempts, waited {round(sum(_slept), 1)}s")
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Http(402)), what="billing")
+        _once = False
+    except _Http as e:
+        _once = e.attempts == 1
+    check("a refusal (402 Insufficient Balance, 401, 404) is NOT retried — the answer will not change",
+          _once and not _slept and N.LAST["gave_up"] == "not retryable")
+    class _Rate(_Http):
+        headers = {"Retry-After": "7"}
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Rate(429)), what="rate", retries=1)
+    except _Rate:
+        pass
+    check("a 429's own Retry-After sets the wait", len(_slept) == 1 and 5 <= _slept[0] <= 9)
+    check("the brain's SDK retries are off so every attempt is one the policy counted",
+          "max_retries=0" in open(os.path.join(HERE, "brain.py")).read())
+finally:
+    N._SLEEP = time.sleep
+
 # ── provider selection: the platform's own gateway is the default, DeepSeek the fallback ──
 _envs = {k: os.environ.get(k) for k in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "DEEPSEEK_API_KEY")}
 try:

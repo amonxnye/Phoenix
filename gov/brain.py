@@ -22,6 +22,8 @@ import json as _json_mod
 import os
 import time as _time
 
+import netretry                                # the project's one retry policy
+
 RESOURCES = ("food", "wood", "gold")
 DEFAULT_BASE_URL = "https://api.ripaplatform.com/v1"    # the platform's own gateway
 DEFAULT_MODEL = "qwen3:30b"                             # the largest model it serves today
@@ -195,8 +197,9 @@ def models(p: dict | None = None) -> list[str]:
         return []
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=p["key"], base_url=p["base_url"])
-        return sorted(m.id for m in client.models.list())
+        client = OpenAI(api_key=p["key"], base_url=p["base_url"], timeout=20, max_retries=0)
+        return sorted(m.id for m in netretry.call(lambda: client.models.list(),
+                                                  what="models", retries=2))
     except Exception:                              # noqa: BLE001 — a readout, not a call path
         return []
 
@@ -223,18 +226,19 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             out, usage = _anthropic_chat(p, messages, max_tokens, temperature)
         else:
             from openai import OpenAI
-            # A hung endpoint must cost one bounded wait, not the SDK's default of ten
-            # minutes times three tries — a self-hosted gateway that stalls a request
-            # (seen on a bad key) would otherwise park a panel worker for half an hour.
+            # A hung endpoint costs one bounded wait per attempt; the SDK's own retries
+            # are OFF so every attempt is one netretry made and counted (a 524 from the
+            # gateway's edge, a reset, a 429 — retried with backoff; a 401/402 — not).
             client = OpenAI(api_key=p["key"], base_url=p["base_url"],
                             timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
-                            max_retries=1)
+                            max_retries=0)
             kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
                   "temperature": temperature}
             extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
             if extras:
                 kw["extra_body"] = extras
-            resp = client.chat.completions.create(**kw)
+            resp = netretry.call(lambda: client.chat.completions.create(**kw),
+                                 what=f"{p['model']} {purpose}")
             msg = resp.choices[0].message
             out, usage = (msg.content or "").strip(), resp.usage
             # A reasoning model may spend the whole reply thinking and leave `content`
@@ -247,11 +251,16 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                             content_chars=len(out), reasoning_chars=len(rc),
                             reasoning_head=rc[:160],
                             completion_tokens=getattr(usage, "completion_tokens", None),
-                            model=p["model"], extra=extras)
+                            model=p["model"], extra=extras,
+                            attempts=netretry.LAST.get("attempts", 1),
+                            waited_s=netretry.LAST.get("waited_s", 0))
         _log_call(p, purpose, t0, usage, True)
         return out
     except Exception as e:
-        _log_call(p, purpose, t0, None, False, str(e))
+        LAST_RAW.update(model=p["model"], error=str(e)[:200],
+                        attempts=netretry.LAST.get("attempts", 1),
+                        gave_up=netretry.LAST.get("gave_up", ""))
+        _log_call(p, purpose, t0, None, False, f"{e}{netretry.describe(e)}")
         raise
 
 
@@ -287,7 +296,8 @@ def _anthropic_chat(p: dict, messages: list, max_tokens: int,
         data=_json_mod.dumps(body).encode(),
         headers={"Content-Type": "application/json", "x-api-key": p["key"],
                  "anthropic-version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
+                          what=f"{p['model']} anthropic") as r:
         d = _json_mod.loads(r.read())
     text = "".join(b.get("text", "") for b in d.get("content", [])).strip()
     return text, d.get("usage", {})

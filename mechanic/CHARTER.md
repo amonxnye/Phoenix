@@ -109,6 +109,12 @@ bounds such a run is structural: the turn ceiling, the per-unit candidate cap, t
 limit, the request timeout. The record names that pricing basis; it never pretends a
 price (`budget.calibrate`).
 
+Every outbound request — a model call, the archive download, an OSV.dev query — runs
+under one retry policy (`gov/netretry.py`): timeouts, connection loss, rate limits and
+server errors are retried with backoff, up to five times; a refusal (401, 402, 404) is
+not, because the answer will not change. The record shows the attempts, and a call
+that fails after them is refunded, never billed to the budget.
+
 A run that would cross the ceiling at any gate **halts and reports** — naming the gate,
 the projection and the ceiling — with every earlier stage's work already recorded. It
 is never quietly degraded into a cheaper run nobody asked for. Every call is charged to
