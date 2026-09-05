@@ -144,15 +144,19 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 "patches": counts["patches"], "failed_calls": failed,
                 "spend_cents": bud.spent_cents(), "seconds": round(secs, 1),
                 "status": "complete"}
-    except budget_mod.OverBudget as e:
-        store.gap_add(run_id, "budget", f"halted at {e.stage}: {e}")
+    except (budget_mod.OverBudget, brainseam.ProviderDown) as e:
+        # Two honest halts: the money ceiling, and a provider that is not answering.
+        # Neither is walked through unit by unit; both say why, with the work so far kept.
+        scope, why = (("budget", f"halted at {e.stage}: {e}") if isinstance(e, budget_mod.OverBudget)
+                      else ("provider", f"halted: {e}"))
+        store.gap_add(run_id, scope, why)
         store.run_set(run_id, spend_cents=bud.spent_cents(), stage_costs=json.dumps(bud.record()))
-        store.run_close(run_id, "halted", note=f"budget: {e}")
+        store.run_close(run_id, "halted", note=f"{scope}: {e}")
         return {"run_id": run_id, "repo_id": repo_id, "name": name, "symbols": 0, "modules": 0,
                 "findings": counts["findings"], "judged": counts["judged"],
                 "gaps": counts["gaps"] + 1, "spend_cents": bud.spent_cents(),
                 "seconds": round(time.time() - t0, 1), "status": "halted",
-                "error": f"budget: {e}"}
+                "error": f"{scope}: {e}"}
     except Exception as e:                            # noqa: BLE001 — closed, not abandoned
         if os.environ.get("MECHANIC_RAISE"):          # development: see the traceback
             raise

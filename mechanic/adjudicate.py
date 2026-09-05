@@ -77,6 +77,8 @@ def adjudicate(upheld: list[dict], centrality: dict, budget, charter_stamp: str)
             d = json.loads((brainseam.ask([{"role": "user", "content": prompt}], 4000, 0.1,
                                           "governor", "strong", budget) or "{}")
                            .strip().strip("`").removeprefix("json").strip() or "{}")
+        except brainseam.ProviderDown:
+            raise
         except Exception:                             # noqa: BLE001 — the rule stands in
             d = {}
         rej = {str(r.get("fingerprint")): str(r.get("reason") or "unsupported")

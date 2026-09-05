@@ -67,7 +67,7 @@ def ssl_context() -> ssl.SSLContext:
 
 def _open(url: str, timeout: float, accept: str = "application/x-gzip", what: str = "github"):
     req = urllib.request.Request(url, headers=headers(accept))
-    return net.urlopen(req, timeout, ssl_context(), what)
+    return net.urlopen(req, timeout, ssl_context(), what, key="github")
 
 
 class _TooBig(Exception):
@@ -122,7 +122,7 @@ def fetch(url: str) -> dict:
     try:
         try:
             buf = net.call(lambda: _download(ARCHIVE.format(owner=owner, repo=repo), cap),
-                           what="github archive")
+                           what="github archive", idempotent=True, key="github")
         except _TooBig:
             remove(tmp)
             return {"error": f"archive exceeds the {MAX_MB} MB ceiling — stopped"}

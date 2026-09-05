@@ -16,6 +16,7 @@ Two rules, both enforced here:
 
 import os
 import sys
+import threading
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _brain = None
@@ -151,6 +152,35 @@ def _real_ask(messages, max_tokens, temperature, purpose, tier):
 # offline. Production never touches this dict.
 SEAM = {"ask": _real_ask}
 
+# A provider that is down must halt the run, not be asked 660 more times. After
+# PROVIDER_DOWN_AFTER consecutive failed calls (any cause — a refused key, an open
+# circuit, exhausted retries) the next ask raises ProviderDown, which every stage
+# lets through and analyse.run records as a halt. One success resets the count.
+PROVIDER_DOWN_AFTER = int(os.environ.get("MECHANIC_PROVIDER_DOWN_AFTER", "5"))
+_FAILS = {"consecutive": 0, "last": ""}
+_FAILS_LOCK = threading.Lock()
+
+
+class ProviderDown(Exception):
+    def __init__(self, n: int, last_error: str):
+        super().__init__(f"provider unavailable: {n} consecutive calls failed — last: {last_error}")
+        self.n, self.last_error = n, last_error
+
+
+def _note_failure(e: Exception) -> None:
+    with _FAILS_LOCK:
+        _FAILS["consecutive"] += 1
+        _FAILS["last"] = f"{type(e).__name__}: {str(e)[:160]}"
+        if _FAILS["consecutive"] >= PROVIDER_DOWN_AFTER:
+            n, last = _FAILS["consecutive"], _FAILS["last"]
+            _FAILS["consecutive"] = 0                 # the halt is the reset
+            raise ProviderDown(n, last) from e
+
+
+def _note_success() -> None:
+    with _FAILS_LOCK:
+        _FAILS["consecutive"] = 0
+
 
 def ask(messages: list, max_tokens: int, temperature: float, purpose: str,
         tier: str, budget=None) -> str:
@@ -161,10 +191,14 @@ def ask(messages: list, max_tokens: int, temperature: float, purpose: str,
         budget.charge(purpose, tier, prompt_chars // 4, max_tokens)   # reserve first
     try:
         out = SEAM["ask"](messages, max_tokens, temperature, purpose, tier) or ""
-    except Exception:
+    except ProviderDown:
+        raise
+    except Exception as e:
         if budget is not None:                    # never billed: the reservation comes back
             budget.refund(purpose, tier, prompt_chars // 4, max_tokens)
+        _note_failure(e)                          # may raise ProviderDown
         raise
+    _note_success()
     if budget is not None:
         budget.charge(purpose, tier, 0, len(out) // 4 - max_tokens)   # settle to actual
     return out

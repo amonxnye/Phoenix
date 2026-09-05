@@ -226,6 +226,8 @@ def _one(unit: dict, ctx: str, role: str, idx, budget, checklist: list | None = 
         out = brainseam.ask([{"role": "user", "content": prompt}],
                             OUT_TOKENS_CRITIC if checklist else OUT_TOKENS, 0.3,
                             f"panel:{role}", "cheap", budget)
+    except brainseam.ProviderDown:
+        raise                                         # the run halts; nothing to record here
     except Exception as e:                            # noqa: BLE001 — recorded, not raised
         return {"candidates": [], "dropped": [(unit["module"], role, f"call failed: {e}")],
                 "coverage": None}

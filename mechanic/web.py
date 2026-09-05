@@ -100,11 +100,12 @@ def handle_get(path: str) -> tuple:
     if p == "/mechanic":
         return 200, "text/html; charset=utf-8", PAGE
     if p == "/api/mechanic/summary":
-        from . import brainseam
+        from . import brainseam, net
         return _json(200, {"summary": store.summary(), "charter": charter.charter(),
                            "active": status(), "watch": watch.status(),
                            "brain": brainseam.name() if brainseam.available() else "",
                            "provider": brainseam.describe(),
+                           "network": net.readout(),
                            "record": persistence()})
     if p == "/api/mechanic/models":
         from . import brainseam
@@ -412,6 +413,8 @@ async function summary(){
   $('wl').innerHTML=(rec.persistent?`record since ${new Date(rec.record_since*1000).toLocaleDateString()} &middot; ${rec.boots} boots &middot; `:`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
     (d.brain?`brain <b>${esc(d.brain)}</b> @ ${esc((d.provider||{}).host||'')} (${esc((d.provider||{}).scope||'')}) &middot; <span title="${esc((d.provider||{}).priced||'')}">${((d.provider||{}).priced||'').startsWith('self-hosted')?'self-hosted, 0¢':'priced'}</span> &middot; <a href="#" onclick="models();return false">models</a> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
     `watch ${w.running?'<b>running</b>':'stopped'} &middot; ${w.watched||0} watched &middot; ${w.cycles||0} cycles`+
+    ((d.network&&Object.values(d.network.breakers||{}).some(b=>b.open))?` &middot; <span class=st-halted><b>circuit open</b> ${esc(Object.entries(d.network.breakers).filter(([k,b])=>b.open).map(([k,b])=>k+' '+b.seconds_left+'s').join(', '))}</span>`:'')+
+    ((d.network&&d.network.stats.retried)?` &middot; ${d.network.stats.retried} retried / ${d.network.stats.gave_up} gave up`:'')+
     ((w.last||[]).length?'<br>'+w.last.slice(-3).map(x=>`${esc(x.repo)}: <span class="st-${esc(x.action)}">${esc(x.action)}</span> — ${esc(x.note)}`).join('<br>'):'');
   const st=$('st'); st.className='';
   if(a.status==='idle'){st.textContent=a.history.length?lastLine(a.history):'';}

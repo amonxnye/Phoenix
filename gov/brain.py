@@ -173,6 +173,11 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
         pass                                       # telemetry must never break a call
 
 
+def _host(p: dict) -> str:
+    from urllib.parse import urlparse
+    return urlparse(p.get("base_url", "")).netloc or p.get("base_url", "")
+
+
 def _split_think(text: str) -> tuple[str, str]:
     """A model served through an OpenAI-compatible gateway (Ollama's qwen3, deepseek-r1)
     may put its thinking inline as <think>…</think> instead of in a separate field.
@@ -198,8 +203,8 @@ def models(p: dict | None = None) -> list[str]:
     try:
         from openai import OpenAI
         client = OpenAI(api_key=p["key"], base_url=p["base_url"], timeout=20, max_retries=0)
-        return sorted(m.id for m in netretry.call(lambda: client.models.list(),
-                                                  what="models", retries=2))
+        return sorted(m.id for m in netretry.call(lambda: client.models.list(), what="models",
+                                                  retries=2, idempotent=True, key=_host(p)))
     except Exception:                              # noqa: BLE001 — a readout, not a call path
         return []
 
@@ -237,8 +242,10 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
             if extras:
                 kw["extra_body"] = extras
+            # A completion is a read with a cost, not an action: safe to repeat.
             resp = netretry.call(lambda: client.chat.completions.create(**kw),
-                                 what=f"{p['model']} {purpose}")
+                                 what=f"{p['model']} {purpose}", idempotent=True,
+                                 key=_host(p))
             msg = resp.choices[0].message
             out, usage = (msg.content or "").strip(), resp.usage
             # A reasoning model may spend the whole reply thinking and leave `content`
@@ -252,14 +259,14 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                             reasoning_head=rc[:160],
                             completion_tokens=getattr(usage, "completion_tokens", None),
                             model=p["model"], extra=extras,
-                            attempts=netretry.LAST.get("attempts", 1),
-                            waited_s=netretry.LAST.get("waited_s", 0))
+                            attempts=netretry.last().get("attempts", 1),
+                            waited_s=netretry.last().get("waited_s", 0))
         _log_call(p, purpose, t0, usage, True)
         return out
     except Exception as e:
         LAST_RAW.update(model=p["model"], error=str(e)[:200],
-                        attempts=netretry.LAST.get("attempts", 1),
-                        gave_up=netretry.LAST.get("gave_up", ""))
+                        attempts=netretry.last().get("attempts", 1),
+                        gave_up=netretry.last().get("gave_up", ""))
         _log_call(p, purpose, t0, None, False, f"{e}{netretry.describe(e)}")
         raise
 
@@ -297,7 +304,8 @@ def _anthropic_chat(p: dict, messages: list, max_tokens: int,
         headers={"Content-Type": "application/json", "x-api-key": p["key"],
                  "anthropic-version": "2023-06-01"})
     with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
-                          what=f"{p['model']} anthropic") as r:
+                          what=f"{p['model']} anthropic", idempotent=True,   # a read with a cost
+                          key=_host(p)) as r:
         d = _json_mod.loads(r.read())
     text = "".join(b.get("text", "") for b in d.get("content", [])).strip()
     return text, d.get("usage", {})
