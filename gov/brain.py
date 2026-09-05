@@ -148,29 +148,64 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
         pass                                       # telemetry must never break a call
 
 
+def _split_think(text: str) -> tuple[str, str]:
+    """A model served through an OpenAI-compatible gateway (Ollama's qwen3, deepseek-r1)
+    may put its thinking inline as <think>…</think> instead of in a separate field.
+    Return (answer, thinking) so the answer is what callers parse and the thinking is
+    what the record shows."""
+    if "<think>" not in text:
+        return text, ""
+    import re as _re
+    thought = "\n".join(_re.findall(r"<think>(.*?)</think>", text, flags=_re.S))
+    answer = _re.sub(r"<think>.*?</think>", "", text, flags=_re.S)
+    if "<think>" in answer:                        # opened and never closed: all thinking
+        thought, answer = thought + answer.split("<think>", 1)[1], answer.split("<think>", 1)[0]
+    return answer.strip(), thought.strip()
+
+
+def models(p: dict | None = None) -> list[str]:
+    """The model ids the configured provider will serve (OpenAI-compatible `/v1/models`).
+    A self-hosted gateway serves only what its administrator pulled, so the page can
+    show the choice rather than guess. Empty on any failure — reported, never raised."""
+    p = p or provider()
+    if not p or p["kind"] != "openai":
+        return []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=p["key"], base_url=p["base_url"])
+        return sorted(m.id for m in client.models.list())
+    except Exception:                              # noqa: BLE001 — a readout, not a call path
+        return []
+
+
 def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
-          extra_body: dict | None = None) -> str:
+          extra_body: dict | None = None, provider_override: dict | None = None) -> str:
     """THE model call. Routes to the configured provider, logs cost + latency +
     errors to the anchor, returns the reply text. Raises on failure — callers keep
     their own rule-based fallbacks.
 
-    `extra_body` is per call and provider-specific — the mechanic uses it to turn a
-    reasoning model's thinking off for structured-extraction prompts, without
-    changing how the settlement's own calls behave."""
-    p = provider()
-    if not p:
-        raise RuntimeError("no model configured")
+    `extra_body`: per-call provider fields (the mechanic turns thinking off).
+    `provider_override`: one subsystem (the mechanic) on its own endpoint, every call
+    still logged through this one seam."""
     # The single choke point: whatever a caller assembled, no turn leaves here
     # unbounded. Callers clip their own fields to sensible sizes; this catches the
     # caller that forgot, and the caller that does not exist yet.
     messages = [{**m, "content": clip("prompt", m.get("content", ""))} for m in messages]
+    p = provider_override or provider()
+    if not p:
+        raise RuntimeError("no model configured")
     t0 = _time.time()
     try:
         if p["kind"] == "anthropic":
             out, usage = _anthropic_chat(p, messages, max_tokens, temperature)
         else:
             from openai import OpenAI
-            client = OpenAI(api_key=p["key"], base_url=p["base_url"])
+            # A hung endpoint must cost one bounded wait, not the SDK's default of ten
+            # minutes times three tries — a self-hosted gateway that stalls a request
+            # (seen on a bad key) would otherwise park a panel worker for half an hour.
+            client = OpenAI(api_key=p["key"], base_url=p["base_url"],
+                            timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
+                            max_retries=1)
             kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
                   "temperature": temperature}
             extras = dict(EXTRA_BODY, **(extra_body or {}))
@@ -181,7 +216,10 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             out, usage = (msg.content or "").strip(), resp.usage
             # A reasoning model may spend the whole reply thinking and leave `content`
             # empty. Record what came back so a silent reply is never a mystery again.
-            rc = getattr(msg, "reasoning_content", None) or ""
+            rc = (getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+                  or "")
+            out, inline = _split_think(out)
+            rc = rc or inline
             LAST_RAW.update(finish_reason=getattr(resp.choices[0], "finish_reason", ""),
                             content_chars=len(out), reasoning_chars=len(rc),
                             reasoning_head=rc[:160],

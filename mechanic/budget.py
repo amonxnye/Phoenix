@@ -20,14 +20,28 @@ _ASSUMED = dict(PRICE)
 PRICED_FOR = "assumed tiers"
 
 
-def calibrate(model_name: str) -> str:
+def calibrate(model_name: str, base_url: str = "") -> str:
     """One provider serves both tiers today. When it is a cheap-class model, charging
     review at Sonnet prices would halt runs that cost a fraction of the projection —
     the ceiling is meant to bind on money, not on a table. The record names which
-    table priced the run."""
+    table priced the run.
+
+    A self-hosted model (an Ollama tag such as qwen3:30b, or MECHANIC_PRICE=self-hosted)
+    is metered at 0¢: the ceiling is a money ceiling and there is no bill. What bounds
+    such a run is structural — the turn ceiling, the per-unit candidate cap, the halt
+    limit — and the record says so rather than pretending a price."""
     global PRICED_FOR
+    import os
     m = (model_name or "").lower()
-    if any(k in m for k in ("deepseek", "flash", "mini", "haiku", "small")):
+    forced = os.environ.get("MECHANIC_PRICE", "").strip().lower()
+    if forced == "self-hosted" or (not forced and ":" in m):
+        PRICE["strong"] = PRICE["cheap"] = (0.0, 0.0)
+        PRICED_FOR = (f"self-hosted ({model_name}): metered at 0¢ — the money ceiling "
+                      "does not bind; the structural bounds do")
+    elif forced in ("cheap", "strong"):
+        PRICE["strong"] = PRICE["cheap"] = _ASSUMED[forced]
+        PRICED_FOR = f"forced {forced} tier ({model_name})"
+    elif any(k in m for k in ("deepseek", "flash", "mini", "haiku", "small")):
         PRICE["strong"] = PRICE["cheap"] = _ASSUMED["cheap"]
         PRICED_FOR = f"single cheap-class provider ({model_name})"
     else:

@@ -151,6 +151,7 @@ instrumented seam (`gov/brain.py`) that logs real tokens, latency, and errors:
 |---|---|
 | `DEEPSEEK_API_KEY` | simplest path — DeepSeek's OpenAI-compatible API |
 | `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | any OpenAI-compatible endpoint, or native Anthropic |
+| `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | the mechanic alone on its own hosted server (an Ollama gateway); the settlement keeps its provider |
 | `GOV_DATA_DIR` | durable volume (e.g. `/data`) — memory survives redeploys |
 | `CONSOLE_TOKEN` | locks every mutating endpoint; pages stay readable |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | deep traces of every brain call via LangSmith (Article VII) |

@@ -104,7 +104,11 @@ def handle_get(path: str) -> tuple:
         return _json(200, {"summary": store.summary(), "charter": charter.charter(),
                            "active": status(), "watch": watch.status(),
                            "brain": brainseam.name() if brainseam.available() else "",
+                           "provider": brainseam.describe(),
                            "record": persistence()})
+    if p == "/api/mechanic/models":
+        from . import brainseam
+        return _json(200, {"provider": brainseam.describe(), "models": brainseam.models()})
     if p == "/api/mechanic/repos":
         return _json(200, {"repos": _repo_rows()})
     if p == "/api/mechanic/findings":
@@ -404,7 +408,7 @@ async function summary(){
     .map(([k,v])=>`<div><b>${v||0}</b><span>${k}</span></div>`).join('');
   const rec=d.record||{};
   $('wl').innerHTML=(rec.persistent?`record since ${new Date(rec.record_since*1000).toLocaleDateString()} &middot; ${rec.boots} boots &middot; `:`<span class=st-halted><b>record not persistent</b> — ${esc(rec.note)}</span><br>`)+
-    (d.brain?`brain <b>${esc(d.brain)}</b> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
+    (d.brain?`brain <b>${esc(d.brain)}</b> @ ${esc((d.provider||{}).host||'')} (${esc((d.provider||{}).scope||'')}) &middot; <span title="${esc((d.provider||{}).priced||'')}">${((d.provider||{}).priced||'').startsWith('self-hosted')?'self-hosted, 0¢':'priced'}</span> &middot; <a href="#" onclick="models();return false">models</a> &middot; `:'<b>no model configured</b> &mdash; machine-verified only &middot; ')+
     `watch ${w.running?'<b>running</b>':'stopped'} &middot; ${w.watched||0} watched &middot; ${w.cycles||0} cycles`+
     ((w.last||[]).length?'<br>'+w.last.slice(-3).map(x=>`${esc(x.repo)}: <span class="st-${esc(x.action)}">${esc(x.action)}</span> — ${esc(x.note)}`).join('<br>'):'');
   const st=$('st'); st.className='';
@@ -415,6 +419,10 @@ async function summary(){
   $('go').disabled=false; $('go').title=['queued','fetching','analysing'].includes(a.status)?'one analysis runs at a time — this will queue':'';
   $('go').textContent=['queued','fetching','analysing'].includes(a.status)?'Queue':'Analyse';
   return a;
+}
+async function models(){
+  const r=await (await fetch('/api/mechanic/models')).json();
+  alert((r.provider.host||'')+' serves:\n'+(r.models.length?r.models.join('\n'):'(no list — the endpoint did not answer /v1/models)')+'\n\nconfigured: '+(r.provider.model||''));
 }
 function lastLine(h){const x=h[h.length-1];return x.url.replace('https://github.com/','')+' — '+x.status+(x.note?' · '+x.note:'')}
 

@@ -59,7 +59,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         budget_cents = int(os.environ.get("MECHANIC_BUDGET_CENTS", budget_mod.DEFAULT_CENTS)) \
             if model else 0
     bud = budget_mod.Budget(budget_cents)
-    budget_mod.calibrate(brainseam.name())            # price the tiers the provider charges
+    budget_mod.calibrate(brainseam.name(), brainseam.base_url())   # price what this provider charges
     run_id = store.run_open(repo_id, commit_sha or sha_of(root), ch["stamp"],
                             budget_cents=budget_cents, trigger=trigger)
     db = os.path.join(store.data_dir(), f"index-{run_id}.sqlite")

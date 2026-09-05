@@ -1,6 +1,6 @@
 # The Mechanic's Charter
 
-Version: 0.4
+Version: 0.5
 
 The rules the analysis operates under. Loaded into every analyst's instructions and
 recorded against every run, so a report written in March can be read against the rules
@@ -102,6 +102,12 @@ candidates the panel emits, which is unknown until the panel has run.
 1. The panel is projected from the unit manifest before any model call.
 2. Review is re-projected once the candidate count is known.
 3. The governor is projected from the upheld count.
+
+A self-hosted model — the platform's own gateway, an Ollama tag such as `qwen3:30b` —
+is metered at **0¢**, because the ceiling is a money ceiling and there is no bill. What
+bounds such a run is structural: the turn ceiling, the per-unit candidate cap, the halt
+limit, the request timeout. The record names that pricing basis; it never pretends a
+price (`budget.calibrate`).
 
 A run that would cross the ceiling at any gate **halts and reports** — naming the gate,
 the projection and the ceiling — with every earlier stage's work already recorded. It

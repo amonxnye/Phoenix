@@ -523,7 +523,39 @@ try:
           and brainseam.provider_extras("claude-sonnet-5") == {}
           and brainseam.provider_extras("rule-based") == {},
           "every analyst reply on the first two production runs was empty: reasoning ate the budget")
+    check("an Ollama tag behind a gateway gets Ollama's `think` off; a bare name gets nothing",
+          brainseam.provider_extras("qwen3:30b") == {"think": False}
+          and brainseam.provider_extras("deepseek-r1:8b") == {"think": False}
+          and brainseam.provider_extras("llama3.1:8b") == {"think": False})
     _b = brainseam._load()
+    check("inline <think> blocks are split out of a reply; the answer is what gets parsed",
+          (not _b) or (_b._split_think('<think>x</think>{"a":1}') == ('{"a":1}', "x")
+                       and _b._split_think("plain")[0] == "plain"
+                       and _b._split_think("<think>never closed") == ("", "never closed")))
+    # The mechanic on its own server, the settlement untouched (DEPLOY.md: MECHANIC_*)
+    _env = {k: os.environ.get(k) for k in ("MECHANIC_BASE_URL", "MECHANIC_API_KEY", "MECHANIC_MODEL", "MECHANIC_PRICE")}
+    _shared = _b.provider() if _b else None
+    os.environ.update(MECHANIC_BASE_URL="https://gateway.example/v1", MECHANIC_API_KEY="sk-x",
+                      MECHANIC_MODEL="qwen3:30b")
+    os.environ.pop("MECHANIC_PRICE", None)
+    try:
+        _p = brainseam.provider()
+        check("MECHANIC_* points the mechanic alone at its own server; the settlement's provider is unchanged",
+              (not _b) or (_p["scope"] == "mechanic" and _p["base_url"] == "https://gateway.example/v1"
+                           and brainseam.name() == "qwen3:30b" and _b.provider() == _shared),
+              str(brainseam.describe()))
+        check("a self-hosted model is metered at 0¢ and the record says the ceiling does not bind",
+              budget.calibrate("qwen3:30b", "https://gateway.example/v1").startswith("self-hosted")
+              and budget.PRICE["strong"] == (0.0, 0.0) and budget._cents("strong", 10**6, 10**6) == 0.0)
+        os.environ["MECHANIC_MODEL"] = ""
+        check("a gateway never picks the model: MECHANIC_* without a model is no provider at all",
+              (not _b) or brainseam.provider() is None)
+    finally:
+        for k, v in _env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        budget.PRICE.update(budget._ASSUMED)
     check("the brain's turn ceiling is raised to fit a unit's context, checklist and schema",
           (not _b) or (_b.PROMPT_LIMITS["prompt"] >= brainseam.TURN_CEILING
                        and brainseam.LIMITS["unit_source"] + brainseam.LIMITS["checklist"] + 3000

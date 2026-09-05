@@ -24,7 +24,11 @@ framework. Everything it needs is already in the repo.
 | `SEED=1` | Seed a demo game on boot (or keep `--seed` in the Procfile) |
 | `GOV_DATA_DIR=/data` | Point the SQLite DB at a mounted **Volume** so game state survives redeploys |
 | `DEEPSEEK_API_KEY` | Turns on the DeepSeek brain (`brain.py`); also `pip install openai` |
-| `DEEPSEEK_MODEL` | Optional model override (default `deepseek-chat`) |
+| `DEEPSEEK_MODEL` | Optional model override (default `deepseek-v4-flash`) |
+| `BRAIN_BASE_URL` / `BRAIN_API_KEY` / `BRAIN_MODEL` | Any OpenAI-compatible endpoint for EVERY model call (settlement and mechanic) — takes precedence over `DEEPSEEK_API_KEY` |
+| `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | The mechanic alone on its own server, e.g. `https://api.ripaplatform.com/v1` + `qwen3:30b`; the settlement keeps its provider. All three are required — a gateway never picks the model |
+| `MECHANIC_PRICE` | `self-hosted` (0¢, the default for an Ollama tag), `cheap` or `strong` — which price table meters the mechanic's budget |
+| `BRAIN_TIMEOUT_S` | Per-request timeout for OpenAI-compatible calls (default 300) |
 
 ## State persistence
 
