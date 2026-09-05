@@ -53,14 +53,58 @@ LIMITS = {"unit_source": 12000, "unit_deps": 600, "unit_history": 400,
 TURN_CEILING = 24000
 
 
-def available() -> bool:
+def provider() -> dict | None:
+    """The endpoint the MECHANIC's calls go to.
+
+    MECHANIC_BASE_URL + MECHANIC_API_KEY [+ MECHANIC_MODEL] point the mechanic alone at
+    its own server — an OpenAI-compatible gateway such as a hosted Ollama — while the
+    settlement keeps whatever BRAIN_*/DEEPSEEK_* names. Without them the mechanic
+    shares the brain's provider. Read on every call, never cached, so a redeploy with
+    new variables is the whole switch."""
     b = _load()
-    return bool(b) and b.available()
+    if not b:
+        return None
+    base = os.environ.get("MECHANIC_BASE_URL", "").strip()
+    key = os.environ.get("MECHANIC_API_KEY", "").strip()
+    if base and key:
+        model = os.environ.get("MECHANIC_MODEL", "").strip()
+        if not model:
+            return None                           # a gateway never picks the model for you
+        return {"kind": "anthropic" if "anthropic" in base else "openai",
+                "base_url": base, "key": key, "model": model, "scope": "mechanic"}
+    p = b.provider()
+    return dict(p, scope="shared") if p else None
+
+
+def available() -> bool:
+    return provider() is not None
 
 
 def name() -> str:
+    p = provider()
+    return p["model"] if p else "rule-based"
+
+
+def base_url() -> str:
+    p = provider()
+    return p["base_url"] if p else ""
+
+
+def describe() -> dict:
+    """What the page shows: model, host, whose configuration, and how it is priced."""
+    from urllib.parse import urlparse
+    from . import budget
+    p = provider()
+    if not p:
+        return {"configured": False}
+    return {"configured": True, "model": p["model"], "host": urlparse(p["base_url"]).netloc,
+            "scope": p["scope"], "priced": budget.calibrate(p["model"], p["base_url"])}
+
+
+def models() -> list[str]:
     b = _load()
-    return b.brain_name() if b else "rule-based"
+    p = provider()
+    return b.models(p) if (b and p) else []
 
 
 def clip(field: str, text) -> str:
@@ -91,17 +135,23 @@ def provider_extras(model_name: str) -> dict:
     thinking budget. So thinking is off for the mechanic's calls — and only sent to a
     provider that understands the field."""
     m = (model_name or "").lower()
-    if "deepseek" in m:
-        return {"thinking": {"type": "disabled"}}
+    if "deepseek" in m and ":" not in m:
+        return {"thinking": {"type": "disabled"}}    # DeepSeek's own API
+    if ":" in m:
+        # An Ollama tag (qwen3:30b, deepseek-r1:8b) behind an OpenAI-compatible gateway.
+        # `think` is Ollama's field; a gateway that ignores it still gets the answer
+        # parsed, because the brain splits inline <think> blocks out of the reply.
+        return {"think": False}
     return {}
 
 
 def _real_ask(messages, max_tokens, temperature, purpose, tier):
     b = _load()
-    if not b or not b.available():
+    if not b or not available():
         raise RuntimeError("no model configured")
+    p = provider()
     return b._chat(messages, max_tokens, temperature, f"mechanic:{purpose}",
-                   extra_body=provider_extras(b.brain_name()))
+                   extra_body=provider_extras(p["model"]), provider_override=p)
 
 
 # Replaceable: the suite installs a scripted model here and runs the whole swarm
