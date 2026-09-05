@@ -118,6 +118,8 @@ def propose(f: dict, root: str, budget) -> dict:
     try:
         out = brainseam.ask([{"role": "user", "content": prompt}], OUT_TOKENS, 0.1,
                             "fixer", "strong", budget)
+    except brainseam.ProviderDown:
+        raise
     except Exception as e:                            # noqa: BLE001 — recorded as a refusal
         return {"patch": "", "status": "failed", "note": f"fixer call failed: {e}"}
     hunks = parse(out)

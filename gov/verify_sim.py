@@ -794,38 +794,90 @@ try:
         if _n["k"] < 3:
             raise TimeoutError("server timed out")
         return "alive"
-    _out = N.call(_flaky, what="probe")
+    _out = N.call(_flaky, what="probe", idempotent=True)
     check("a request that times out is retried with backoff and then succeeds",
-          _out == "alive" and N.LAST["attempts"] == 3 and len(_slept) == 2
+          _out == "alive" and N.last()["attempts"] == 3 and len(_slept) == 2
           and 0.7 <= _slept[0] <= 1.3 and 1.4 <= _slept[1] <= 2.6,
-          f"attempts {N.LAST['attempts']}, waits {[round(s, 2) for s in _slept]}")
+          f"attempts {N.last()['attempts']}, waits {[round(s, 2) for s in _slept]}")
     class _Http(Exception):
         def __init__(self, code): super().__init__(f"HTTP {code}"); self.status_code = code
     _slept.clear()
     try:
-        N.call(lambda: (_ for _ in ()).throw(_Http(524)), what="edge")
+        N.call(lambda: (_ for _ in ()).throw(_Http(524)), what="edge", idempotent=True)
         _gave = False
     except _Http as e:
         _gave = e.attempts == N.RETRIES + 1
     check("a server that keeps answering 524 is retried NET_RETRIES times, then given up on, counted",
-          _gave and len(_slept) == N.RETRIES and N.LAST["gave_up"].startswith("after"),
-          f"{N.LAST.get('attempts')} attempts, waited {round(sum(_slept), 1)}s")
+          _gave and len(_slept) == N.RETRIES and N.last()["gave_up"].startswith("after"),
+          f"{N.last().get('attempts')} attempts, waited {round(sum(_slept), 1)}s")
     _slept.clear()
     try:
-        N.call(lambda: (_ for _ in ()).throw(_Http(402)), what="billing")
+        N.call(lambda: (_ for _ in ()).throw(_Http(402)), what="billing", idempotent=True)
         _once = False
     except _Http as e:
         _once = e.attempts == 1
     check("a refusal (402 Insufficient Balance, 401, 404) is NOT retried — the answer will not change",
-          _once and not _slept and N.LAST["gave_up"] == "not retryable")
+          _once and not _slept and N.last()["gave_up"] == "not retryable")
     class _Rate(_Http):
         headers = {"Retry-After": "7"}
     _slept.clear()
     try:
-        N.call(lambda: (_ for _ in ()).throw(_Rate(429)), what="rate", retries=1)
+        N.call(lambda: (_ for _ in ()).throw(_Rate(429)), what="rate", retries=1, idempotent=True)
     except _Rate:
         pass
     check("a 429's own Retry-After sets the wait", len(_slept) == 1 and 5 <= _slept[0] <= 9)
+    # the guards that make one shared retry layer safe
+    N.reset(); _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(TimeoutError("t")), what="write", idempotent=False)
+    except TimeoutError as e:
+        _one = e.attempts == 1 and not _slept and "not idempotent" in N.last()["gave_up"]
+    check("a request not declared idempotent is made ONCE, even on a timeout — a retried write could act twice",
+          _one, N.last().get("gave_up", ""))
+    _clock = [1000.0]; N._NOW = lambda: _clock[0]
+    try:
+        N.reset(); _slept.clear()
+        def _hang(): raise TimeoutError("hung")
+        for _ in range(N.BREAK_AFTER):
+            try: N.call(_hang, what="gw", idempotent=True, key="gw.example")
+            except TimeoutError: pass
+        _n_before = N.STATS["attempts"]
+        try:
+            N.call(_hang, what="gw", idempotent=True, key="gw.example"); _fast = False
+        except N.CircuitOpen as e:
+            _fast = e.key == "gw.example" and N.STATS["attempts"] == _n_before
+        check("after BREAK_AFTER exhausted calls the host's breaker opens: the next call fails at once, no attempt made",
+              _fast and N.breakers()["gw.example"]["open"] and N.STATS["breaker_trips"] == 1,
+              str(N.breakers()))
+        _clock[0] += N.COOL_S + 1
+        _ok = N.call(lambda: "alive", what="gw", idempotent=True, key="gw.example")
+        check("after the cooling period one probe is let through; success closes the breaker",
+              _ok == "alive" and not N.breakers()["gw.example"]["open"]
+              and N.breakers()["gw.example"]["failures"] == 0)
+        for _ in range(N.BREAK_AFTER):
+            try: N.call(_hang, what="gw", idempotent=True, key="gw.example")
+            except TimeoutError: pass
+        _clock[0] += N.COOL_S + 1
+        try: N.call(_hang, what="gw", idempotent=True, key="gw.example")
+        except TimeoutError: pass
+        check("a probe that fails re-opens the breaker", N.breakers()["gw.example"]["open"])
+        try:
+            N.call(lambda: (_ for _ in ()).throw(_Http(402)), what="other", idempotent=True, key="other.example")
+        except _Http: pass
+        check("a refusal does not trip a breaker — it is not the server failing, it is the server answering",
+              not N.breakers()["other.example"]["open"] and N.breakers()["other.example"]["failures"] == 0)
+    finally:
+        N._NOW = time.time; N.reset()
+    import threading as _th
+    _seen = {}
+    def _t(name, n):
+        for _ in range(n):
+            N.call(lambda: 1, what=name, idempotent=True)
+        _seen[name] = N.last()["what"]
+    _ts = [_th.Thread(target=_t, args=(f"w{i}", 50)) for i in range(4)]
+    [t.start() for t in _ts]; [t.join() for t in _ts]
+    check("the readout is per thread: four workers never see each other's attempts",
+          _seen == {f"w{i}": f"w{i}" for i in range(4)}, str(_seen))
     check("the brain's SDK retries are off so every attempt is one the policy counted",
           "max_retries=0" in open(os.path.join(HERE, "brain.py")).read())
 finally:

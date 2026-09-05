@@ -71,6 +71,8 @@ def challenge(c: dict, ctx: str, idx, budget) -> dict:
     try:
         out = brainseam.ask([{"role": "user", "content": prompt}], 2500, 0.2,
                             "review", "strong", budget)
+    except brainseam.ProviderDown:
+        raise
     except Exception as e:                            # noqa: BLE001
         return {"outcome": "upheld", "reasoning": f"challenger unavailable: {e}",
                 "severity": c["severity"], "admissible": False,

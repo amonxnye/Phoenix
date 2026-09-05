@@ -539,6 +539,26 @@ try:
           and brainseam.provider_extras("claude-sonnet-5") == {}
           and brainseam.provider_extras("rule-based") == {},
           "every analyst reply on the first two production runs was empty: reasoning ate the budget")
+    # A provider that is DOWN halts the run instead of being asked once per unit and role:
+    # the seam fails every call, the fifth failure raises ProviderDown, the run is halted
+    # with the reason recorded and the machine-verified work kept.
+    _seam0 = brainseam.SEAM["ask"]
+    brainseam.SEAM["ask"] = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Error code: 402 - Insufficient Balance"))
+    brainseam._FAILS["consecutive"] = 0
+    try:
+        _down = analyse.run(swarm_root, name="fixture-down", budget_cents=100)
+    finally:
+        brainseam.SEAM["ask"] = _seam0
+        brainseam._FAILS["consecutive"] = 0
+    _dg = store.gaps(run_id=_down["run_id"])
+    check("a provider that fails every call halts the run after PROVIDER_DOWN_AFTER consecutive failures, recorded as such",
+          _down["status"] == "halted" and "provider unavailable" in _down.get("error", "")
+          and any(g["scope"] == "provider" and "consecutive calls failed" in g["reason"] for g in _dg)
+          and _down["findings"] >= 1 and _down["spend_cents"] == 0,
+          _down.get("error", "")[:140])
+    check("…and it is not asked once per unit and role: the failures recorded stay under the halt threshold",
+          sum(1 for d in store.decisions(run_id=_down["run_id"]) if d["stage"] == "panel")
+          <= brainseam.PROVIDER_DOWN_AFTER * len(panel.ROLES))
     # A provider that refuses (DeepSeek's 402 on production: every call failed in 68 s,
     # and the run read as 51¢ spent). A failed call is refunded and counted.
     _bq = budget.Budget(100)

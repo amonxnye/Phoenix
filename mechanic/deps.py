@@ -107,13 +107,14 @@ def _post(url: str, body: dict) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "phoenix-software-mechanic/0.1"})
-    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv query") as r:
+    # A POST by shape, a query by nature: it changes nothing at OSV, so it may repeat.
+    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv query", idempotent=True, key="osv") as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
 def _get(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "phoenix-software-mechanic/0.1"})
-    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv vuln") as r:
+    with net.urlopen(req, TIMEOUT_S, ssl_context(), "osv vuln", key="osv") as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 

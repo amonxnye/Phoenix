@@ -115,6 +115,17 @@ server errors are retried with backoff, up to five times; a refusal (401, 402, 4
 not, because the answer will not change. The record shows the attempts, and a call
 that fails after them is refunded, never billed to the budget.
 
+A shared retry layer is dangerous in two ways, and the same layer guards against both.
+Only a request its caller has declared **idempotent** is ever retried — every call the
+mechanic makes is a read, and the declaration keeps the next caller honest. And a
+**circuit breaker per host** opens after two calls have exhausted their retries, so a
+server that is down is not hammered 660 × 6 times: calls fail at once for a cooling
+period, then one probe decides. Above that, the mechanic **halts the run** after five
+consecutive failed model calls (`brainseam.ProviderDown`), recording why, with the work
+so far kept — the same shape as a budget halt. One cost stays outside the record's
+sight and is named here: a completion that times out on the client may still be
+finished and billed by a paid provider.
+
 A run that would cross the ceiling at any gate **halts and reports** — naming the gate,
 the projection and the ceiling — with every earlier stage's work already recorded. It
 is never quietly degraded into a cheaper run nobody asked for. Every call is charged to

@@ -1,8 +1,9 @@
 """The mechanic's outbound requests use the project's one retry policy (gov/netretry).
 
 Borrowed, not rebuilt: the same backoff, the same classification of what is worth
-retrying, the same readout of attempts — so a GitHub archive download, an OSV.dev
-query and a model call all fail the same way and the record reads the same way.
+retrying, the same circuit breaker per host, the same readout of attempts — so a
+GitHub archive download, an OSV.dev query and a model call all fail the same way
+and the record reads the same way.
 """
 
 import os
@@ -17,4 +18,12 @@ import netretry                                        # noqa: E402 — the poli
 call = netretry.call
 urlopen = netretry.urlopen
 describe = netretry.describe
-LAST = netretry.LAST
+last = netretry.last
+CircuitOpen = netretry.CircuitOpen
+
+
+def readout() -> dict:
+    """What the page shows: totals and every host's breaker."""
+    return {"stats": dict(netretry.STATS), "breakers": netretry.breakers(),
+            "policy": {"retries": netretry.RETRIES, "backoff_s": netretry.BACKOFF_S,
+                       "break_after": netretry.BREAK_AFTER, "cool_s": netretry.COOL_S}}

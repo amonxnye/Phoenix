@@ -29,7 +29,9 @@ framework. Everything it needs is already in the repo.
 | `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | The mechanic alone on its own server, e.g. `https://api.ripaplatform.com/v1` + `qwen3:30b`; the settlement keeps its provider. All three are required — a gateway never picks the model |
 | `MECHANIC_PRICE` | `self-hosted` (0¢, the default for an Ollama tag), `cheap` or `strong` — which price table meters the mechanic's budget |
 | `BRAIN_TIMEOUT_S` | Per-attempt timeout for model calls (default 300) |
-| `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, GitHub archive, OSV.dev) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried |
+| `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, GitHub archive, OSV.dev) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried; a request not declared idempotent is made once |
+| `NET_BREAK_AFTER` / `NET_COOL_S` | Circuit breaker per host: after `NET_BREAK_AFTER` calls (default 2) have exhausted their retries against one host, calls to it fail at once for `NET_COOL_S` seconds (default 60), then one probe is let through |
+| `MECHANIC_PROVIDER_DOWN_AFTER` | The mechanic halts a run after this many consecutive failed model calls (default 5) instead of asking every unit |
 
 ## State persistence
 
