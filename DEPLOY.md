@@ -24,7 +24,8 @@ framework. Everything it needs is already in the repo.
 | `SEED=1` | Seed a demo game on boot (or keep `--seed` in the Procfile) |
 | `GOV_DATA_DIR=/data` | Point the SQLite DB at a mounted **Volume** so game state survives redeploys |
 | `BRAIN_API_KEY` | Turns on the brain for EVERY model call (settlement and mechanic) against the platform's own gateway, `https://api.ripaplatform.com/v1`, model `qwen3:30b` |
-| `BRAIN_BASE_URL` / `BRAIN_MODEL` | Optional: another OpenAI-compatible endpoint, or another model the gateway serves (`GET /v1/models` lists them) |
+| `BRAIN_BASE_URL` / `BRAIN_MODEL` | Optional: another OpenAI-compatible endpoint, or another model the gateway serves (`GET /v1/models` lists them). The gateway's `qwen3:30b` is the thinking-only build and reasons on every call whatever the request says; pull `qwen3:30b-instruct` (non-thinking) on the gateway and set `BRAIN_MODEL=qwen3:30b-instruct` |
+| `BRAIN_NATIVE=1` | Call a tagged model on Ollama's native `/api/chat` with `think: false` instead of `/v1`. Only for a model that honours the switch — on a thinking-only build it moves the reasoning into the answer |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | The original provider; used only when `BRAIN_API_KEY` is unset. Remove it once the switch is made so a missing key fails loudly instead of falling back |
 | `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | The mechanic alone on its own server, e.g. `https://api.ripaplatform.com/v1` + `qwen3:30b`; the settlement keeps its provider. All three are required — a gateway never picks the model |
 | `MECHANIC_PRICE` | `self-hosted` (0¢, the default for an Ollama tag), `cheap` or `strong` — which price table meters the mechanic's budget |

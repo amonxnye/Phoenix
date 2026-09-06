@@ -879,6 +879,8 @@ try:
     [t.start() for t in _ts]; [t.join() for t in _ts]
     check("the readout is per thread: four workers never see each other's attempts",
           _seen == {f"w{i}": f"w{i}" for i in range(4)}, str(_seen))
+    check("the native transport is opt-in: without BRAIN_NATIVE=1 a tagged model goes through /v1",
+          "BRAIN_NATIVE" in open(os.path.join(HERE, "brain.py")).read().split("def _chat")[1][:2500])
     check("the brain's SDK retries are off so every attempt is one the policy counted",
           "max_retries=0" in open(os.path.join(HERE, "brain.py")).read())
 finally:
