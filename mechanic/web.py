@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
-from . import analyse, charter, ingest, store, watch
+from . import analyse, charter, ingest, posture, store, watch
 
 # The interface the console calls. Declared, because the mechanic run on itself
 # reported these unreachable — correctly: their caller lives outside the package. An
@@ -125,7 +125,19 @@ def handle_get(path: str) -> tuple:
                          "rationale": d["rationale"], "model": d["model"]})
         for f in finds:
             f["trail"] = trail.get(f["run_id"], {}).get(f["id"], [])
-        return _json(200, {"findings": finds, "gaps": gaps})
+        rid = (q.get("repo") or [""])[0]
+        held, units, langs = [], 0, []
+        for r_id, last in _latest_runs().items():
+            if not last or (rid and r_id != rid):
+                continue
+            held += [d["rationale"] for d in store.decisions(last["id"], limit=20000)
+                     if d["stage"] == "posture" and d["action"] == "held"]
+            units += int(last.get("unit_count") or 0)
+            langs += [x.strip() for x in (next((r for r in store.repos() if r["id"] == r_id), {})
+                                          .get("languages") or "").split(",") if x.strip()]
+        v = posture.verdict(finds, held, {"units": units, "languages": sorted(set(langs)),
+                                          "refusals": len(gaps)})
+        return _json(200, {"findings": finds, "gaps": gaps, "verdict": v})
     if p == "/api/mechanic/runs":
         rid = (q.get("repo") or [""])[0]
         rows = store.runs(rid, 30) if rid else []
@@ -389,6 +401,9 @@ pre.diff{margin:6px 0 0 12px;padding:8px 10px;background:#120d06;border:1px soli
       <button id=go type=submit>Analyse</button><div id=st></div></form></div>
   <div class=card><h2>Repositories <em id=rn></em></h2><div id=repos><div class=empty>loading&hellip;</div></div></div>
   <div class=card id=runs></div>
+  <div class=card><h2>Verdict <em id=vscope>the repository as a system</em></h2>
+    <div class=note id=vhead></div><div id=vrows></div>
+    <div class=note id=held></div></div>
   <div class=card><h2>Findings <em>machine-verified first, then by severity</em></h2>
     <div class=filters id=filters></div><div id=finds><div class=empty>loading&hellip;</div></div></div>
   <div class=card><h2>Where the analysis declined to conclude <em id=gn></em></h2><div id=gaps></div></div>
@@ -396,7 +411,7 @@ pre.diff{margin:6px 0 0 12px;padding:8px 10px;background:#120d06;border:1px soli
 <script>
 /*PALETTE_JS*/
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ago=t=>{if(!t)return'—';const s=Math.max(0,Date.now()/1000-t);
   return s<60?Math.round(s)+'s ago':s<3600?Math.round(s/60)+'m ago':s<86400?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'};
 let REPO='', ALL={findings:[],gaps:[]}, BASIS='all';
@@ -470,6 +485,12 @@ async function findings(){
   $('filters').innerHTML=Object.entries(counts).map(([k,n])=>`<button class=ghost data-b="${k}" aria-pressed="${k===BASIS}">${k} ${n}</button>`).join('');
   $('filters').querySelectorAll('button').forEach(b=>b.onclick=()=>{BASIS=b.dataset.b;drawFinds()});
   drawFinds();
+  const v=ALL.verdict||{headline:'',rows:[],held:[]};
+  $('vhead').innerHTML='<b>'+esc(v.headline)+'</b>';
+  $('vrows').innerHTML=v.rows.length?`<table><thead><tr><th>severity</th><th>finding</th><th>assessment</th></tr></thead><tbody>`+
+    v.rows.map(x=>`<tr><td><span class="tag s-${esc(x.severity)}">${esc(x.severity)}</span> <span class="tag ${x.basis==='machine-verified'?'mv':'jd'}">${x.basis==='machine-verified'?'verified':'judged'}</span></td>
+      <td>${esc(x.title)}<br><span class=loc>${esc(x.file)}${x.line_range?':'+esc(x.line_range):''}</span></td><td>${esc(x.assessment)}</td></tr>`).join('')+'</tbody></table>'+(v.more?`<div class=note>…and ${v.more} more in the findings below.</div>`:''):'';
+  $('held').innerHTML=v.held.length?'<b>What held up</b><br>'+v.held.map(h=>'&#10003; '+esc(h)).join('<br>'):'';
   $('gn').textContent=ALL.gaps.length+' refusal(s)';
   $('gaps').innerHTML=ALL.gaps.length?ALL.gaps.map(g=>`<div class=gap><b>${esc(g.scope)}</b> <span class=rp>${esc(g.repo)}</span><br>${esc(g.reason)}</div>`).join('')
     :'<div class=empty>None — every symbol examined could be judged.</div>';

@@ -138,7 +138,8 @@ _EXTRA = {
                  ("challenge", "TEXT DEFAULT ''"), ("challenge_reason", "TEXT DEFAULT ''"),
                  ("rank", "INT DEFAULT 0"), ("first_seen_run", "TEXT DEFAULT ''"),
                  ("seen_runs", "INT DEFAULT 1"), ("patch", "TEXT DEFAULT ''"),
-                 ("patch_status", "TEXT DEFAULT ''"), ("patch_note", "TEXT DEFAULT ''")],
+                 ("patch_status", "TEXT DEFAULT ''"), ("patch_note", "TEXT DEFAULT ''"),
+                 ("assessment", "TEXT DEFAULT ''")],
 }
 
 
@@ -315,11 +316,11 @@ def finding_add(run_id: str, repo_id: str, f: dict) -> str:
                 json.dumps(f["evidence"]), f.get("disclosure", "public"), time.time()]
         if _EXT:
             cols += ["fingerprint", "proposed_by", "challenge", "challenge_reason", "rank",
-                     "first_seen_run", "seen_runs"]
+                     "first_seen_run", "seen_runs", "assessment"]
             vals += [f.get("fingerprint", ""), f.get("proposed_by", ""),
                      f.get("challenge", ""), f.get("challenge_reason", ""),
                      int(f.get("rank") or 0), f.get("first_seen_run", ""),
-                     int(f.get("seen_runs") or 1)]
+                     int(f.get("seen_runs") or 1), f.get("assessment", "")]
         c.execute(f"INSERT INTO findings({','.join(cols)}) VALUES({','.join('?' * len(vals))})",
                   vals)
         c.commit()

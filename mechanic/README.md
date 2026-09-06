@@ -59,6 +59,28 @@ one gets is stated rather than assumed:
 
 A tree with no recognised source at all is a refusal too, not "complete, 0 findings".
 
+## The verdict — the repository as a system
+
+A list of line-level findings is not what an operator reads first. `posture.py` reads
+the repository the way a security reviewer does and says, in one sentence, whether it
+may face the Internet — then a table, severity-ranked, with an **assessment** per row:
+
+| Severity | Finding | Assessment |
+|---|---|---|
+| critical | authentication is optional: the check on `CONSOLE_TOKEN` is skipped when it is unset | Fix before Internet exposure |
+| high | the code sandbox is a subprocess with no filesystem, user or resource isolation | Fix before real autonomous coding |
+| medium | request bodies have no size ceiling | DoS risk |
+| medium | a credential is kept in browser storage; the HTML escaper leaves quotes unescaped | XSS could compromise the operator token |
+| medium | 2 of 4 dependencies are not pinned to an exact version | Supply-chain / reproducibility risk |
+| low | `.gitignore` does not exclude .env or key files | Secret-leak prevention gap |
+
+That table is the mechanic's own reading of Phoenix, and `verify_mechanic.py` pins it:
+the run on this repository must reproduce every row. Under the table comes **what held
+up** — no committed secret, TLS never disabled, no SQL built from a value, no vulnerable
+package — so the reader knows what was examined and passed, not only what failed.
+Every row is a text fact with a file and a line; a check about absence names exactly
+what it looked for, so it can be refuted by pointing at the line it missed.
+
 ## What is deliberately not here yet
 
 In the handoff's order, because each milestone answers a question that decides

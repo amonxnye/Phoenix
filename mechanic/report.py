@@ -9,7 +9,7 @@ answers next to the code they are about.
 
 import time
 
-from . import store
+from . import posture, store
 
 
 def render(run_id: str) -> str:
@@ -31,6 +31,20 @@ def render(run_id: str) -> str:
            f"{len(mv)} machine-verified finding(s), {len(jd)} judged, "
            f"{len(gs)} place(s) where the analysis declined to conclude.",
            f""]
+    held = [d["rationale"] for d in store.decisions(run_id, limit=20000)
+            if d["stage"] == "posture" and d["action"] == "held"]
+    v = posture.verdict(fs, held, {"units": r.get("unit_count", 0),
+                                   "languages": [x.strip() for x in (repo.get("languages") or "").split(",") if x.strip()],
+                                   "refusals": len(gs)})
+    out += ["## Verdict", "", v["headline"], ""]
+    if v["rows"]:
+        out += ["| Severity | Finding | Assessment |", "|---|---|---|"]
+        out += [f"| {x['severity']} ({'verified' if x['basis'] == 'machine-verified' else 'judged'}) "
+                f"| {x['title'].replace('|', '/')} — `{x['file']}:{x['line_range']}` | {x['assessment']} |"
+                for x in v["rows"]]
+        out += [f"*…and {v['more']} more, below.*" if v.get("more") else "", ""]
+    if held:
+        out += ["## What held up", ""] + [f"- {h}" for h in held] + [""]
     if mv:
         out += ["## Machine-verified", "",
                 "Each of these rests on a graph fact that was re-checked when this report "
@@ -42,7 +56,18 @@ def render(run_id: str) -> str:
                     f["description"], "", f"**Proposed fix.** {f['recommendation']}", "",
                     f"*Evidence:* {ev}", ""]
     if jd:
-        out += ["## Judged", "", "*(none yet — the analyst panel is Milestone 4)*", ""]
+        out += ["## Judged", "",
+                "Each of these rests on a model's reading, challenged by another model and "
+                "admitted by the governor. Useful, and a different kind of claim.", ""]
+        for f in jd:
+            ev = "; ".join(f"`{e['file']}:{e['line_range']}` — {e['reason']}"
+                           for e in f["evidence"])
+            out += [f"### {f['id']} · {f['severity']} · {f['title']}", "",
+                    f["description"], "", f"**Proposed fix.** {f['recommendation']}", "",
+                    f"*Proposed by* {f.get('proposed_by', '')} · *challenge:* "
+                    f"{f.get('challenge') or '—'}"
+                    + (f" — {f['challenge_reason']}" if f.get("challenge_reason") else ""), "",
+                    f"*Evidence:* {ev}", ""]
     out += ["## Where the analysis declined to conclude", ""]
     if gs:
         out += ["A refusal is a result. These are the places a static reading of Python "

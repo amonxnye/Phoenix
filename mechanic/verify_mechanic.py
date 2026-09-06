@@ -1158,6 +1158,157 @@ finally:
 shutil.rmtree(poly_root, ignore_errors=True)
 os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
 
+
+# ── posture: the repository as a system, and the verdict an operator reads first ──
+print("\nPosture — the verdict, the assessment per row, and what held up")
+from mechanic import posture                                              # noqa: E402
+post_root = tempfile.mkdtemp(prefix="mechanic-posture-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(post_root, "data")
+POST = {
+    "requirements.txt": "flask==3.0.0\nrequests>=2.0\nlangsmith\n",
+    ".gitignore": "__pycache__/\n*.pyc\n",
+    ".env": "DB_PASSWORD=" + "s3cr3t-value-9\n",
+    "server.py": (
+        "import os, json, subprocess, sys\n"
+        "from http.server import BaseHTTPRequestHandler\n"
+        "PORT = os.environ.get('PORT')\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "    def do_POST(self):\n"
+        "        tok = os.environ.get('CONSOLE_TOKEN', '')\n"
+        "        if tok and self.headers.get('X-Console-Token', '') != tok:\n"
+        "            return self.send_error(401)\n"
+        "        n = int(self.headers.get('Content-Length', 0) or 0)\n"
+        "        body = json.loads(self.rfile.read(n) or b'{}')\n"
+        "        key = os.environ.get('BRAIN_API_KEY', '')\n"
+        "        if key:\n"
+        "            body['model'] = 'configured'\n"
+        "    def sandbox_run(self, path):\n"
+        "        return subprocess.run([sys.executable, path], capture_output=True, timeout=30)\n"
+        "PAGE = \"\"\"<script>\n"
+        "const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));\n"
+        "fetch('/api', {headers: {'X-Console-Token': localStorage.getItem('ctok') || ''}});\n"
+        "</script>\"\"\"\n"
+    ),
+    "bounded.py": (
+        "class H:\n"
+        "    def read(self):\n"
+        "        n = int(self.headers.get('Content-Length', 0) or 0)\n"
+        "        if n > MAX_BODY:\n"
+        "            return self.send_error(413)\n"
+        "        return self.rfile.read(n)\n"
+    ),
+    "jail.py": (
+        "import resource, subprocess, sys\n"
+        "def run_untrusted(path):\n"
+        "    def limits():\n"
+        "        resource.setrlimit(resource.RLIMIT_AS, (1 << 28, 1 << 28))\n"
+        "    return subprocess.run([sys.executable, path], preexec_fn=limits, timeout=10)\n"
+    ),
+    "verify_thing.py": (
+        "import subprocess, sys\n"
+        "# the acceptance suite runs the sandbox\n"
+        "subprocess.run([sys.executable, 'x.py'])\n"
+    ),
+}
+for rel, body in POST.items():
+    with open(os.path.join(post_root, rel), "w") as f:
+        f.write(body)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    pres = analyse.run(post_root, name="posture", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+pfs = store.findings(run_id=pres["run_id"])
+def _kind(f):                                        # the record keeps the evidence, not the symbol
+    return f["evidence"][0]["reason"].split("text fact: ")[1].split(" at lines")[0]
+post = {_kind(f): f for f in pfs if f["proposed_by"] == "posture-scan"}
+kinds_at = {(_kind(f), f["evidence"][0]["file"]) for f in pfs if f["proposed_by"] == "posture-scan"}
+check("authentication guarded on an optional environment variable is a finding — critical when the tree binds a port",
+      post.get("optional authentication", {}).get("severity") == "critical"
+      and "CONSOLE_TOKEN" in post["optional authentication"]["title"]
+      and post["optional authentication"]["assessment"] == posture.FIX_BEFORE_EXPOSURE,
+      str({k: v["title"][:60] for k, v in post.items()}))
+check("…but a key read for an OUTBOUND call (BRAIN_API_KEY) is not an authentication gate",
+      "BRAIN_API_KEY" not in post.get("optional authentication", {}).get("title", ""))
+check("a request body read from Content-Length with no ceiling is a finding; the bounded read is what held up",
+      ("unbounded request body", "server.py") in kinds_at and ("unbounded request body", "bounded.py") not in kinds_at
+      and any("bounded.py" in d["rationale"] for d in store.decisions(pres["run_id"]) if d["stage"] == "posture"))
+check("an HTML escaper that leaves quotes unescaped, and a credential in localStorage, are findings that name each other",
+      post.get("weak HTML escaping", {}).get("severity") == "medium"
+      and post.get("credential in browser storage", {}).get("assessment") == posture.XSS_TOKEN
+      and "escaper" in post["credential in browser storage"]["description"])
+check("floating requirements are a finding naming which ones",
+      "2 of 3" in post.get("unpinned dependencies", {}).get("title", "")
+      and "requests" in post["unpinned dependencies"]["description"]
+      and "langsmith" in post["unpinned dependencies"]["description"]
+      and post["unpinned dependencies"]["assessment"] == posture.SUPPLY_CHAIN)
+check("a committed .env is a high finding, and a .gitignore without .env / key patterns is the gap behind it",
+      post.get("credentials file in the tree", {}).get("severity") == "high"
+      and post.get("gitignore gap", {}).get("assessment") == posture.SECRET_LEAK)
+check("a subprocess that runs an interpreter in a 'sandbox' with no isolation is a finding…",
+      ("subprocess sandbox", "server.py") in kinds_at
+      and post["subprocess sandbox"]["assessment"] == posture.FIX_BEFORE_AUTONOMY)
+check("…but not one that sets rlimits, and not an acceptance harness that merely runs things",
+      ("subprocess sandbox", "jail.py") not in kinds_at and ("subprocess sandbox", "verify_thing.py") not in kinds_at)
+check("every posture finding is a machine-verified text fact with a file, a line and an assessment",
+      all(f["basis"] == "machine-verified" and f["evidence"][0]["file"] and f["evidence"][0]["line_range"]
+          and f["assessment"] for f in pfs if f["proposed_by"] == "posture-scan"))
+vd = posture.verdict(pfs, ["x held"], {"units": 4, "languages": ["python"], "refusals": 2})
+check("the verdict leads with exposure: one optional-authentication finding outweighs everything else",
+      vd["headline"].startswith("Not safe to expose to the Internet yet — 1 blocking finding, and 1 to fix before autonomous")
+      and vd["rows"][0]["assessment"] == posture.FIX_BEFORE_EXPOSURE
+      and vd["rows"][1]["assessment"] == posture.FIX_BEFORE_AUTONOMY, vd["headline"])
+check("rows are ranked by assessment, then severity — slop last",
+      [r["category"] for r in vd["rows"]].index("security") < [r["category"] for r in vd["rows"]].index("slop")
+      if any(r["category"] == "slop" for r in vd["rows"]) else True)
+check("without a blocking finding the headline says so",
+      posture.verdict([], [], {"units": 1, "languages": ["python"], "refusals": 0})["headline"].startswith("Nothing found")
+      and posture.verdict([{"severity": "medium", "basis": "machine-verified", "category": "slop", "title": "t",
+                            "evidence": [{"file": "a", "line_range": "1-1"}]}], [], {})["headline"]
+      .startswith("No blocking issue found; 1 medium finding"))
+prep = report.render(pres["run_id"])
+check("the report opens with the verdict, the table with an assessment column, and what held up",
+      "## Verdict" in prep and "| Severity | Finding | Assessment |" in prep
+      and "Fix before Internet exposure" in prep and "## What held up" in prep
+      and prep.index("## Verdict") < prep.index("## Machine-verified"))
+_code, _ct, _body = web.handle_get("/api/mechanic/findings?repo=" + pres["repo_id"])
+_vj = json.loads(_body).get("verdict") or {}
+check("the page's findings API carries the same verdict", _vj.get("headline", "").startswith("Not safe to expose")
+      and _vj.get("held"))
+shutil.rmtree(post_root, ignore_errors=True)
+
+# The regression that matters most, again: the mechanic on Phoenix reproduces the
+# security review's table. Every row below was found by a human reviewer first.
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    phx = analyse.run(os.path.dirname(HERE), name="phoenix", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+phf = [f for f in store.findings(run_id=phx["run_id"]) if f["proposed_by"] == "posture-scan"]
+rows = {(_kind(f), f["evidence"][0]["file"]): f for f in phf}
+check("Phoenix: console authentication is optional (CONSOLE_TOKEN) — critical, fix before Internet exposure",
+      rows.get(("optional authentication", "gov/sim_console.py"), {}).get("severity") == "critical")
+check("Phoenix: the agent code sandbox is a subprocess, not a filesystem/process sandbox — high",
+      rows.get(("subprocess sandbox", "gov/workspace.py"), {}).get("severity") == "high"
+      and not any(k[0] == "subprocess sandbox" and k[1].startswith("gov/verify") for k in rows))
+check("Phoenix: HTTP request bodies have no size ceiling — medium, DoS",
+      rows.get(("unbounded request body", "gov/sim_console.py"), {}).get("assessment") == posture.DOS)
+check("Phoenix: the browser token in localStorage and the weak HTML escaper — medium",
+      ("credential in browser storage", "gov/sim_console.py") in rows
+      and rows.get(("weak HTML escaping", "gov/sim_console.py"), {}).get("severity") == "medium")
+check("Phoenix: dependencies are only partly pinned — medium, supply chain",
+      "2 of 4" in rows.get(("unpinned dependencies", "requirements.txt"), {}).get("title", ""))
+check("Phoenix: .gitignore does not protect .env / key files — low",
+      rows.get(("gitignore gap", ".gitignore"), {}).get("severity") == "low")
+check("Phoenix: BRAIN_API_KEY (an outbound key) is NOT reported as optional authentication",
+      not any(k[0] == "optional authentication" and k[1] == "gov/brain.py" for k in rows))
+_pv = json.loads(web.handle_get("/api/mechanic/findings?repo=" + phx["repo_id"])[2])["verdict"]
+check("Phoenix's verdict: not safe to expose yet, and what held up is listed",
+      _pv["headline"].startswith("Not safe to expose to the Internet yet")
+      and any("no committed secret" in h for h in _pv["held"]), _pv["headline"][:90])
+
 shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

@@ -243,41 +243,75 @@ _SECRET_WORD = re.compile(r"token|secret|password|passwd|otp|nonce|session|api[_
 _ALWAYS = {"private key in source", "credential token in source", "hardcoded secret"}
 
 
-def _python_data_lines(lines: list[str]) -> set[int]:
-    """Lines of a Python module that are DATA, not code: inside a triple-quoted
-    string that is not an f-string (a template, a fixture, a page), or a single-line
-    plain string that nothing assembles (no f-prefix, no %, no .format, no +). The
-    code-pattern rules do not apply there — `"eval("` in a test's assertion is not a
-    call — while the secret rules still do, because a secret IS a string."""
-    data = set()
+_PAGE = re.compile(r"<script|<html|<!doctype", re.I)
+
+
+def python_views(lines: list[str]) -> tuple[list[str], set[int], set[int]]:
+    """Two readings of a Python module for the text scans.
+
+    `code`: every line with the CONTENTS of its plain (non-f) string literals blanked,
+    unless the line assembles them (%, .format, +) — so `eval(` in code is seen and
+    `"eval("` in an assertion is not, while `"SELECT … = '" + name` keeps its text.
+    `fixture`: line numbers that are nothing but string fragments — the interior of a
+    triple-quoted page or template, or one line of an implicitly concatenated fixture —
+    where no rule about code applies at all. The secret rules read the raw line either
+    way, because a secret IS a string.
+    `page`: the subset of fixture lines that are an embedded web page (a triple-quoted
+    string holding <script> or <html>) — served to a browser, so the page-level checks
+    (the escaper, what the browser stores) read them as the JavaScript they are."""
+    code = list(lines)
+    fixture: set[int] = set()
+    page: set[int] = set()
     try:
         toks = list(tokenize.generate_tokens(io.StringIO("\n".join(lines) + "\n").readline))
     except (tokenize.TokenError, SyntaxError, IndentationError):
-        return data
+        return code, fixture, page
+    by_row: dict[int, list] = {}
+    for t in toks:
+        by_row.setdefault(t.start[0], []).append(t)
+    assembling = re.compile(r"%|\.format\(|\+")
     for t in toks:
         if t.type != tokenize.STRING:
             continue
-        prefix = t.string[:t.string.index(t.string.lstrip("rRbBuUfF")[0])].lower() if t.string else ""
-        if "f" in prefix:
+        stripped = t.string.lstrip("rRbBuU")
+        if stripped[:1] in "fF":
+            continue                                   # an f-string is code
+        (r0, c0), (r1, c1) = t.start, t.end
+        if r1 > r0:                                    # triple-quoted, spanning lines
+            fixture.update(range(r0 + 1, r1))
+            if _PAGE.search(t.string):
+                page.update(range(r0 + 1, r1))
+            code[r0 - 1] = code[r0 - 1][:c0] + " " * (len(code[r0 - 1]) - c0)
+            if r1 - 1 < len(code):
+                code[r1 - 1] = " " * c1 + code[r1 - 1][c1:]
             continue
-        (r0, _), (r1, _) = t.start, t.end
-        if r1 > r0:
-            data.update(range(r0, r1 + 1))
-        elif not re.search(r"%|\.format\(|\+", lines[r0 - 1].replace(t.string, "")):
-            data.add(r0)
-    return data
+        line = lines[r0 - 1]
+        if not assembling.search(line[:c0] + line[c1:]):
+            code[r0 - 1] = code[r0 - 1][:c0] + " " * (c1 - c0) + code[r0 - 1][c1:]
+    for row, ts in by_row.items():
+        kinds = {t.type for t in ts} - {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT,
+                                        tokenize.INDENT, tokenize.DEDENT}
+        ops = {t.string for t in ts if t.type == tokenize.OP}
+        if kinds and kinds <= {tokenize.STRING, tokenize.OP} and ops <= {",", "(", ")", "[", "]", "{", "}", "+"} \
+                and any(t.type == tokenize.STRING and t.string.lstrip("rRbBuU")[:1] not in "fF" for t in ts):
+            fixture.add(row)
+    return code, fixture, page
 
 
 def security_findings(unit: dict, lines: list[str]) -> list[dict]:
     """Deterministic, any language. Each rule is capped per file so one pattern that
     a file repeats on purpose cannot bury the rest of the report."""
     out, seen = [], {}
-    data = _python_data_lines(lines) if unit.get("lang", "python") == "python" else set()
-    for i, ln in enumerate(lines, 1):
-        comment = _is_comment(ln) or i in data
+    if unit.get("lang", "python") == "python":
+        code, fixture, _page = python_views(lines)
+    else:
+        code, fixture = lines, set()
+    for i, raw in enumerate(lines, 1):
+        comment = _is_comment(raw) or i in fixture
         for kind, rx, sev, title, why, fix in RULES:
             if comment and kind not in _ALWAYS:
                 continue
+            ln = raw if kind in _ALWAYS else code[i - 1]
             if seen.get(kind, 0) >= PER_RULE_CAP:
                 continue
             if kind == "SQL built from a string":

@@ -16,7 +16,8 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               fixer, history, liveness, panel, polyglot, report, review, slop, store)
+               fixer, history, liveness, panel, polyglot, posture, report, review, slop,
+               store)
 from .index import Index, build
 
 
@@ -118,6 +119,22 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                     mv.extend(polyglot.slop_findings(u, lines, u["lang"]))
             texts["__refs__"] = polyglot.reference_lines(root)
             mv.extend(polyglot.tree_findings(us, texts))     # duplicates, names referenced nowhere
+            # ── the repository as a system: posture, and what held up ──────
+            po = posture.analyse(root, us, texts)
+            mv.extend(po["findings"])
+            held = list(po["held"])
+            scanned = sum(1 for u in us if not u["is_test"])
+            hit = {f["claim"].split(" at ")[0] for f in mv if f.get("proposed_by") == "security-scan"}
+            if scanned:
+                for kinds, text in ((("private key in source", "credential token in source",
+                                      "hardcoded secret"),
+                                     "no committed secret, private key or credential token"),
+                                    (("dynamic code execution",), "no eval / new Function"),
+                                    (("TLS verification disabled",), "TLS verification is never disabled"),
+                                    (("SQL built from a string",),
+                                     "no SQL statement is built from an interpolated value")):
+                    if not hit & set(kinds):
+                        held.append(f"{text} across {scanned} source file(s)")
             del texts
             dv = deps.analyse(root)                  # known-vulnerable dependencies (R17)
             od = deps.outdated(root)                 # a major version behind the registry
@@ -129,6 +146,15 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 f["symbol"] = f["title"].split("`")[1].split("@")[0]   # fingerprint by package
             mv.extend(dv["findings"])
             mv.extend(od["findings"])
+            if dv["packages"] and not dv["findings"]:
+                held.append(f"{dv['packages']} pinned package(s) checked against OSV.dev: none "
+                            f"listed as vulnerable")
+            if od["checked"] and not od["findings"]:
+                held.append(f"{od['checked']} direct dependenc{'y is' if od['checked'] == 1 else 'ies are'} "
+                            f"on the registry's current major version")
+            for h in held:
+                store.decision_add(run_id, "posture", "posture-scan", "held", h,
+                                   model="none — text fact", charter=ch["stamp"])
             store.decision_add(run_id, "analysis", "dependency-scan", "checked",
                                f"{dv['packages']} pinned package(s) against OSV.dev: "
                                f"{len(dv['findings'])} vulnerable; {od['checked']} direct "
