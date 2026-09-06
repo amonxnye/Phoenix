@@ -179,6 +179,10 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
 # Tried first for a tagged model; if the gateway does not expose it (403/404/405)
 # the process remembers and uses the OpenAI-compatible path from then on.
 NATIVE = {"ok": None}                         # None: untested; True/False: measured
+# urllib's default User-Agent ("Python-urllib/3.x") is refused by Cloudflare's browser
+# integrity check in front of the gateway (HTTP 403, error code 1010) — measured on
+# production. The SDK passes because it names itself; so does every stdlib request.
+USER_AGENT = "phoenix-brain/1.0 (+https://github.com/amonxnye/Phoenix)"
 
 
 def _native_url(base_url: str) -> str:
@@ -192,7 +196,8 @@ def _ollama_chat(p: dict, messages: list, max_tokens: int, temperature: float,
             "options": {"num_predict": max_tokens, "temperature": temperature}}
     req = urllib.request.Request(
         _native_url(p["base_url"]), data=_json_mod.dumps(body).encode(), method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {p['key']}"})
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {p['key']}",
+                 "User-Agent": USER_AGENT})
     with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                           what=f"{p['model']} {purpose} native", idempotent=True,  # a read with a cost
                           key=_host(p)) as r:
@@ -357,7 +362,7 @@ def _anthropic_chat(p: dict, messages: list, max_tokens: int,
         p["base_url"].rstrip("/") + "/v1/messages",
         data=_json_mod.dumps(body).encode(),
         headers={"Content-Type": "application/json", "x-api-key": p["key"],
-                 "anthropic-version": "2023-06-01"})
+                 "anthropic-version": "2023-06-01", "User-Agent": USER_AGENT})
     with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                           what=f"{p['model']} anthropic", idempotent=True,   # a read with a cost
                           key=_host(p)) as r:

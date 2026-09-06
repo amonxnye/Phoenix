@@ -909,8 +909,9 @@ try:
         def __enter__(self): return self
         def __exit__(self, *a): return False
     _sentb = []
+    _sent_ua = []
     def _fake_open(req, timeout=None, context=None):
-        _sentb.append(B._json_mod.loads(req.data)); 
+        _sentb.append(B._json_mod.loads(req.data)); _sent_ua.append(req.get_header("User-agent", ""))
         if "closed" in req.full_url:
             raise urllib.error.HTTPError(req.full_url, 404, "nope", {}, None)
         return _Resp({"message": {"role": "assistant", "content": "alive", "thinking": ""},
@@ -921,6 +922,7 @@ try:
         _o, _u = B._ollama_chat(_pp, [{"role": "user", "content": "say alive"}], 50, 0.0, "probe")
         check("a tagged model is called on Ollama's native /api/chat with think:false, tokens read from the reply",
               _o == "alive" and _sentb[-1]["think"] is False and _sentb[-1]["options"]["num_predict"] == 50
+              and _sent_ua[-1].startswith("phoenix-brain/")
               and _u == {"input_tokens": 12, "output_tokens": 3} and B.LAST_RAW["reasoning_chars"] == 0
               and B._native_url(_pp["base_url"]) == "https://gw.example/api/chat", str(_sentb[-1])[:120])
         B.NATIVE["ok"] = None
