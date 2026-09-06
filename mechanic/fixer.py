@@ -103,7 +103,8 @@ def _numbered(text: str) -> str:
 
 
 def propose(f: dict, root: str, budget) -> dict:
-    """One finding → {patch, status, note}. Never raises; never writes to disk."""
+    """One finding → {patch, status, note}. Never writes to disk. Never raises, except
+    ProviderDown, which halts the run (the analyst found the old docstring's promise false)."""
     path = os.path.join(root, f["file"])
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:

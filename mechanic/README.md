@@ -59,6 +59,75 @@ one gets is stated rather than assumed:
 
 A tree with no recognised source at all is a refusal too, not "complete, 0 findings".
 
+## The verdict — the repository as a system
+
+A list of line-level findings is not what an operator reads first. `posture.py` reads
+the repository the way a security reviewer does and says, in one sentence, whether it
+may face the Internet — then a table, severity-ranked, with an **assessment** per row:
+
+| Severity | Finding | Assessment |
+|---|---|---|
+| critical | authentication is optional: the check on `CONSOLE_TOKEN` is skipped when it is unset | Fix before Internet exposure |
+| high | the code sandbox is a subprocess with no filesystem, user or resource isolation | Fix before real autonomous coding |
+| medium | request bodies have no size ceiling | DoS risk |
+| medium | a credential is kept in browser storage; the HTML escaper leaves quotes unescaped | XSS could compromise the operator token |
+| medium | 2 of 4 dependencies are not pinned to an exact version | Supply-chain / reproducibility risk |
+| low | `.gitignore` does not exclude .env or key files | Secret-leak prevention gap |
+
+That table is the mechanic's own reading of Phoenix, and `verify_mechanic.py` pins it:
+the run on this repository must reproduce every row. Under the table comes **what held
+up** — no committed secret, TLS never disabled, no SQL built from a value, no vulnerable
+package — so the reader knows what was examined and passed, not only what failed.
+Every row is a text fact with a file and a line; a check about absence names exactly
+what it looked for, so it can be refuted by pointing at the line it missed.
+
+## Error handling — read the way the paper reads it
+
+Rubio-González and Liblit ("Finding Error-Handling Bugs in Systems Code Using Static
+Analysis", 2011) confirmed 312 error-handling bugs across Linux file systems, and 86%
+were one shape: a function returned an error and the caller never saved it. Their
+strongest signal was **inconsistency** — "unsaved at 35 call sites, but saved at 17
+others" — and their reports carried the **path** the error took. `errors.py` asks the
+same questions with what the mechanic has (Python's AST; declarations by shape for
+JavaScript and TypeScript), and every finding carries its path as evidence:
+
+- a status or value-or-None result **discarded** at a call site while other callers save
+  it — the saving callers are the specification;
+- a value that **may be None** used as a value with no check on the path (the paper's
+  "there is a check for NULL, but the error check is missing");
+- a docstring that says **never raises** while a raise leaves the function, or a
+  `Raises:` section that misses one.
+
+Resolution is by name, so a name the tree defines twice is not judged, and a receiver
+the tree does not define (`ast.parse`, `thread.start`) never matches a same-named
+function. Run on itself, the analyst found a queued analysis that could be dropped
+between a lock release and the next start, and a docstring that promised more than
+the code kept; both are fixed, and the mechanic on itself is back at zero.
+
+## Measured, not judged — complexity, and where to look first
+
+`metrics.py` measures every unit: McCabe's cyclomatic complexity per function, Halstead
+volume, the maintainability index, and churn from the history where there is one. The
+numbers are facts; "too complex" is an opinion (Charter §2), so they are never findings.
+They order the work — after centrality, the riskiest unit is analysed first, so a budget
+that halts partway has read the likeliest code — and they appear as **where to look
+first** in the report and on the page, and in each analyst's context. The risk score is
+the transparent product of the measured factors with its weights in the code; it is not
+a fitted model, because there is no bug history here to fit one to.
+
+A framework for AI code review, sent with the brief, asks for more than this. What the
+mechanic does with each of its pillars, and why:
+
+| The framework asks for | The mechanic does | Why |
+|---|---|---|
+| interprocedural dataflow (weighted pushdown systems) for error propagation | the same three questions, per function, on the AST and by shape (`errors.py`), every finding with its path | a WPDS over Python and TypeScript is a research project; the per-function facts are checkable today and stated as facts |
+| cyclomatic complexity, Halstead, maintainability, churn entropy | measured for every unit; order the work; shown as a reading order | facts, cheap, and honest as measurements — never as findings |
+| a fitted risk model (logistic regression on bug history) | a transparent score with stated weights | no bug history to fit; an invented coefficient would read as evidence |
+| Markov failure probability, Bayesian root cause | not adopted | no transition or cause data exists; a number without a measurement behind it is a wish |
+| symbolic execution with an SMT solver | not adopted | out of scope for a stdlib-only mechanic; the judged panel reads the paths instead |
+| differential (diff-aware) analysis | the watch: a run per new commit, findings carried across by fingerprint, fixed-upstream when they vanish | already the mechanic's model of change |
+| chain-of-thought with the path stated | every analyst is asked for the path: produced, received, used | the paper's sample trace, in the prompt |
+
 ## What is deliberately not here yet
 
 In the handoff's order, because each milestone answers a question that decides

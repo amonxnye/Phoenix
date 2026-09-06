@@ -16,7 +16,8 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               fixer, history, liveness, panel, polyglot, report, review, slop, store)
+               errors, fixer, history, liveness, metrics, panel, polyglot, posture, report,
+               review, slop, store)
 from .index import Index, build
 
 
@@ -75,7 +76,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         idx = Index(db, root)
         try:
             us = decompose.units(idx)
-            unit_ids = dict(zip((u["module"] for u in us), store.units_add(run_id, us)))
+            texts = {u["module"]: polyglot.read_lines(os.path.join(root, u["file"])) for u in us}
             store.run_set(run_id, unit_count=len(us))         # every language, not only the parsed one
             # What the tree is made of, and what each part gets. The first public run
             # read a TypeScript repository as "0 modules, 0 findings, complete": nothing
@@ -101,6 +102,13 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
             if not ok_hist:
                 store.gap_add(run_id, "history", why_hist)
                 counts["gaps"] += 1
+            # Measured, not judged: complexity and churn order the work after centrality,
+            # so a budget that halts partway has read the likeliest code first.
+            for u in us:
+                u.update(metrics.unit_metrics(u, texts[u["module"]]))
+                u["risk"] = 0.0 if u["is_test"] else metrics.risk(u, hist.get(u["file"]))
+            us.sort(key=lambda u: (-u["centrality"], -u["risk"], u["module"]))
+            unit_ids = dict(zip((u["module"] for u in us), store.units_add(run_id, us)))
             contexts = [decompose.context(u, root, idx, hist) for u in us]
 
             # ── free and exact: liveness, and the injection scan ────────────
@@ -109,7 +117,6 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 store.gap_add(run_id, g["scope"], g["reason"])
                 counts["gaps"] += 1
             mv = list(res["findings"])
-            texts = {u["module"]: polyglot.read_lines(os.path.join(root, u["file"])) for u in us}
             for u in us:
                 if not u["is_test"]:
                     lines = texts[u["module"]]
@@ -118,6 +125,23 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                     mv.extend(polyglot.slop_findings(u, lines, u["lang"]))
             texts["__refs__"] = polyglot.reference_lines(root)
             mv.extend(polyglot.tree_findings(us, texts))     # duplicates, names referenced nowhere
+            mv.extend(errors.analyse(us, texts)["findings"])  # dropped results, None before a check, docs vs raises
+            # ── the repository as a system: posture, and what held up ──────
+            po = posture.analyse(root, us, texts)
+            mv.extend(po["findings"])
+            held = list(po["held"])
+            scanned = sum(1 for u in us if not u["is_test"])
+            hit = {f["claim"].split(" at ")[0] for f in mv if f.get("proposed_by") == "security-scan"}
+            if scanned:
+                for kinds, text in ((("private key in source", "credential token in source",
+                                      "hardcoded secret"),
+                                     "no committed secret, private key or credential token"),
+                                    (("dynamic code execution",), "no eval / new Function"),
+                                    (("TLS verification disabled",), "TLS verification is never disabled"),
+                                    (("SQL built from a string",),
+                                     "no SQL statement is built from an interpolated value")):
+                    if not hit & set(kinds):
+                        held.append(f"{text} across {scanned} source file(s)")
             del texts
             dv = deps.analyse(root)                  # known-vulnerable dependencies (R17)
             od = deps.outdated(root)                 # a major version behind the registry
@@ -129,6 +153,15 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 f["symbol"] = f["title"].split("`")[1].split("@")[0]   # fingerprint by package
             mv.extend(dv["findings"])
             mv.extend(od["findings"])
+            if dv["packages"] and not dv["findings"]:
+                held.append(f"{dv['packages']} pinned package(s) checked against OSV.dev: none "
+                            f"listed as vulnerable")
+            if od["checked"] and not od["findings"]:
+                held.append(f"{od['checked']} direct dependenc{'y is' if od['checked'] == 1 else 'ies are'} "
+                            f"on the registry's current major version")
+            for h in held:
+                store.decision_add(run_id, "posture", "posture-scan", "held", h,
+                                   model="none — text fact", charter=ch["stamp"])
             store.decision_add(run_id, "analysis", "dependency-scan", "checked",
                                f"{dv['packages']} pinned package(s) against OSV.dev: "
                                f"{len(dv['findings'])} vulnerable; {od['checked']} direct "

@@ -11,7 +11,7 @@ that halts partway has spent itself on the code that matters most.
 
 import os
 
-from . import brainseam, history, polyglot
+from . import brainseam, history, metrics, polyglot
 from .index import Index
 
 
@@ -53,6 +53,10 @@ def context(unit: dict, root: str, idx: Index, hist: dict) -> str:
         f"tests exercising it: {', '.join(tested) or 'none found in the graph'}",
         brainseam.clip("unit_history", history.line(unit["file"], hist)),
     ]
+    if unit.get("hotspot"):
+        head.append(f"complexity: max cyclomatic {unit['complexity']} in `{unit['hotspot']}`; "
+                    f"maintainability {unit['maintainability']}/100; risk {unit.get('risk', 0)} — "
+                    f"measured, not judged: read the hotspot first")
     if unit["dynamic"]:
         head.append(f"dynamic dispatch present: {unit['dynamic']} — reachability here is "
                     f"unprovable; do not claim a symbol is unused")
@@ -70,10 +74,14 @@ def checklist(unit: dict, idx: Index) -> list[dict]:
     if unit.get("lang", "python") != "python":
         return polyglot.checklist(unit, polyglot.read_lines(os.path.join(idx.root, unit["file"])))
     items = []
+    cc = {(f["name"], f["line"]): f["cc"]
+          for f in metrics.python_functions(polyglot.read_lines(os.path.join(idx.root, unit["file"])))}
     for s in idx.symbols(module=unit["module"]):
         if s["kind"] in ("function", "method"):
             items.append({"id": f"f:{s['name']}@{s['line']}", "kind": s["kind"],
-                          "what": f"{s['qualname']} (line {s['line']}-{s['end_line']})"})
+                          "what": f"{s['qualname']} (line {s['line']}-{s['end_line']}"
+                                  + (f", CC {cc[(s['name'], s['line'])]}" if (s['name'], s['line']) in cc else "")
+                                  + ")"})
     for dep in unit["deps"]:
         items.append({"id": f"i:{dep}", "kind": "import", "what": f"import {dep}"})
     for call in idx.external_calls(unit["module"]):

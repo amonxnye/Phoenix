@@ -1158,6 +1158,343 @@ finally:
 shutil.rmtree(poly_root, ignore_errors=True)
 os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
 
+
+# ── posture: the repository as a system, and the verdict an operator reads first ──
+print("\nPosture — the verdict, the assessment per row, and what held up")
+from mechanic import posture                                              # noqa: E402
+post_root = tempfile.mkdtemp(prefix="mechanic-posture-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(post_root, "data")
+POST = {
+    "requirements.txt": "flask==3.0.0\nrequests>=2.0\nlangsmith\n",
+    ".gitignore": "__pycache__/\n*.pyc\n",
+    ".env": "DB_PASSWORD=" + "s3cr3t-value-9\n",
+    "server.py": (
+        "import os, json, subprocess, sys\n"
+        "from http.server import BaseHTTPRequestHandler\n"
+        "PORT = os.environ.get('PORT')\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "    def do_POST(self):\n"
+        "        tok = os.environ.get('CONSOLE_TOKEN', '')\n"
+        "        if tok and self.headers.get('X-Console-Token', '') != tok:\n"
+        "            return self.send_error(401)\n"
+        "        n = int(self.headers.get('Content-Length', 0) or 0)\n"
+        "        body = json.loads(self.rfile.read(n) or b'{}')\n"
+        "        key = os.environ.get('BRAIN_API_KEY', '')\n"
+        "        if key:\n"
+        "            body['model'] = 'configured'\n"
+        "    def sandbox_run(self, path):\n"
+        "        return subprocess.run([sys.executable, path], capture_output=True, timeout=30)\n"
+        "PAGE = \"\"\"<script>\n"
+        "const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));\n"
+        "fetch('/api', {headers: {'X-Console-Token': localStorage.getItem('ctok') || ''}});\n"
+        "</script>\"\"\"\n"
+    ),
+    "bounded.py": (
+        "class H:\n"
+        "    def read(self):\n"
+        "        n = int(self.headers.get('Content-Length', 0) or 0)\n"
+        "        if n > MAX_BODY:\n"
+        "            return self.send_error(413)\n"
+        "        return self.rfile.read(n)\n"
+    ),
+    "jail.py": (
+        "import resource, subprocess, sys\n"
+        "def run_untrusted(path):\n"
+        "    def limits():\n"
+        "        resource.setrlimit(resource.RLIMIT_AS, (1 << 28, 1 << 28))\n"
+        "    return subprocess.run([sys.executable, path], preexec_fn=limits, timeout=10)\n"
+    ),
+    "verify_thing.py": (
+        "import subprocess, sys\n"
+        "# the acceptance suite runs the sandbox\n"
+        "subprocess.run([sys.executable, 'x.py'])\n"
+    ),
+}
+for rel, body in POST.items():
+    with open(os.path.join(post_root, rel), "w") as f:
+        f.write(body)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    pres = analyse.run(post_root, name="posture", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+pfs = store.findings(run_id=pres["run_id"])
+def _kind(f):                                        # the record keeps the evidence, not the symbol
+    return f["evidence"][0]["reason"].split("text fact: ")[1].split(" at lines")[0]
+post = {_kind(f): f for f in pfs if f["proposed_by"] == "posture-scan"}
+kinds_at = {(_kind(f), f["evidence"][0]["file"]) for f in pfs if f["proposed_by"] == "posture-scan"}
+check("authentication guarded on an optional environment variable is a finding — critical when the tree binds a port",
+      post.get("optional authentication", {}).get("severity") == "critical"
+      and "CONSOLE_TOKEN" in post["optional authentication"]["title"]
+      and post["optional authentication"]["assessment"] == posture.FIX_BEFORE_EXPOSURE,
+      str({k: v["title"][:60] for k, v in post.items()}))
+check("…but a key read for an OUTBOUND call (BRAIN_API_KEY) is not an authentication gate",
+      "BRAIN_API_KEY" not in post.get("optional authentication", {}).get("title", ""))
+check("a request body read from Content-Length with no ceiling is a finding; the bounded read is what held up",
+      ("unbounded request body", "server.py") in kinds_at and ("unbounded request body", "bounded.py") not in kinds_at
+      and any("bounded.py" in d["rationale"] for d in store.decisions(pres["run_id"]) if d["stage"] == "posture"))
+check("an HTML escaper that leaves quotes unescaped, and a credential in localStorage, are findings that name each other",
+      post.get("weak HTML escaping", {}).get("severity") == "medium"
+      and post.get("credential in browser storage", {}).get("assessment") == posture.XSS_TOKEN
+      and "escaper" in post["credential in browser storage"]["description"])
+check("floating requirements are a finding naming which ones",
+      "2 of 3" in post.get("unpinned dependencies", {}).get("title", "")
+      and "requests" in post["unpinned dependencies"]["description"]
+      and "langsmith" in post["unpinned dependencies"]["description"]
+      and post["unpinned dependencies"]["assessment"] == posture.SUPPLY_CHAIN)
+check("a committed .env is a high finding, and a .gitignore without .env / key patterns is the gap behind it",
+      post.get("credentials file in the tree", {}).get("severity") == "high"
+      and post.get("gitignore gap", {}).get("assessment") == posture.SECRET_LEAK)
+check("a subprocess that runs an interpreter in a 'sandbox' with no isolation is a finding…",
+      ("subprocess sandbox", "server.py") in kinds_at
+      and post["subprocess sandbox"]["assessment"] == posture.FIX_BEFORE_AUTONOMY)
+check("…but not one that sets rlimits, and not an acceptance harness that merely runs things",
+      ("subprocess sandbox", "jail.py") not in kinds_at and ("subprocess sandbox", "verify_thing.py") not in kinds_at)
+check("every posture finding is a machine-verified text fact with a file, a line and an assessment",
+      all(f["basis"] == "machine-verified" and f["evidence"][0]["file"] and f["evidence"][0]["line_range"]
+          and f["assessment"] for f in pfs if f["proposed_by"] == "posture-scan"))
+vd = posture.verdict(pfs, ["x held"], {"units": 4, "languages": ["python"], "refusals": 2})
+check("the verdict leads with exposure: one optional-authentication finding outweighs everything else",
+      vd["headline"].startswith("Not safe to expose to the Internet yet — 1 blocking finding, and 1 to fix before autonomous")
+      and vd["rows"][0]["assessment"] == posture.FIX_BEFORE_EXPOSURE
+      and vd["rows"][1]["assessment"] == posture.FIX_BEFORE_AUTONOMY, vd["headline"])
+check("rows are ranked by assessment, then severity — slop last",
+      [r["category"] for r in vd["rows"]].index("security") < [r["category"] for r in vd["rows"]].index("slop")
+      if any(r["category"] == "slop" for r in vd["rows"]) else True)
+check("without a blocking finding the headline says so",
+      posture.verdict([], [], {"units": 1, "languages": ["python"], "refusals": 0})["headline"].startswith("Nothing found")
+      and posture.verdict([{"severity": "medium", "basis": "machine-verified", "category": "slop", "title": "t",
+                            "evidence": [{"file": "a", "line_range": "1-1"}]}], [], {})["headline"]
+      .startswith("No blocking issue found; 1 medium finding"))
+prep = report.render(pres["run_id"])
+check("the report opens with the verdict, the table with an assessment column, and what held up",
+      "## Verdict" in prep and "| Severity | Finding | Assessment |" in prep
+      and "Fix before Internet exposure" in prep and "## What held up" in prep
+      and prep.index("## Verdict") < prep.index("## Machine-verified"))
+_code, _ct, _body = web.handle_get("/api/mechanic/findings?repo=" + pres["repo_id"])
+_vj = json.loads(_body).get("verdict") or {}
+check("the page's findings API carries the same verdict", _vj.get("headline", "").startswith("Not safe to expose")
+      and _vj.get("held"))
+shutil.rmtree(post_root, ignore_errors=True)
+
+# The regression that matters most, again: the mechanic on Phoenix reproduces the
+# security review's table. Every row below was found by a human reviewer first.
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    phx = analyse.run(os.path.dirname(HERE), name="phoenix", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+phf = [f for f in store.findings(run_id=phx["run_id"]) if f["proposed_by"] == "posture-scan"]
+rows = {(_kind(f), f["evidence"][0]["file"]): f for f in phf}
+check("Phoenix: console authentication is optional (CONSOLE_TOKEN) — critical, fix before Internet exposure",
+      rows.get(("optional authentication", "gov/sim_console.py"), {}).get("severity") == "critical")
+check("Phoenix: the agent code sandbox is a subprocess, not a filesystem/process sandbox — high",
+      rows.get(("subprocess sandbox", "gov/workspace.py"), {}).get("severity") == "high"
+      and not any(k[0] == "subprocess sandbox" and k[1].startswith("gov/verify") for k in rows))
+check("Phoenix: HTTP request bodies have no size ceiling — medium, DoS",
+      rows.get(("unbounded request body", "gov/sim_console.py"), {}).get("assessment") == posture.DOS)
+check("Phoenix: the browser token in localStorage and the weak HTML escaper — medium",
+      ("credential in browser storage", "gov/sim_console.py") in rows
+      and rows.get(("weak HTML escaping", "gov/sim_console.py"), {}).get("severity") == "medium")
+check("Phoenix: dependencies are only partly pinned — medium, supply chain",
+      "2 of 4" in rows.get(("unpinned dependencies", "requirements.txt"), {}).get("title", ""))
+check("Phoenix: .gitignore does not protect .env / key files — low",
+      rows.get(("gitignore gap", ".gitignore"), {}).get("severity") == "low")
+check("Phoenix: BRAIN_API_KEY (an outbound key) is NOT reported as optional authentication",
+      not any(k[0] == "optional authentication" and k[1] == "gov/brain.py" for k in rows))
+_pv = json.loads(web.handle_get("/api/mechanic/findings?repo=" + phx["repo_id"])[2])["verdict"]
+check("Phoenix's verdict: not safe to expose yet, and what held up is listed",
+      _pv["headline"].startswith("Not safe to expose to the Internet yet")
+      and any("no committed secret" in h for h in _pv["held"]), _pv["headline"][:90])
+
+
+# ── error handling — Rubio-González & Liblit's three bug shapes, with the path ──
+print("\nError handling — dropped results, None before a check, docs vs raises, with the path")
+from mechanic import errors                                               # noqa: E402
+eh_root = tempfile.mkdtemp(prefix="mechanic-errors-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(eh_root, "data")
+EH_PY = "\n".join([
+    "import ast",
+    "def tx_commit(fs):",                                   # Figure 1: an error code
+    "    if fs.read_only:",
+    "        return -30",
+    "    return 0",
+    "def di_free(fs):",
+    "    rc = tx_commit(fs)",                               # saved…
+    "    return 0",
+    "def other(fs):",
+    "    rc = tx_commit(fs)",                               # …and saved and checked
+    "    if rc:",
+    "        return rc",
+    "    return 0",
+    "def third(fs):",
+    "    tx_commit(fs)",                                    # line 15: discarded — the bug
+    "    return 0",
+    "def iget(sb):",                                        # Figure 2: value-or-None
+    "    if not sb:",
+    "        return None",
+    "    return sb.inode",
+    "def fill_super(sb):",
+    "    root = iget(sb)",                                  # line 22
+    "    log('looking')",
+    "    return root.i_state",                              # line 24: no check on the path
+    "def fill_super_ok(sb):",
+    "    root = iget(sb)",
+    "    if root is None:",
+    "        return -1",
+    "    return root.i_state",                              # checked: not a finding
+    "def fetch(url):",
+    "    '''Download it. Never raises.'''",
+    "    if not url:",
+    "        raise ValueError('no url')",                   # line 33
+    "    return url",
+    "def careful(url):",
+    "    '''Raises: ValueError'''",
+    "    if url == 'x':",
+    "        raise KeyError('x')",                          # line 38: undocumented
+    "    return url",
+    "def honest(url):",
+    "    '''Never raises, except ProviderDown, which halts the run.'''",
+    "    try:",
+    "        return url",
+    "    except ProviderDown:",
+    "        raise",                                        # documented: not a finding
+    "def log(msg):",
+    "    return True",                                      # a status…
+    "def noisy():",
+    "    log('a'); log('b'); log('c')",                     # …discarded EVERYWHERE: a convention, not judged
+    "def parse(text):",
+    "    return None if not text else text",
+    "def uses_stdlib(src):",
+    "    ast.parse(src)",                                   # stdlib receiver: never resolved to our parse
+    "    x = parse(src)",
+    "    return x",
+    "def twice(a):",
+    "    return a > 0",
+    "def twice_caller(a):",
+    "    twice(a)",                                         # `twice` is defined twice in the tree: not judged
+    "    return twice(a)",
+])
+EH_PY2 = "def twice(b):\n    return b < 0\n"
+EH_TS = "\n".join([
+    "export async function send(msg: string): Promise<boolean> {",
+    "  return msg.length > 0;",
+    "}",
+    "export async function main() {",
+    "  const ok = await send('a');",
+    "  if (!ok) { return; }",
+    "  send('b');",                                         # line 7: dropped, with the rejection
+    "  void send('c');",                                    # intent stated: not a finding
+    "}",
+])
+os.makedirs(os.path.join(eh_root, "src"))
+for rel, body in (("src/jfs.py", EH_PY), ("src/dup.py", EH_PY2), ("src/mail.ts", EH_TS),
+                  ("verify_all.py", "from src.jfs import tx_commit\ntx_commit(None)\n")):
+    with open(os.path.join(eh_root, rel), "w") as f:
+        f.write(body)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    ehr = analyse.run(eh_root, name="errors", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+ehf = [f for f in store.findings(run_id=ehr["run_id"]) if f["proposed_by"] == "error-handling"]
+by_title = {f["title"]: f for f in ehf}
+def _has(sub): return next((f for f in ehf if sub in f["title"]), None)
+check("Figure 1 — a status result discarded at one call site while others save it is a finding (86% of the paper's bugs)",
+      _has("`tx_commit`'s result is discarded at src/jfs.py:15") is not None
+      and "saved at 2 other call sites" in _has("`tx_commit`'s result is discarded").get("title", ""),
+      str(sorted(by_title)))
+check("…a result discarded EVERYWHERE is a convention, not judged; a name defined twice is not judged; a stdlib receiver never resolves",
+      _has("`log`'s result") is None and _has("`twice`'s result") is None and _has("`parse`'s result") is None)
+check("…and a harness (verify_*.py) that calls for effect is not a call site",
+      not any("verify_all.py" in f["evidence"][1]["file"] for f in ehf if "discarded" in f["title"]))
+fig2 = _has("`root` may be None at src/jfs.py:24")
+check("Figure 2 — a value-or-None result used as a value with no check on the path is a finding…",
+      fig2 is not None and fig2["assessment"] == errors.CHECK_NONE, str(sorted(by_title)))
+check("…with the path as evidence: where None is returned, where it is received, where it is used",
+      fig2 is not None and [e["line_range"] for e in fig2["evidence"]] == ["19-19", "22-22", "24-24"],
+      str([e["line_range"] for e in (fig2 or {}).get("evidence", [])]))
+check("…and the same call followed by a check is not", _has("may be None at src/jfs.py:29") is None)
+check("a docstring that says 'never raises' while a raise leaves the function is a finding",
+      _has("`fetch` says it never raises, but line 33 raises ValueError") is not None)
+check("a Raises: section that misses an exception is a finding; 'never raises, except X' is a documented raise",
+      _has("`careful` raises KeyError at line 38") is not None and _has("`honest`") is None)
+check("JavaScript: an async result dropped as a statement, with its rejection, is a finding; `void f()` states the intent",
+      _has("`send`'s result is discarded at src/mail.ts:7") is not None
+      and _has("`send`'s result is discarded").get("severity") == "medium"
+      and _has("src/mail.ts:8") is None)
+check("every error-handling finding is machine-verified, categorised, assessed, and carries at least two evidence points",
+      bool(ehf) and all(f["basis"] == "machine-verified" and f["category"] == "error-handling" and f["assessment"]
+                        and len(f["evidence"]) >= 2 for f in ehf))
+check("in the verdict, error handling ranks after security and before outdated dependencies and slop",
+      posture._rank({"assessment": "", "basis": "machine-verified", "category": "security"})
+      < posture._rank({"assessment": "", "basis": "machine-verified", "category": "error-handling"})
+      < posture._rank({"assessment": "", "basis": "machine-verified", "category": "outdated"}))
+shutil.rmtree(eh_root, ignore_errors=True)
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+
+
+# ── measured, not judged: complexity orders the work and names where to look first ──
+print("\nMetrics — measured, not judged; where to look first")
+from mechanic import metrics                                              # noqa: E402
+mt_root = tempfile.mkdtemp(prefix="mechanic-metrics-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(mt_root, "data")
+with open(os.path.join(mt_root, "tangled.py"), "w") as f:
+    f.write("def knot(a, b, c):\n" + "".join(f"    if a > {i} and b < {i}:\n        c += {i}\n" for i in range(12))
+            + "    return c\n\ndef plain(x):\n    return x + 1\n")
+with open(os.path.join(mt_root, "simple.py"), "w") as f:
+    f.write("import tangled\n\ndef one(x):\n    return tangled.plain(x)\n")
+fns = {f["name"]: f["cc"] for f in metrics.python_functions(open(os.path.join(mt_root, "tangled.py")).read().splitlines())}
+check("cyclomatic complexity is McCabe's: one plus each decision, boolean operands counted",
+      fns == {"knot": 25, "plain": 1}, str(fns))
+mm = metrics.unit_metrics({"module": "tangled", "file": "tangled.py", "lang": "python"},
+                          open(os.path.join(mt_root, "tangled.py")).read().splitlines())
+check("a unit's metrics name the hotspot function and give a maintainability index on 0–100",
+      mm["complexity"] == 25 and mm["hotspot"] == "knot@1" and 0 <= mm["maintainability"] <= 100
+      and mm["functions"] == 2, str(mm))
+r0 = metrics.risk(mm, None)
+check("the risk score is the stated product of measured factors, churn counting only where a history exists",
+      abs(r0 - round(0.5 * 25 / 50 + 0.3 * (1 - mm["maintainability"] / 100), 3)) < 0.002
+      and metrics.risk(mm, {"commits": 30}) > r0)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    mr = analyse.run(mt_root, name="metrics", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+mus = {u["module"]: u for u in store.units(mr["run_id"])}
+check("every unit's measurements are on the record",
+      mus["tangled"]["complexity"] == 25 and mus["tangled"]["hotspot"] == "knot@1"
+      and mus["simple"]["complexity"] == 1 and mus["tangled"]["risk"] > mus["simple"]["risk"])
+look = metrics.look_first(store.units(mr["run_id"]))
+check("where to look first is the riskiest unit — after centrality, which `tangled` also has (simple imports it)",
+      look and look[0]["module"] == "tangled")
+check("metrics are never findings: nothing in the run is about complexity, maintainability or risk",
+      not any(w in f["title"].lower() for f in store.findings(run_id=mr["run_id"])
+              for w in ("complex", "maintainab", "risk")),
+      "; ".join(f["title"][:40] for f in store.findings(run_id=mr["run_id"])))
+mrep = report.render(mr["run_id"])
+check("the report shows where to look first, as a reading order, not a finding",
+      "## Where to look first" in mrep and "`tangled.py`" in mrep and "knot@1" in mrep)
+_mv = json.loads(web.handle_get("/api/mechanic/findings?repo=" + mr["repo_id"])[2])["verdict"]
+check("the page carries the same reading order", (_mv.get("look_first") or [{}])[0].get("module") == "tangled")
+from mechanic.index import Index as _MIdx, build as _mbuild                # noqa: E402
+_mdb = os.path.join(mt_root, "m.sqlite"); _mbuild(mt_root, _mdb); _midx = _MIdx(_mdb, mt_root)
+try:
+    tu = next(u for u in decompose.units(_midx) if u["module"] == "tangled")
+    tu.update(metrics.unit_metrics(tu, open(os.path.join(mt_root, "tangled.py")).read().splitlines()))
+    tu["risk"] = metrics.risk(tu, None)
+    check("the analyst's context names the hotspot; the critic's checklist carries each function's CC",
+          "complexity: max cyclomatic 25 in `knot@1`" in decompose.context(tu, mt_root, _midx, {})
+          and any(i["id"] == "f:knot@1" and "CC 25" in i["what"] for i in decompose.checklist(tu, _midx)))
+finally:
+    _midx.close()
+shutil.rmtree(mt_root, ignore_errors=True)
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+
 shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
