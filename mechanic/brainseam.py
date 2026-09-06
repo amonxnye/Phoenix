@@ -144,6 +144,8 @@ def _real_ask(messages, max_tokens, temperature, purpose, tier):
     if not b or not available():
         raise RuntimeError("no model configured")
     p = provider()
+    if p is None:                                 # available() implies this; the check belongs on the path
+        raise RuntimeError("no model configured")
     return b._chat(messages, max_tokens, temperature, f"mechanic:{purpose}",
                    extra_body=provider_extras(p["model"]), provider_override=p)
 

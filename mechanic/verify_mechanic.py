@@ -1309,6 +1309,133 @@ check("Phoenix's verdict: not safe to expose yet, and what held up is listed",
       _pv["headline"].startswith("Not safe to expose to the Internet yet")
       and any("no committed secret" in h for h in _pv["held"]), _pv["headline"][:90])
 
+
+# ── error handling — Rubio-González & Liblit's three bug shapes, with the path ──
+print("\nError handling — dropped results, None before a check, docs vs raises, with the path")
+from mechanic import errors                                               # noqa: E402
+eh_root = tempfile.mkdtemp(prefix="mechanic-errors-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(eh_root, "data")
+EH_PY = "\n".join([
+    "import ast",
+    "def tx_commit(fs):",                                   # Figure 1: an error code
+    "    if fs.read_only:",
+    "        return -30",
+    "    return 0",
+    "def di_free(fs):",
+    "    rc = tx_commit(fs)",                               # saved…
+    "    return 0",
+    "def other(fs):",
+    "    rc = tx_commit(fs)",                               # …and saved and checked
+    "    if rc:",
+    "        return rc",
+    "    return 0",
+    "def third(fs):",
+    "    tx_commit(fs)",                                    # line 15: discarded — the bug
+    "    return 0",
+    "def iget(sb):",                                        # Figure 2: value-or-None
+    "    if not sb:",
+    "        return None",
+    "    return sb.inode",
+    "def fill_super(sb):",
+    "    root = iget(sb)",                                  # line 22
+    "    log('looking')",
+    "    return root.i_state",                              # line 24: no check on the path
+    "def fill_super_ok(sb):",
+    "    root = iget(sb)",
+    "    if root is None:",
+    "        return -1",
+    "    return root.i_state",                              # checked: not a finding
+    "def fetch(url):",
+    "    '''Download it. Never raises.'''",
+    "    if not url:",
+    "        raise ValueError('no url')",                   # line 33
+    "    return url",
+    "def careful(url):",
+    "    '''Raises: ValueError'''",
+    "    if url == 'x':",
+    "        raise KeyError('x')",                          # line 38: undocumented
+    "    return url",
+    "def honest(url):",
+    "    '''Never raises, except ProviderDown, which halts the run.'''",
+    "    try:",
+    "        return url",
+    "    except ProviderDown:",
+    "        raise",                                        # documented: not a finding
+    "def log(msg):",
+    "    return True",                                      # a status…
+    "def noisy():",
+    "    log('a'); log('b'); log('c')",                     # …discarded EVERYWHERE: a convention, not judged
+    "def parse(text):",
+    "    return None if not text else text",
+    "def uses_stdlib(src):",
+    "    ast.parse(src)",                                   # stdlib receiver: never resolved to our parse
+    "    x = parse(src)",
+    "    return x",
+    "def twice(a):",
+    "    return a > 0",
+    "def twice_caller(a):",
+    "    twice(a)",                                         # `twice` is defined twice in the tree: not judged
+    "    return twice(a)",
+])
+EH_PY2 = "def twice(b):\n    return b < 0\n"
+EH_TS = "\n".join([
+    "export async function send(msg: string): Promise<boolean> {",
+    "  return msg.length > 0;",
+    "}",
+    "export async function main() {",
+    "  const ok = await send('a');",
+    "  if (!ok) { return; }",
+    "  send('b');",                                         # line 7: dropped, with the rejection
+    "  void send('c');",                                    # intent stated: not a finding
+    "}",
+])
+os.makedirs(os.path.join(eh_root, "src"))
+for rel, body in (("src/jfs.py", EH_PY), ("src/dup.py", EH_PY2), ("src/mail.ts", EH_TS),
+                  ("verify_all.py", "from src.jfs import tx_commit\ntx_commit(None)\n")):
+    with open(os.path.join(eh_root, rel), "w") as f:
+        f.write(body)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    ehr = analyse.run(eh_root, name="errors", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+ehf = [f for f in store.findings(run_id=ehr["run_id"]) if f["proposed_by"] == "error-handling"]
+by_title = {f["title"]: f for f in ehf}
+def _has(sub): return next((f for f in ehf if sub in f["title"]), None)
+check("Figure 1 — a status result discarded at one call site while others save it is a finding (86% of the paper's bugs)",
+      _has("`tx_commit`'s result is discarded at src/jfs.py:15") is not None
+      and "saved at 2 other call sites" in _has("`tx_commit`'s result is discarded").get("title", ""),
+      str(sorted(by_title)))
+check("…a result discarded EVERYWHERE is a convention, not judged; a name defined twice is not judged; a stdlib receiver never resolves",
+      _has("`log`'s result") is None and _has("`twice`'s result") is None and _has("`parse`'s result") is None)
+check("…and a harness (verify_*.py) that calls for effect is not a call site",
+      not any("verify_all.py" in f["evidence"][1]["file"] for f in ehf if "discarded" in f["title"]))
+fig2 = _has("`root` may be None at src/jfs.py:24")
+check("Figure 2 — a value-or-None result used as a value with no check on the path is a finding…",
+      fig2 is not None and fig2["assessment"] == errors.CHECK_NONE, str(sorted(by_title)))
+check("…with the path as evidence: where None is returned, where it is received, where it is used",
+      fig2 is not None and [e["line_range"] for e in fig2["evidence"]] == ["19-19", "22-22", "24-24"],
+      str([e["line_range"] for e in (fig2 or {}).get("evidence", [])]))
+check("…and the same call followed by a check is not", _has("may be None at src/jfs.py:29") is None)
+check("a docstring that says 'never raises' while a raise leaves the function is a finding",
+      _has("`fetch` says it never raises, but line 33 raises ValueError") is not None)
+check("a Raises: section that misses an exception is a finding; 'never raises, except X' is a documented raise",
+      _has("`careful` raises KeyError at line 38") is not None and _has("`honest`") is None)
+check("JavaScript: an async result dropped as a statement, with its rejection, is a finding; `void f()` states the intent",
+      _has("`send`'s result is discarded at src/mail.ts:7") is not None
+      and _has("`send`'s result is discarded").get("severity") == "medium"
+      and _has("src/mail.ts:8") is None)
+check("every error-handling finding is machine-verified, categorised, assessed, and carries at least two evidence points",
+      bool(ehf) and all(f["basis"] == "machine-verified" and f["category"] == "error-handling" and f["assessment"]
+                        and len(f["evidence"]) >= 2 for f in ehf))
+check("in the verdict, error handling ranks after security and before outdated dependencies and slop",
+      posture._rank({"assessment": "", "basis": "machine-verified", "category": "security"})
+      < posture._rank({"assessment": "", "basis": "machine-verified", "category": "error-handling"})
+      < posture._rank({"assessment": "", "basis": "machine-verified", "category": "outdated"}))
+shutil.rmtree(eh_root, ignore_errors=True)
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+
 shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

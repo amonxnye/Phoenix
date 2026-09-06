@@ -59,11 +59,6 @@ _SANDBOX_WORDS = re.compile(r"sandbox|untrusted|agent|workspace|generated", re.I
 # Inbound authentication compares the secret with something the CLIENT sent. A key
 # read for an outbound call (BRAIN_API_KEY → "is a model configured?") is not a gate.
 _INBOUND = re.compile(r"headers|header\(|request\.|req\.|cookie|authorization|bearer", re.I)
-_HARNESS = re.compile(r"^(?:verify|test|tests|smoke|bench|check)[_\-.]|_test\.|\.test\.|\.spec\.", re.I)
-
-
-def _is_harness(unit) -> bool:
-    return bool(unit["is_test"] or _HARNESS.match(os.path.basename(unit["file"])))
 
 
 def _finding(unit_file, line, end, kind, title, why, fix, severity, assessment,
@@ -322,7 +317,7 @@ def _gitignore(root) -> tuple[list[dict], list[str]]:
 def _sandbox(units, texts) -> list[dict]:
     out = []
     for u in units:
-        if _is_harness(u):
+        if polyglot.is_harness(u):
             continue                                   # an acceptance suite runs things; it is not the sandbox
         lines = texts.get(u["module"], [])
         text = "\n".join(lines)
@@ -410,7 +405,8 @@ def _rank(r: dict) -> int:
         return 1
     if r["basis"] != "machine-verified":
         return 4
-    return {"security": 2, "outdated": 3, "liveness": 5, "slop": 6}.get(r["category"], 4)
+    return {"security": 2, "error-handling": 3, "outdated": 4, "liveness": 6,
+            "slop": 7}.get(r["category"], 5)
 
 
 def verdict(findings: list[dict], held: list[str], scope: dict) -> dict:

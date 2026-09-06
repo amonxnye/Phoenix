@@ -81,6 +81,29 @@ package — so the reader knows what was examined and passed, not only what fail
 Every row is a text fact with a file and a line; a check about absence names exactly
 what it looked for, so it can be refuted by pointing at the line it missed.
 
+## Error handling — read the way the paper reads it
+
+Rubio-González and Liblit ("Finding Error-Handling Bugs in Systems Code Using Static
+Analysis", 2011) confirmed 312 error-handling bugs across Linux file systems, and 86%
+were one shape: a function returned an error and the caller never saved it. Their
+strongest signal was **inconsistency** — "unsaved at 35 call sites, but saved at 17
+others" — and their reports carried the **path** the error took. `errors.py` asks the
+same questions with what the mechanic has (Python's AST; declarations by shape for
+JavaScript and TypeScript), and every finding carries its path as evidence:
+
+- a status or value-or-None result **discarded** at a call site while other callers save
+  it — the saving callers are the specification;
+- a value that **may be None** used as a value with no check on the path (the paper's
+  "there is a check for NULL, but the error check is missing");
+- a docstring that says **never raises** while a raise leaves the function, or a
+  `Raises:` section that misses one.
+
+Resolution is by name, so a name the tree defines twice is not judged, and a receiver
+the tree does not define (`ast.parse`, `thread.start`) never matches a same-named
+function. Run on itself, the analyst found a queued analysis that could be dropped
+between a lock release and the next start, and a docstring that promised more than
+the code kept; both are fixed, and the mechanic on itself is back at zero.
+
 ## What is deliberately not here yet
 
 In the handoff's order, because each milestone answers a question that decides

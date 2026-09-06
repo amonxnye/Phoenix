@@ -25,8 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 from . import brainseam
 
 ROLES = {
-    "quality": ("You examine construction quality: duplicated logic, missing error "
-                "handling, untested paths, misleading names, functions doing several "
+    "quality": ("You examine construction quality, error handling first: a result "
+                "that is discarded at this call site but saved by other callers; a value "
+                "that may be None or an error used before it is checked; an error caught "
+                "and dropped; a docstring that promises what the code does not do. Then "
+                "duplicated logic, untested paths, misleading names, functions doing several "
                 "jobs. Prefer claims the graph or the tests can support."),
     "security": ("You examine safety: injection surfaces (shell, SQL, path, template), "
                  "unsafe deserialisation, secrets in code, missing authentication or "

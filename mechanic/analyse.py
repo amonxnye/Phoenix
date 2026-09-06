@@ -16,8 +16,8 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               fixer, history, liveness, panel, polyglot, posture, report, review, slop,
-               store)
+               errors, fixer, history, liveness, panel, polyglot, posture, report, review,
+               slop, store)
 from .index import Index, build
 
 
@@ -119,6 +119,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                     mv.extend(polyglot.slop_findings(u, lines, u["lang"]))
             texts["__refs__"] = polyglot.reference_lines(root)
             mv.extend(polyglot.tree_findings(us, texts))     # duplicates, names referenced nowhere
+            mv.extend(errors.analyse(us, texts)["findings"])  # dropped results, None before a check, docs vs raises
             # ── the repository as a system: posture, and what held up ──────
             po = posture.analyse(root, us, texts)
             mv.extend(po["findings"])

@@ -51,6 +51,15 @@ def lang_of(path: str) -> str:
     return LANGUAGES.get(os.path.splitext(base)[1].lower(), "")
 
 
+_HARNESS = re.compile(r"^(?:verify|test|tests|smoke|bench|check)[_\-.]|_test\.|\.test\.|\.spec\.", re.I)
+
+
+def is_harness(unit: dict) -> bool:
+    """A test unit, or an acceptance script by name (verify_*, smoke_*, bench_*):
+    code that exercises the tree rather than code the tree ships."""
+    return bool(unit["is_test"] or _HARNESS.match(os.path.basename(unit["file"])))
+
+
 def is_test(rel: str) -> bool:
     base = os.path.basename(rel).lower()
     parts = rel.replace(os.sep, "/").split("/")[:-1]

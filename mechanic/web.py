@@ -204,7 +204,9 @@ def _worker(url: str, name: str, budget_cents: int = -1) -> None:
         _ACTIVE["history"] = _ACTIVE["history"][-8:]
         _LOCK.release()
         if _QUEUE:                                # the next one waits for no one
-            _start(*_QUEUE.pop(0))
+            nxt = _QUEUE.pop(0)
+            if not _start(*nxt):                  # a request took the lock between release and here
+                _QUEUE.insert(0, nxt)             # (the error-handling analyst found this dropped result)
 
 
 def _start(url: str, name: str, budget_cents: int) -> bool:
