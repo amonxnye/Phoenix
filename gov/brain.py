@@ -173,11 +173,14 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
         pass                                       # telemetry must never break a call
 
 
-# Ollama's native chat endpoint is the one transport that honours `think: false`
-# for every model it serves: the OpenAI-compatible endpoint ignored the field AND
-# Qwen3's own /no_think switch on production (890 chars of reasoning for "alive").
-# Tried first for a tagged model; if the gateway does not expose it (403/404/405)
-# the process remembers and uses the OpenAI-compatible path from then on.
+# Ollama's native chat endpoint honours `think: false` — but only for a model that
+# CAN stop thinking. Measured on production: the gateway's qwen3:30b is the library's
+# `30b-thinking` build (digest ad815644918f); through /v1 it reasoned in a separate
+# field and answered "alive", through /api/chat with think:false it reasoned INTO the
+# answer field. So the native transport is opt-in (BRAIN_NATIVE=1) for a model that
+# honours the switch, and the real fix for a thinking-only model is a non-thinking
+# build — `qwen3:30b-instruct` — pulled on the gateway and named in BRAIN_MODEL.
+# If the gateway does not expose /api/chat (403/404/405) the process remembers.
 NATIVE = {"ok": None}                         # None: untested; True/False: measured
 # urllib's default User-Agent ("Python-urllib/3.x") is refused by Cloudflare's browser
 # integrity check in front of the gateway (HTTP 403, error code 1010) — measured on
@@ -269,7 +272,8 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
         raise RuntimeError("no model configured")
     t0 = _time.time()
     try:
-        native = p["kind"] == "openai" and ":" in p["model"] and NATIVE["ok"] is not False
+        native = (os.environ.get("BRAIN_NATIVE", "").strip() == "1" and p["kind"] == "openai"
+                  and ":" in p["model"] and NATIVE["ok"] is not False)
         if native:
             try:
                 out, usage = _ollama_chat(p, messages, max_tokens, temperature, purpose)
