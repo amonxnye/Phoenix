@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -901,9 +902,36 @@ try:
           B.provider()["base_url"] == "https://api.deepseek.com")
     os.environ["BRAIN_API_KEY"], os.environ["BRAIN_MODEL"] = "sk-test", "llama3.1:8b"
     check("BRAIN_MODEL picks another model the gateway serves", B.provider()["model"] == "llama3.1:8b")
-    check("qwen3 gets its soft switch on the user turn, because the gateway ignores the field",
-          B.prompt_suffix("qwen3:30b") == " /no_think" and B.prompt_suffix("llama3.1:8b") == ""
-          and B.prompt_suffix("deepseek-v4-flash") == "")
+    # the native Ollama transport: think:false in the body, thinking read out of the reply
+    class _Resp:
+        def __init__(self, body): self._b = body
+        def read(self): return B._json_mod.dumps(self._b).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    _sentb = []
+    def _fake_open(req, timeout=None, context=None):
+        _sentb.append(B._json_mod.loads(req.data)); 
+        if "closed" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "nope", {}, None)
+        return _Resp({"message": {"role": "assistant", "content": "alive", "thinking": ""},
+                      "done_reason": "stop", "prompt_eval_count": 12, "eval_count": 3})
+    _open0, N._OPEN = N._OPEN, _fake_open
+    try:
+        _pp = {"kind": "openai", "base_url": "https://gw.example/v1", "key": "k", "model": "qwen3:30b"}
+        _o, _u = B._ollama_chat(_pp, [{"role": "user", "content": "say alive"}], 50, 0.0, "probe")
+        check("a tagged model is called on Ollama's native /api/chat with think:false, tokens read from the reply",
+              _o == "alive" and _sentb[-1]["think"] is False and _sentb[-1]["options"]["num_predict"] == 50
+              and _u == {"input_tokens": 12, "output_tokens": 3} and B.LAST_RAW["reasoning_chars"] == 0
+              and B._native_url(_pp["base_url"]) == "https://gw.example/api/chat", str(_sentb[-1])[:120])
+        B.NATIVE["ok"] = None
+        _pc = dict(_pp, base_url="https://closed.example/v1")
+        try:
+            B._ollama_chat(_pc, [{"role": "user", "content": "x"}], 5, 0.0, "probe")
+        except urllib.error.HTTPError as e:
+            check("a gateway that does not expose /api/chat answers 404 — a refusal, not retried, and the seam remembers",
+                  e.attempts == 1 and N.status_of(e) == 404)
+    finally:
+        N._OPEN = _open0; B.NATIVE["ok"] = None
     check("thinking is off project-wide: Ollama's field for a tag, DeepSeek's for its API, else nothing",
           B.default_extras("qwen3:30b") == {"think": False}
           and B.default_extras("deepseek-v4-flash") == {"thinking": {"type": "disabled"}}
