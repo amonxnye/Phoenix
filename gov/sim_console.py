@@ -2257,7 +2257,8 @@ class Handler(BaseHTTPRequestHandler):
                                   200, 0.0, "braincheck")
                 return self._send(200, json.dumps({"ok": True, "model": p["model"],
                                                    "base_url": p["base_url"], "reply": out,
-                                                   "raw": dict(brain.LAST_RAW)}))
+                                                   "raw": dict(brain.LAST_RAW),
+                                                   "native": dict(brain.NATIVE)}))
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "model": brain._model(),
                                                    "error": str(e)[:600]}))
