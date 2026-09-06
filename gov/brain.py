@@ -271,8 +271,13 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                 NATIVE["ok"] = True
             except Exception as e:                 # noqa: BLE001 — classified below
                 if netretry.status_of(e) in (403, 404, 405):
-                    NATIVE["ok"] = False           # not exposed here: measured once, remembered
-                    native = False
+                    try:
+                        detail = (e.read() or b"")[:200].decode("utf-8", "replace")
+                    except Exception:              # noqa: BLE001 — a readout, best effort
+                        detail = ""
+                    NATIVE.update(ok=False, why=f"HTTP {netretry.status_of(e)} from "
+                                                f"{_native_url(p['base_url'])}: {detail or e}")
+                    native = False                 # not exposed here: measured once, remembered
                 else:
                     raise
         if native:
