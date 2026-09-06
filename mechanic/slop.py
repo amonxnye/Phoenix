@@ -243,7 +243,7 @@ def analyse(units: list[dict], root: str) -> dict:
     """Every detector over every non-test unit. Returns {findings, counts}."""
     findings, bodies = [], []
     for u in units:
-        if u["is_test"]:
+        if u["is_test"] or u.get("lang", "python") != "python":
             continue
         lines = _lines(os.path.join(root, u["file"]))
         try:

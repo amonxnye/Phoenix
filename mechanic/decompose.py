@@ -11,7 +11,7 @@ that halts partway has spent itself on the code that matters most.
 
 import os
 
-from . import brainseam, history
+from . import brainseam, history, polyglot
 from .index import Index
 
 
@@ -24,6 +24,7 @@ def units(idx: Index) -> list[dict]:
         out.append({"module": m["name"], "file": m["file"], "loc": m["loc"],
                     "symbols": len(syms), "centrality": len(idx.dependents_of(m["name"])),
                     "dynamic": m["dynamic"], "is_test": m["is_test"],
+                    "lang": m.get("lang") or "python",
                     "entry_points": entries[:12], "deps": idx.dependencies_of(m["name"])[:20],
                     "dependents": idx.dependents_of(m["name"])[:12]})
     out.sort(key=lambda u: (-u["centrality"], u["module"]))
@@ -55,6 +56,9 @@ def context(unit: dict, root: str, idx: Index, hist: dict) -> str:
     if unit["dynamic"]:
         head.append(f"dynamic dispatch present: {unit['dynamic']} — reachability here is "
                     f"unprovable; do not claim a symbol is unused")
+    if unit.get("lang", "python") != "python":
+        head.append(f"language: {unit['lang']} — not indexed: there are no graph facts for "
+                    f"this unit; cite line numbers, and do not claim a symbol is unused")
     src = _numbered(os.path.join(root, unit["file"]))
     return "\n".join(head) + "\n\n" + brainseam.data_block(src)
 
@@ -63,6 +67,8 @@ def checklist(unit: dict, idx: Index) -> list[dict]:
     """What the critic must stress — derived from the graph, not invented by a model:
     every function and method with its line, every import, every external call.
     Each item has an id the critic reports back, so coverage is measured."""
+    if unit.get("lang", "python") != "python":
+        return polyglot.checklist(unit, polyglot.read_lines(os.path.join(idx.root, unit["file"])))
     items = []
     for s in idx.symbols(module=unit["module"]):
         if s["kind"] in ("function", "method"):

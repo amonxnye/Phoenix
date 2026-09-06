@@ -16,7 +16,7 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               fixer, history, liveness, panel, report, review, slop, store)
+               fixer, history, liveness, panel, polyglot, report, review, slop, store)
 from .index import Index, build
 
 
@@ -64,7 +64,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                             budget_cents=budget_cents, trigger=trigger)
     db = os.path.join(store.data_dir(), f"index-{run_id}.sqlite")
     t0 = time.time()
-    counts = {"findings": 0, "judged": 0, "gaps": 0, "patches": 0}
+    counts = {"findings": 0, "judged": 0, "gaps": 0, "patches": 0, "deps": 0}
     try:
         s = build(root, db)
         for p, why in s["unreadable"]:
@@ -72,10 +72,30 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
             counts["gaps"] += 1
         store.run_set(run_id, status="analysing", unit_count=s["modules"],
                       symbol_count=s["symbols"])
-        idx = Index(db)
+        idx = Index(db, root)
         try:
             us = decompose.units(idx)
             unit_ids = dict(zip((u["module"] for u in us), store.units_add(run_id, us)))
+            store.run_set(run_id, unit_count=len(us))         # every language, not only the parsed one
+            # What the tree is made of, and what each part gets. The first public run
+            # read a TypeScript repository as "0 modules, 0 findings, complete": nothing
+            # was scanned and nothing said so. Every language is now a unit, and every
+            # language without a parser is a recorded gap naming what it did not get.
+            langs = polyglot.summary(us)
+            if not us:
+                store.gap_add(run_id, "source", "no source files recognised in the tree — "
+                                               "nothing was analysed; the mechanic reads: "
+                                               + ", ".join(sorted(set(polyglot.LANGUAGES.values()))))
+                counts["gaps"] += 1
+            for lang, c in langs.items():
+                if lang != "python":
+                    store.gap_add(run_id, lang, f"{c['files']} {lang} file(s), {c['loc']:,} lines, "
+                                                f"were read as text, not parsed: the reachability "
+                                                f"proof (dead code with a call graph) exists for "
+                                                f"Python only. The text-fact scans (security, slop, "
+                                                f"names referenced nowhere), the dependency checks "
+                                                f"and the judged panel cover them.")
+                    counts["gaps"] += 1
             ok_hist, why_hist = history.available(root)
             hist = history.facts(root, [u["file"] for u in us]) if ok_hist else {}
             if not ok_hist:
@@ -89,21 +109,32 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 store.gap_add(run_id, g["scope"], g["reason"])
                 counts["gaps"] += 1
             mv = list(res["findings"])
+            texts = {u["module"]: polyglot.read_lines(os.path.join(root, u["file"])) for u in us}
             for u in us:
                 if not u["is_test"]:
-                    try:
-                        with open(os.path.join(root, u["file"]), encoding="utf-8",
-                                  errors="replace") as fh:
-                            mv.extend(panel.injection_findings(u, fh.read()))
-                    except OSError:
-                        pass                          # unreadable file: already a recorded gap from build()
+                    lines = texts[u["module"]]
+                    mv.extend(panel.injection_findings(u, "\n".join(lines)))
+                    mv.extend(polyglot.security_findings(u, lines))
+                    mv.extend(polyglot.slop_findings(u, lines, u["lang"]))
+            texts["__refs__"] = polyglot.reference_lines(root)
+            mv.extend(polyglot.tree_findings(us, texts))     # duplicates, names referenced nowhere
+            del texts
             dv = deps.analyse(root)                  # known-vulnerable dependencies (R17)
-            for g in dv["gaps"]:
+            od = deps.outdated(root)                 # a major version behind the registry
+            counts["deps"] = dv["packages"]
+            for g in dv["gaps"] + od["gaps"]:
                 store.gap_add(run_id, g["scope"], g["reason"])
                 counts["gaps"] += 1
             for f in dv["findings"]:
                 f["symbol"] = f["title"].split("`")[1].split("@")[0]   # fingerprint by package
             mv.extend(dv["findings"])
+            mv.extend(od["findings"])
+            store.decision_add(run_id, "analysis", "dependency-scan", "checked",
+                               f"{dv['packages']} pinned package(s) against OSV.dev: "
+                               f"{len(dv['findings'])} vulnerable; {od['checked']} direct "
+                               f"dependenc{'y' if od['checked'] == 1 else 'ies'} against the "
+                               f"registries: {len(od['findings'])} a major version behind",
+                               model="none — registry fact", charter=ch["stamp"])
             sl = slop.analyse(us, root)              # the tells of unreviewed generation, as facts
             mv.extend(sl["findings"])
             for f in mv:
@@ -132,15 +163,17 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         failed = sum(bud.failed.values())
         store.run_close(run_id, "complete",
                         note=f"{counts['findings']} findings ({counts['judged']} judged), "
-                             f"{counts['gaps']} refusals, {bud.spent_cents()}¢, {secs:.1f}s"
+                             f"{counts['gaps']} refusals, {len(us)} units in "
+                             f"{', '.join(langs) or 'no language'}, {counts['deps']} deps, "
+                             f"{bud.spent_cents()}¢, {secs:.1f}s"
                              + (f", {failed} calls failed at the provider" if failed else ""))
         # A completed run records the commit it analysed, whoever asked for it — so a
         # watch cycle that follows a manual run sees "unchanged" and spends nothing.
-        store.repo_set(repo_id, loc=sum(u["loc"] for u in us), languages="python",
+        store.repo_set(repo_id, loc=sum(u["loc"] for u in us), languages=", ".join(langs),
                        **({"last_sha": commit_sha} if commit_sha and store._EXT else {}))
         return {"run_id": run_id, "repo_id": repo_id, "name": name, "symbols": s["symbols"],
-                "modules": s["modules"], "findings": counts["findings"],
-                "judged": counts["judged"], "gaps": counts["gaps"],
+                "modules": len(us), "languages": langs, "findings": counts["findings"],
+                "judged": counts["judged"], "gaps": counts["gaps"], "deps": counts["deps"],
                 "patches": counts["patches"], "failed_calls": failed,
                 "spend_cents": bud.spent_cents(), "seconds": round(secs, 1),
                 "status": "complete"}

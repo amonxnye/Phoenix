@@ -84,6 +84,8 @@ def challenge(c: dict, ctx: str, idx, budget) -> dict:
         else c["severity"]
     cites = [str(x) for x in (d.get("cites") or []) if isinstance(x, str)][:12]
     bad = [s for s in cites if not idx.symbol(s) and not idx.symbol(f"{c['unit']}.{s}")]
+    if idx.lang_of(c["unit"]) != "python":
+        bad = []                                      # no graph to resolve against: the cite rule cannot apply
     if outcome == "refuted" and bad:
         # The symmetry rule. A refutation resting on symbols the index does not know
         # is the challenger hallucinating, and it does not get to kill a finding.

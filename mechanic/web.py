@@ -177,8 +177,9 @@ def _worker(url: str, name: str, budget_cents: int = -1) -> None:
             ingest.remove(c["tmp"])               # the source was only ever borrowed
         _ACTIVE.update(status=res["status"], run_id=res["run_id"],
                        note=f"{res['findings']} finding(s) ({res.get('judged', 0)} judged), "
-                            f"{res['gaps']} refusal(s), {res.get('spend_cents', 0)}¢, "
-                            f"{res['seconds']}s"
+                            f"{res['gaps']} refusal(s), {res.get('modules', 0)} unit(s) in "
+                            f"{', '.join(res.get('languages') or []) or 'no language'}, "
+                            f"{res.get('spend_cents', 0)}¢, {res['seconds']}s"
                             + (f", {res['failed_calls']} calls FAILED at the provider"
                                if res.get("failed_calls") else "") if res["status"] == "complete"
                        else res.get("error", "halted"))
@@ -380,8 +381,9 @@ pre.diff{margin:6px 0 0 12px;padding:8px 10px;background:#120d06;border:1px soli
     <div class=note>A mechanic, not a surgeon: it opens the machine, measures what it finds, and says what to
     fix first. <b>Machine-verified</b> findings rest on a graph fact re-checked at report time and lead the
     list. A <b>refusal</b> is a place the analysis declined to conclude, and why &mdash; shown, not hidden.
-    Nothing here writes to any repository.</div></div>
-  <div class=card><h2>Analyse a repository <em>public GitHub only &middot; read-only archive fetch, no credentials, no git &middot; one at a time</em></h2>
+    Nothing here writes to any repository. Every source file in the tree is read, whatever its language; the
+    dead-code proof is Python's, and every other language's limits are recorded as refusals rather than left silent.</div></div>
+  <div class=card><h2>Analyse a repository <em>public GitHub only &middot; any language &middot; read-only archive fetch, no credentials, no git &middot; one at a time</em></h2>
     <form id=f><input type=url id=url placeholder="https://github.com/owner/repo" required>
       <select id=bud title="budget for the judged analysis"><option value=0>machine-verified only ($0)</option><option value=100>$1</option><option value=300 selected>$3</option><option value=1500>$15 max</option></select>
       <button id=go type=submit>Analyse</button><div id=st></div></form></div>
@@ -437,7 +439,7 @@ async function repos(){
   if(!rs.length){$('repos').innerHTML='<div class=empty>No repositories yet. Paste a GitHub URL above.</div>';return}
   $('repos').innerHTML=`<table><thead><tr><th>repository</th><th class=n>LOC</th><th>last run</th><th class=n>findings</th><th class=n>refusals</th><th>when</th><th>watch</th></tr></thead><tbody>`+
     rs.map(r=>`<tr class=repo data-id="${esc(r.id)}" aria-selected="${r.id===REPO}">
-      <td><b>${esc(r.name)}</b><br><span class=loc>${esc(r.url.replace('https://github.com/',''))}${r.last_sha?' @ '+esc(r.last_sha.slice(0,10)):''}</span></td>
+      <td><b>${esc(r.name)}</b><br><span class=loc>${esc(r.url.replace('https://github.com/',''))}${r.last_sha?' @ '+esc(r.last_sha.slice(0,10)):''}${r.languages?' &middot; '+esc(r.languages):''}</span></td>
       <td class=n>${(r.loc||0).toLocaleString()}</td>
       <td><span class="st-${esc(r.last_status)}">${esc(r.last_status||'—')}</span><br><span class=loc>${esc(r.note)}</span></td>
       <td class=n>${r.findings}</td><td class=n>${r.refusals}</td><td>${ago(r.last_at)}</td>
