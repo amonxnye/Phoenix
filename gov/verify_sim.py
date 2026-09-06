@@ -901,6 +901,9 @@ try:
           B.provider()["base_url"] == "https://api.deepseek.com")
     os.environ["BRAIN_API_KEY"], os.environ["BRAIN_MODEL"] = "sk-test", "llama3.1:8b"
     check("BRAIN_MODEL picks another model the gateway serves", B.provider()["model"] == "llama3.1:8b")
+    check("qwen3 gets its soft switch on the user turn, because the gateway ignores the field",
+          B.prompt_suffix("qwen3:30b") == " /no_think" and B.prompt_suffix("llama3.1:8b") == ""
+          and B.prompt_suffix("deepseek-v4-flash") == "")
     check("thinking is off project-wide: Ollama's field for a tag, DeepSeek's for its API, else nothing",
           B.default_extras("qwen3:30b") == {"think": False}
           and B.default_extras("deepseek-v4-flash") == {"thinking": {"type": "disabled"}}

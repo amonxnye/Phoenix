@@ -125,6 +125,14 @@ def default_extras(model_name: str) -> dict:
     return {}
 
 
+def prompt_suffix(model_name: str) -> str:
+    """Qwen3's soft switch. The gateway's OpenAI-compatible endpoint ignored
+    `think: false` — the first production brain check on qwen3:30b spent 582 chars
+    of reasoning on a one-word reply — but the model itself honours `/no_think` at
+    the end of the user turn, whatever the transport. Sent only to qwen3."""
+    return " /no_think" if "qwen3" in (model_name or "").lower() else ""
+
+
 def clip(field: str, text) -> str:
     """Bound ONE prompt input, and count what was cut.
 
@@ -237,6 +245,10 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             client = OpenAI(api_key=p["key"], base_url=p["base_url"],
                             timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                             max_retries=0)
+            suffix = prompt_suffix(p["model"])
+            if suffix and messages and messages[-1].get("role") == "user":
+                messages = messages[:-1] + [{**messages[-1],
+                                             "content": messages[-1]["content"] + suffix}]
             kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
                   "temperature": temperature}
             extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
