@@ -1955,6 +1955,24 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/comms":
             self._count_view()
             return self._send(200, COMMS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/models":
+            self._count_view()
+            return self._send(200, MODELS_PAGE, "text/html; charset=utf-8")
+        if self.path.startswith("/api/models"):
+            import models_page
+            import netretry
+            from urllib.parse import parse_qs, urlparse
+            w = (parse_qs(urlparse(self.path).query).get("window") or ["24h"])[0]
+            d = models_page.review(w)
+            p = brain.provider()
+            d["provider"] = ({"configured": True, "model": p["model"], "kind": p["kind"],
+                              "host": brain._host(p), "native": dict(brain.NATIVE)}
+                             if p else {"configured": False})
+            d["provider"].update(stats=dict(netretry.STATS), breakers=netretry.breakers(),
+                                 policy={"retries": netretry.RETRIES, "backoff_s": netretry.BACKOFF_S,
+                                         "break_after": netretry.BREAK_AFTER, "cool_s": netretry.COOL_S})
+            d["gateway"] = brain.gateway_status(p) if p else {"error": "no model configured"}
+            return self._send(200, json.dumps(d))
         if self.path == "/map":
             self._count_view()
             return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
@@ -2598,6 +2616,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <a class=navlink href="/skills">Skills &rarr;</a>
     <a class=navlink href="/flow">Decision Flow &rarr;</a>
     <a class=navlink href="/network">Network &rarr;</a>
+    <a class=navlink href="/models">Models &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -3595,6 +3614,9 @@ tick(); setInterval(tick,4000);
 </script>
 </html>""")
 
+
+import models_page as _models_page                     # noqa: E402
+MODELS_PAGE = _page(_models_page.PAGE)
 
 COMMS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">

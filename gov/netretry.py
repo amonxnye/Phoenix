@@ -50,6 +50,15 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 STATS = {"calls": 0, "retried": 0, "attempts": 0, "gave_up": 0, "fast_failed": 0,
          "breaker_trips": 0}
+ON_EVENT: list = []                # callbacks (kind, key, detail): the brain hands them to the anchor
+
+
+def _emit(kind: str, key: str, detail: str) -> None:
+    for cb in list(ON_EVENT):
+        try:
+            cb(kind, key, detail)
+        except Exception:                          # noqa: BLE001 — a record must never break a call
+            pass
 _LOCK = threading.Lock()
 _BREAKERS: dict[str, dict] = {}    # key → {failures, open_until, probing}
 _local = threading.local()
@@ -154,9 +163,12 @@ def _admit(key: str) -> None:
 def _report(key: str, exhausted: bool, ok: bool) -> None:
     if not key:
         return
+    event = None
     with _LOCK:
         b = _BREAKERS.setdefault(key, {"failures": 0, "open_until": 0.0, "probing": False})
         if ok:
+            if b["open_until"]:
+                event = ("breaker_closed", "probe succeeded after the cooling period")
             b.update(failures=0, open_until=0.0, probing=False)
         elif exhausted:
             b["failures"] += 1
@@ -164,6 +176,10 @@ def _report(key: str, exhausted: bool, ok: bool) -> None:
             if b["failures"] >= BREAK_AFTER:
                 b["open_until"] = _NOW() + COOL_S
                 STATS["breaker_trips"] += 1
+                event = ("breaker_open", f"{b['failures']} calls exhausted their retries; "
+                                         f"failing fast for {COOL_S:.0f}s")
+    if event:
+        _emit(event[0], key, event[1])            # outside the lock: a callback may take time
 
 
 def call(fn, what: str = "request", retries: int | None = None, on_attempt=None,
@@ -204,6 +220,8 @@ def call(fn, what: str = "request", retries: int | None = None, on_attempt=None,
                 _report(key, exhausted=ok and attempts > limit, ok=False)
                 with _LOCK:
                     STATS["gave_up"] += 1
+                if ok and attempts > limit:
+                    _emit("gave_up", key, f"{what}: {errors[-1]}")
                 try:
                     e.attempts = attempts
                 except Exception:                    # noqa: BLE001 — some exceptions forbid attributes

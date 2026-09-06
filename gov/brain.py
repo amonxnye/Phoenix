@@ -168,9 +168,55 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
             if not hasattr(usage, "completion_tokens") else usage.completion_tokens
         anchor.model_call_log(p["base_url"], p["model"], purpose,
                               round((_time.time() - t0) * 1000),
-                              int(pt or 0), int(ct or 0), ok, error)
+                              int(pt or 0), int(ct or 0), ok, error,
+                              attempts=int(LAST_RAW.get("attempts") or 1),
+                              reasoning_chars=int(LAST_RAW.get("reasoning_chars") or 0),
+                              content_chars=int(LAST_RAW.get("content_chars") or 0),
+                              transport=str((LAST_RAW.get("extra") or {}).get("transport")
+                                            or ("openai /v1" if p["kind"] == "openai" else p["kind"])))
     except Exception:
         pass                                       # telemetry must never break a call
+
+
+def _events_to_anchor(kind: str, key: str, detail: str) -> None:
+    import anchor
+    anchor.model_event_log(kind, key, detail)
+
+
+if _events_to_anchor not in netretry.ON_EVENT:      # breaker events reach the permanent record
+    netretry.ON_EVENT.append(_events_to_anchor)
+
+
+def gateway_status(p: dict | None = None) -> dict:
+    """What the gateway reports about its compute right now: server version, which
+    models are loaded, their size on disk and in VRAM, when they unload. Ollama's
+    /api/version and /api/ps behind the same key; a readout, retried once at most."""
+    import urllib.request
+    p = p or provider()
+    if not p or p["kind"] != "openai" or ":" not in p["model"]:
+        return {"error": "not an Ollama gateway"}
+    root = p["base_url"].rstrip("/").removesuffix("/v1")
+    hdr = {"Authorization": f"Bearer {p['key']}", "User-Agent": USER_AGENT}
+    out = {}
+    try:
+        for name, path in (("version", "/api/version"), ("ps", "/api/ps"), ("tags", "/api/tags")):
+            req = urllib.request.Request(root + path, headers=hdr)
+            with netretry.urlopen(req, timeout=15, what=f"gateway {name}", retries=1,
+                                  idempotent=True, key=_host(p)) as r:
+                out[name] = _json_mod.loads(r.read() or b"{}")
+    except Exception as e:                        # noqa: BLE001 — a readout reports, never raises
+        return {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    loaded = []
+    for m in (out.get("ps") or {}).get("models") or []:
+        det = m.get("details") or {}
+        loaded.append({"model": m.get("name") or m.get("model"),
+                       "size_gb": round((m.get("size") or 0) / 1e9, 1),
+                       "vram_gb": round((m.get("size_vram") or 0) / 1e9, 1),
+                       "parameter_size": det.get("parameter_size", ""),
+                       "quantization": det.get("quantization_level", ""),
+                       "expires_at": (m.get("expires_at") or "")[:19].replace("T", " ")})
+    return {"version": (out.get("version") or {}).get("version", ""), "loaded": loaded,
+            "available": sorted(m.get("name", "") for m in (out.get("tags") or {}).get("models") or [])}
 
 
 # Ollama's native chat endpoint honours `think: false` — but only for a model that

@@ -886,6 +886,39 @@ try:
 finally:
     N._SLEEP = time.sleep
 
+# ── the model review: every call's telemetry, downtime from the record, events from the breaker ──
+import anchor as _A
+import models_page as _MP
+_A.model_call_log("https://gw.example/v1", "qwen3:30b", "chat-reply", 1200, 100, 40, True,
+                  attempts=2, reasoning_chars=300, content_chars=100, transport="openai /v1")
+for _i in range(3):
+    _A.model_call_log("https://gw.example/v1", "qwen3:30b", "panel:quality", 90000, 500, 0, False,
+                      error="APITimeoutError: Request timed out (after 6 attempts)", attempts=6)
+_A.model_call_log("https://gw.example/v1", "qwen3:30b", "chat-reply", 800, 100, 30, True)
+_rv = _MP.review("1h")
+_m = next((m for m in _rv["models"] if m["model"] == "qwen3:30b"), None)
+check("the review reads every call's telemetry per model: latency percentiles, tokens, attempts, thinking share",
+      _m is not None and _m["calls"] >= 5 and _m["errors"] >= 3 and _m["p95_ms"] >= 800
+      and _m["retried_calls"] >= 1 and 0 < _m["thinking_share"] < 1 and "openai /v1" in _m["transports"],
+      str({k: _m[k] for k in ("calls", "errors", "p95_ms", "retried_calls", "thinking_share")}) if _m else "no row")
+check("three consecutive failed calls are a recorded outage, from the record alone",
+      any(o["calls"] >= 3 and "timed out" in o["first_error"] for o in _rv["outages"]))
+check("who spends the model's time is broken down by purpose",
+      any(p["purpose"] == "panel:quality" and p["errors"] >= 3 for p in _rv["purposes"]))
+N.reset()
+try:
+    for _ in range(N.BREAK_AFTER):
+        try: N.call(lambda: (_ for _ in ()).throw(TimeoutError("hung")), what="gw", idempotent=True, key="gw.example")
+        except TimeoutError: pass
+finally:
+    N.reset()
+check("a breaker opening is written to the permanent record as an event",
+      any(e["kind"] == "breaker_open" and e["host"] == "gw.example" for e in _MP._events()))
+_csrc = open(os.path.join(HERE, "sim_console.py")).read()
+check("the review page is served by the console with the shared palette and a nav link",
+      "MODEL REVIEW" in _MP.PAGE and "MODELS_PAGE = _page(" in _csrc and 'href="/models"' in _csrc
+      and '"/api/models"' in _csrc)
+
 # ── provider selection: the platform's own gateway is the default, DeepSeek the fallback ──
 _envs = {k: os.environ.get(k) for k in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "DEEPSEEK_API_KEY")}
 try:

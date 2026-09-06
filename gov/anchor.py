@@ -362,21 +362,61 @@ def metrics_summary() -> dict:
         c.close()
 
 
+_MC_EXTRA = (("attempts", "INT DEFAULT 1"), ("reasoning_chars", "INT DEFAULT 0"),
+             ("content_chars", "INT DEFAULT 0"), ("transport", "TEXT DEFAULT ''"))
+_MC_COLS: set = set()          # which extra columns the schema actually has (asked, not assumed)
+
+
 def model_call_log(provider: str, model: str, purpose: str, latency_ms: int,
                    prompt_tokens: int, completion_tokens: int, ok: bool,
-                   error: str = "") -> None:
-    """Every brain call's real cost — provider tokens, latency, failures — logged
-    permanently. The eval reads this: governance quality per real dollar."""
+                   error: str = "", attempts: int = 1, reasoning_chars: int = 0,
+                   content_chars: int = 0, transport: str = "") -> None:
+    """Every brain call's real cost — provider tokens, latency, failures, attempts,
+    how much of the reply was thinking, which transport — logged permanently. The
+    eval and the model review page read this: governance quality per real dollar."""
+    global _MC_COLS
     c = _conn()
     try:
         c.execute("CREATE TABLE IF NOT EXISTS model_calls("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, provider TEXT, "
                   "model TEXT, purpose TEXT, latency_ms INT, prompt_tokens INT, "
                   "completion_tokens INT, ok INT, error TEXT)")
-        c.execute("INSERT INTO model_calls(ts, provider, model, purpose, latency_ms, "
-                  "prompt_tokens, completion_tokens, ok, error) VALUES(?,?,?,?,?,?,?,?,?)",
-                  (time.time(), provider, model, purpose, latency_ms,
-                   prompt_tokens, completion_tokens, 1 if ok else 0, error[:200]))
+        if not _MC_COLS:
+            try:
+                have = {r[1] for r in c.execute("PRAGMA table_info(model_calls)")}
+                for col, decl in _MC_EXTRA:
+                    if col not in have:
+                        c.execute(f"ALTER TABLE model_calls ADD COLUMN {col} {decl}")
+                _MC_COLS = {r[1] for r in c.execute("PRAGMA table_info(model_calls)")}
+            except sqlite3.OperationalError:
+                _MC_COLS = set()                   # a migration that cannot run costs the columns
+        extra = {"attempts": attempts, "reasoning_chars": reasoning_chars,
+                 "content_chars": content_chars, "transport": transport}
+        cols = ["ts", "provider", "model", "purpose", "latency_ms", "prompt_tokens",
+                "completion_tokens", "ok", "error"]
+        vals = [time.time(), provider, model, purpose, latency_ms, prompt_tokens,
+                completion_tokens, 1 if ok else 0, error[:200]]
+        for col, _ in _MC_EXTRA:
+            if col in _MC_COLS:
+                cols.append(col)
+                vals.append(extra[col])
+        c.execute(f"INSERT INTO model_calls({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
+                  vals)
+        c.commit()
+    finally:
+        c.close()
+
+
+def model_event_log(kind: str, host: str, detail: str = "") -> None:
+    """Breaker openings and closings, exhausted retries — the downtime record the
+    model review page shows next to the calls themselves."""
+    c = _conn()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS model_events("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, host TEXT, "
+                  "detail TEXT)")
+        c.execute("INSERT INTO model_events(ts, kind, host, detail) VALUES(?,?,?,?)",
+                  (time.time(), kind, host, detail[:300]))
         c.commit()
     finally:
         c.close()
