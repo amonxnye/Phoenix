@@ -40,6 +40,25 @@ python mechanic/verify_mechanic.py                      # the Milestone 1 gate
 Local paths only. Cloning by URL arrives with the ingestion service (R1); the
 read-only credential it needs is the part that must not be improvised.
 
+## Every language in the tree
+
+The first public run was pointed at a TypeScript repository and came back in 0.4 s
+with no findings and no refusal: only `.py` files were read, and nothing said so.
+Now every source file the tree contains is a unit (`polyglot.py`), and what each
+one gets is stated rather than assumed:
+
+| | Python | JavaScript / TypeScript, Go, Rust, Java, Ruby, PHP, C#, C/C++, Swift, Kotlin, Scala, shell, SQL |
+|---|---|---|
+| dead code with a call-graph proof | yes (the index) | **no** — recorded as a refusal per language |
+| a top-level function whose name appears nowhere else in the tree | (the graph says more) | yes, as a text fact in those words (JS/TS, Go, Rust, PHP) |
+| security text facts — secrets, `eval`, SQL built from values, TLS off, HTML sinks, weak randomness for tokens | yes | yes |
+| slop text facts — empty catch, stubs, commented-out code, unused imports, duplicated bodies | yes (`slop.py`) | yes |
+| known-vulnerable dependencies (OSV.dev) | requirements | package-lock.json |
+| a direct dependency a major version behind its registry | requirements | package.json |
+| the judged panel — quality, security, drift, critic, slop analysts | yes | yes, with a checklist read from the text |
+
+A tree with no recognised source at all is a refusal too, not "complete, 0 findings".
+
 ## What is deliberately not here yet
 
 In the handoff's order, because each milestone answers a question that decides

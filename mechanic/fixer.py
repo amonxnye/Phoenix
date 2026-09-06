@@ -133,14 +133,18 @@ def propose(f: dict, root: str, budget) -> dict:
     new, why = apply(src, hunks)
     if new is None:
         return {"patch": out.strip(), "status": "failed", "note": f"does not apply: {why}"}
-    try:
-        ast.parse(new)
-    except SyntaxError as e:
-        return {"patch": out.strip(), "status": "failed",
-                "note": f"applies but the result does not parse: line {e.lineno}: {e.msg}"}
+    parsed = "verified in memory"
+    if f["file"].endswith(".py"):
+        try:
+            ast.parse(new)
+        except SyntaxError as e:
+            return {"patch": out.strip(), "status": "failed",
+                    "note": f"applies but the result does not parse: line {e.lineno}: {e.msg}"}
+    else:
+        parsed = "applies; the parse check is Python-only, so syntax is unverified"
     changed = sum(1 for h in hunks for ln in h["lines"] if ln[:1] in "+-")
     return {"patch": out.strip(), "status": "applies-and-parses",
-            "note": f"{len(hunks)} hunk(s), {changed} changed line(s); verified in memory"}
+            "note": f"{len(hunks)} hunk(s), {changed} changed line(s); {parsed}"}
 
 
 def project_cents(n: int, budget_mod) -> float:

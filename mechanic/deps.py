@@ -20,7 +20,9 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from . import net
 from .ingest import ssl_context
@@ -167,6 +169,133 @@ def _cvss_bucket(vector: str) -> str:
 
 QUERY = osv_query                                      # replaceable in tests
 DETAIL = osv_detail
+
+
+# ── outdated: what the repository declares against what the registry serves ──
+# "Outdated" is a different fact from "vulnerable": the registry's current version
+# is behind neither database, only the manifest. A major version behind is reported;
+# a minor or patch is not, because that is a release note, not a finding.
+
+NPM_LATEST = "https://registry.npmjs.org/{name}/latest"
+PYPI_LATEST = "https://pypi.org/pypi/{name}/json"
+MAX_DIRECT = 120
+_VER = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+_PRERELEASE = re.compile(r"[a-zA-Z]")
+
+
+def _direct(root: str) -> list[dict]:
+    """Direct dependencies with a version floor: package.json (dependencies and
+    devDependencies) and requirements files (==, >=, ~=). A range with no number —
+    `latest`, `*`, a git or file reference — is not guessed at."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ("node_modules", ".git", "vendor",
+                                                         ".venv", "venv", "__pycache__")]
+        for fn in filenames:
+            p, rel = os.path.join(dirpath, fn), os.path.relpath(os.path.join(dirpath, fn), root)
+            if fn == "package.json":
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                    d = json.loads(text)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                for section in ("dependencies", "devDependencies"):
+                    for name, spec in (d.get(section) or {}).items():
+                        m = _VER.search(str(spec)) if not str(spec).startswith(("git", "file", "http", "workspace", "link", "npm:")) else None
+                        if m:
+                            out.append({"ecosystem": "npm", "name": name, "version": m.group(0),
+                                        "manifest": rel, "line": _line_of(text, f'"{name}"')})
+            elif fn == "requirements.txt" or (fn.startswith("requirements") and fn.endswith(".txt")):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        for i, ln in enumerate(f, 1):
+                            m = re.match(r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*(?:==|>=|~=)\s*(\d[\w.]*)", ln)
+                            if m:
+                                out.append({"ecosystem": "PyPI", "name": m.group(1).lower(),
+                                            "version": m.group(2), "manifest": rel, "line": i})
+                except OSError:
+                    pass
+    seen, uniq = set(), []
+    for d in out:
+        if (d["ecosystem"], d["name"]) not in seen:
+            seen.add((d["ecosystem"], d["name"]))
+            uniq.append(d)
+    return uniq[:MAX_DIRECT]
+
+
+def registry_latest(ecosystem: str, name: str) -> str:
+    """The registry's current stable version, or '' when it does not say. Raises on a
+    network failure so the caller can record the gap."""
+    if ecosystem == "npm":
+        url = NPM_LATEST.format(name=urllib.parse.quote(name, safe="@"))
+    else:
+        url = PYPI_LATEST.format(name=name)
+    req = urllib.request.Request(url, headers={"User-Agent": "phoenix-software-mechanic/0.1",
+                                               "Accept": "application/json"})
+    with net.urlopen(req, 15, ssl_context(), "registry", key="registry") as r:
+        d = json.loads(r.read().decode("utf-8", "replace") or "{}")
+    v = str(d.get("version") or (d.get("info") or {}).get("version") or "")
+    return "" if _PRERELEASE.search(v) else v
+
+
+LATEST = registry_latest                               # replaceable in tests
+
+
+def _major(v: str) -> int:
+    m = _VER.search(v or "")
+    return int(m.group(1)) if m else -1
+
+
+def outdated(root: str) -> dict:
+    """Returns {findings, gaps, checked}. Never raises."""
+    direct = _direct(root)
+    if not direct:
+        return {"findings": [], "gaps": [], "checked": 0}
+
+    def look(p):
+        try:
+            return p, LATEST(p["ecosystem"], p["name"]), ""
+        except (urllib.error.HTTPError,) as e:
+            return p, "", "" if e.code == 404 else f"HTTP {e.code}"   # 404: not on the registry
+        except (urllib.error.URLError, OSError, ValueError, net.CircuitOpen) as e:
+            return p, "", f"{type(e).__name__}: {str(e)[:60]}"
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(look, direct))
+    findings, failed = [], [r for r in results if r[2]]
+    for p, latest, err in results:
+        if not latest:
+            continue
+        behind = _major(latest) - _major(p["version"])
+        if behind < 1:
+            continue
+        findings.append({
+            "unit": "", "file": p["manifest"], "symbol": f"outdated:{p['name']}",
+            "line_range": f"{p['line']}-{p['line']}", "category": "outdated",
+            "severity": "medium" if behind >= 2 else "low", "confidence": 0.95,
+            "basis": "machine-verified",
+            "title": f"`{p['name']}` is {behind} major version{'s' if behind > 1 else ''} behind "
+                     f"({p['version']} declared, {latest} current)",
+            "description": f"The registry's current release of `{p['name']}` is {latest}; the "
+                           f"manifest declares {p['version']}. A major version behind means "
+                           f"fixes and security patches land on a line this project does not "
+                           f"receive.",
+            "recommendation": f"Upgrade `{p['name']}` to {latest}, reading the changelog for "
+                              f"the breaking changes between majors. Declared at "
+                              f"{p['manifest']}:{p['line']}.",
+            "claim_kind": "text", "proposed_by": "dependency-scan",
+            "claim": f"registry lists {p['name']}@{latest}; manifest declares {p['version']}",
+            "evidence": [{"file": p["manifest"], "line_range": f"{p['line']}-{p['line']}",
+                          "reason": f"registry fact: {p['ecosystem']} serves {p['name']}@{latest} "
+                                    f"as latest; declared {p['version']}"}],
+        })
+    findings.sort(key=lambda f: (0 if f["severity"] == "medium" else 1, f["title"]))
+    gaps = []
+    if failed:
+        gaps.append({"scope": "dependencies",
+                     "reason": f"{len(failed)} of {len(direct)} direct dependencies could not be "
+                               f"checked for currency — registry answered: {failed[0][2]}"})
+    return {"findings": findings, "gaps": gaps, "checked": len(direct) - len(failed)}
 
 
 def analyse(root: str) -> dict:

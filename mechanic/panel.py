@@ -154,7 +154,10 @@ def _admit(raw: dict, unit: dict, idx, role: str) -> tuple[dict | None, str]:
     sev = raw.get("severity") if raw.get("severity") in ("critical", "high", "medium",
                                                           "low") else "low"
     sym = (raw.get("symbol") or "").strip()
-    if sym:
+    unindexed = unit.get("lang", "python") != "python"
+    if unindexed and raw.get("claim_kind") == "graph":
+        return None, "graph claim on a unit the index did not parse — unverifiable"
+    if sym and not unindexed:
         q = sym if idx.symbol(sym) else f"{unit['module']}.{sym}"
         if not idx.symbol(q):
             return None, f"structural claim names `{sym}`, which does not resolve in the index"
@@ -164,7 +167,7 @@ def _admit(raw: dict, unit: dict, idx, role: str) -> tuple[dict | None, str]:
         return None, "no checkable claim"
     m = re.search(r"\d+(?:\s*-\s*\d+)?", str(raw.get("line_range") or ""))
     lr = re.sub(r"\s+", "", m.group(0)) if m else ""
-    if not lr and sym:                            # the index knows where the symbol is
+    if not lr and sym and not unindexed:          # the index knows where the symbol is
         ss = idx.symbol(sym)
         lr = f"{ss['line']}-{ss['end_line']}"
     if not lr:

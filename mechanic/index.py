@@ -22,6 +22,8 @@ import os
 import sqlite3
 import threading
 
+from . import polyglot
+
 # Base classes that dispatch to nothing of the user's but dunders: a subclass of one
 # of these can be judged like any other class (see Index.foreign_base_classes).
 _BUILTIN_TYPES = {n for n, v in builtins.__dict__.items() if isinstance(v, type)}
@@ -221,19 +223,21 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def build(root: str, db_path: str, skip: tuple = (".git", "node_modules", "vendor",
-                                                  "__pycache__", ".venv", "venv")) -> dict:
+def build(root: str, db_path: str, skip: tuple = polyglot.SKIP_DIRS) -> dict:
     """Index a tree into `db_path`. Returns a summary including what could not be read.
 
     Failures are counted, never swallowed: a file that will not parse is a capability
     gap with a reason, because a report that silently skipped a tenth of the repo is
-    worse than one that says so (Charter §6)."""
-    files, unreadable = [], []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
-        for fn in filenames:
-            if fn.endswith(".py"):
-                files.append(os.path.join(dirpath, fn))
+    worse than one that says so (Charter §6).
+
+    Every source file becomes a module row, whatever its language, so the panel and
+    the text scans see the whole tree. Only Python is parsed into symbols and edges:
+    a module in another language carries `lang` and no graph, and the analysts above
+    treat it accordingly (polyglot.py)."""
+    unreadable, others = [], []
+    files = []
+    for path, lang in polyglot.source_files(root, skip):
+        (files if lang == "python" else others).append((path, lang))
 
     db = sqlite3.connect(db_path)
     db.executescript("""
@@ -244,14 +248,14 @@ def build(root: str, db_path: str, skip: tuple = (".git", "node_modules", "vendo
             registered INT DEFAULT 0, exported INT DEFAULT 0);
         CREATE TABLE edges(src TEXT, dst TEXT, kind TEXT);
         CREATE TABLE modules(name TEXT PRIMARY KEY, file TEXT, loc INT,
-            dynamic TEXT, is_test INT DEFAULT 0);
+            dynamic TEXT, is_test INT DEFAULT 0, lang TEXT DEFAULT 'python');
         CREATE INDEX idx_edge_dst ON edges(dst, kind);
         CREATE INDEX idx_edge_src ON edges(src, kind);
         CREATE INDEX idx_sym_name ON symbols(name);
         CREATE INDEX idx_sym_mod ON symbols(module);
     """)
     n_sym = n_edge = 0
-    for path in sorted(files):
+    for path, _lang in files:
         mod = _module_name(root, path)
         try:
             with open(path, encoding="utf-8") as fh:
@@ -278,9 +282,18 @@ def build(root: str, db_path: str, skip: tuple = (".git", "node_modules", "vendo
             n_sym += 1
         db.executemany("INSERT INTO edges(src, dst, kind) VALUES(?,?,?)", sorted(sc.edges))
         n_edge += len(sc.edges)
+    for path, lang in others:
+        rel = os.path.relpath(path, root)
+        lines = polyglot.read_lines(path)
+        if not lines:
+            continue                                   # empty, or a bundle by shape
+        db.execute("INSERT OR REPLACE INTO modules(name, file, loc, dynamic, is_test, lang) "
+                   "VALUES(?,?,?,?,?,?)",
+                   (rel.replace(os.sep, "/"), rel, len(lines), "",
+                    int(polyglot.is_test(rel)), lang))
     db.commit()
     db.close()
-    return {"files": len(files), "modules": len(files) - len(unreadable),
+    return {"files": len(files) + len(others), "modules": len(files) - len(unreadable),
             "symbols": n_sym, "edges": n_edge, "unreadable": unreadable}
 
 
@@ -319,11 +332,12 @@ class Index:
     admits as evidence (§2) — each one is cheap, exact, and re-checkable at report
     time."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, root: str = ""):
         # The panel queries the index from worker threads. SQLite refuses a
         # connection used off its creating thread, which halted the first swarm run;
         # the index is read-only, so one connection behind one lock is correct.
         self.db = _Locked(sqlite3.connect(db_path, check_same_thread=False))
+        self.root = root                              # where the files are, for the text checklist
 
     def close(self):
         self.db.close()
@@ -388,6 +402,10 @@ class Index:
 
     def modules(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM modules ORDER BY name")]
+
+    def lang_of(self, module: str) -> str:
+        r = self.db.execute("SELECT lang FROM modules WHERE name=?", (module,)).fetchone()
+        return (r[0] or "python") if r else "python"
 
     def foreign_base_classes(self) -> set[str]:
         """Classes inheriting from a FRAMEWORK this repo does not define. Their methods

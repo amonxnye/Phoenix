@@ -918,6 +918,246 @@ watch.FETCH = _ingest_mod.fetch
 shutil.rmtree(watch_root, ignore_errors=True)
 shutil.rmtree(swarm_root, ignore_errors=True)
 
+
+# ── every language in the tree: read as text, scanned as facts, refused honestly ──
+# The first public run was pointed at a TypeScript repository and reported "0 modules,
+# 0 findings, complete" in 0.4 s. Nothing had been read. Every rule below is what
+# that run should have said instead.
+print("\nPolyglot — every source file is a unit; text facts where there is no parser")
+from mechanic import deps, polyglot                                       # noqa: E402
+from mechanic import decompose, fixer                                     # noqa: E402
+poly_root = tempfile.mkdtemp(prefix="mechanic-poly-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(poly_root, "data")
+POLY = {
+    "package.json": '{"name":"app","dependencies":{"express":"^3.2.0","lodash":"~4.17.21",'
+                    '"leftpad":"1.0.0","weird":"git+https://x/y"},"devDependencies":{"typescript":"5.0.0"}}',
+    "requirements.txt": "requests==1.2.3\nflask>=2.0\n",
+    "src/db.ts": (
+        "import { Pool } from 'pg';\n"
+        "import { unusedHelper, usedHelper as helper } from './util.js';\n"
+        "import type { Row } from './types.js';\n"
+        "const pool = new Pool({ ssl: { rejectUnauthorized: false } });\n"
+        "export async function byName(name: string): Promise<Row[]> {\n"
+        "  const r = await pool.query(`SELECT * FROM users WHERE name = '${name}'`);\n"
+        "  return helper(r.rows);\n"
+        "}\n"
+        "export function safe(id: string) {\n"
+        "  return pool.query('SELECT * FROM users WHERE id = $1', [id]);\n"
+        "}\n"
+        "function neverCalled(a: number, b: number) {\n"
+        "  return a + b;\n"
+        "}\n"
+        "function fromTemplate() {\n"
+        "  return 1;\n"
+        "}\n"
+        "export function dyn(s: string) { return eval(s); }\n"
+    ),
+    "src/auth.ts": (
+        "const API_" + "KEY = 'sk_live_9f8e7d6c5b4a3210ffee';\n"
+        "const DEFAULT_SECRET = 'development-secret-do-not-use-in-production';\n"
+        "const fromEnv = process.env.SECRET || 'changeme';\n"
+        "export function token() { return Math.random().toString(36); }\n"
+        "export function load() {\n"
+        "  try { return JSON.parse('{}'); } catch (e) {}\n"
+        "  try { return 1; } catch (e) { /* the file is optional */ }\n"
+        "}\n"
+        "export function send() { throw new Error('not implemented'); }\n"
+        "// const old = 1;\n"
+        "// if (old) {\n"
+        "//   run(old);\n"
+        "// }\n"
+        "// This paragraph is prose that explains the design of the module in\n"
+        "// ordinary sentences, and it is not code at all.\n"
+        "// A third prose line so the run is long enough to be tested.\n"
+    ),
+    "src/a.ts": (
+        "export function first(x: number) {\n  const a = x + 1;\n  const b = a * 2;\n"
+        "  const c = b - 3;\n  const d = c / 4;\n  const e = d + 5;\n  const f = e * 6;\n  return f;\n}\n"
+    ),
+    "src/b.ts": (
+        "export function second(x: number) {\n  const a = x + 1;\n  const b = a * 2;\n"
+        "  const c = b - 3;\n  const d = c / 4;\n  const e = d + 5;\n  const f = e * 6;\n  return f;\n}\n"
+    ),
+    "src/util.ts": "export function unusedHelper() {}\nexport function usedHelper(r: unknown) { return r; }\n",
+    "src/types.ts": "export type Row = { id: string };\n",
+    "src/page.html": "<button onclick=\"fromTemplate()\">go</button>\n",
+    "test/db.test.ts": "const pass" + "word = 'hunter2hunter2hunter2';\nfunction helperInTest() {}\n",
+    "dist/bundle.js": "var x=1;" * 1000 + "\n",
+}
+for rel, body in POLY.items():
+    fp = os.path.join(poly_root, rel)
+    os.makedirs(os.path.dirname(fp), exist_ok=True)
+    with open(fp, "w") as f:
+        f.write(body)
+
+files = polyglot.source_files(poly_root)
+check("every source file is found, by language, and dist/ and test files are marked, not skipped",
+      {os.path.relpath(p, poly_root): l for p, l in files} == {
+          "src/a.ts": "typescript", "src/auth.ts": "typescript", "src/b.ts": "typescript",
+          "src/db.ts": "typescript", "src/types.ts": "typescript", "src/util.ts": "typescript",
+          "test/db.test.ts": "typescript"} and polyglot.is_test("test/db.test.ts")
+      and not polyglot.is_test("src/db.ts"),
+      ", ".join(os.path.relpath(p, poly_root) for p, _ in files))
+
+def _u(rel, lang="typescript"):
+    return {"module": rel, "file": rel, "lang": lang, "is_test": polyglot.is_test(rel), "loc": 0}
+db_lines = POLY["src/db.ts"].splitlines()
+sec = polyglot.security_findings(_u("src/db.ts"), db_lines)
+kinds = {f["claim"].split(" at ")[0]: f["line_range"] for f in sec}
+check("SQL assembled from a template value, TLS verification off, and eval are text facts with lines",
+      kinds.get("SQL built from a string") == "6-6" and kinds.get("TLS verification disabled") == "4-4"
+      and kinds.get("dynamic code execution") == "18-18", str(kinds))
+check("a parameterised query is not a finding",
+      not any(f["line_range"] == "10-10" for f in sec))
+auth_lines = POLY["src/auth.ts"].splitlines()
+sec2 = polyglot.security_findings(_u("src/auth.ts"), auth_lines)
+kinds2 = {f["claim"].split(" at ")[0]: f["line_range"] for f in sec2}
+check("a literal key is a finding; a development placeholder and an env fallback are not",
+      kinds2.get("hardcoded secret") == "1-1"
+      and not any(f["line_range"] in ("2-2", "3-3") for f in sec2), str(kinds2))
+check("Math.random on a line that names a token is a finding",
+      kinds2.get("weak randomness for a secret") == "4-4")
+check("every security finding is machine-verified, severity-labelled, with a fix and evidence",
+      all(f["basis"] == "machine-verified" and f["severity"] in ("critical", "high", "medium", "low")
+          and f["recommendation"] and f["evidence"][0]["file"] for f in sec + sec2))
+
+sl = polyglot.slop_findings(_u("src/auth.ts"), auth_lines, "typescript")
+skinds = {f["claim"].split(" at ")[0]: [] for f in sl}
+for f in sl:
+    skinds[f["claim"].split(" at ")[0]].append(f["line_range"])
+check("an empty catch is a swallow; one with a stated reason is a decision",
+      skinds.get("unexplained exception swallow") == ["6-6"], str(skinds))
+check("a 'not implemented' throw is a stub that shipped", skinds.get("stub body") == ["9-9"])
+check("commented-out code is found; the prose comment run is not",
+      skinds.get("commented-out code") == ["10-13"], str(skinds.get("commented-out code")))
+sl2 = polyglot.slop_findings(_u("src/db.ts"), db_lines, "typescript")
+unused = sorted(f["title"] for f in sl2 if "imported and never used" in f["title"])
+check("an unused ES import is a finding; an aliased import that is used, and a type import, are not",
+      unused == ["`unusedHelper` is imported and never used"], str(unused))
+
+units = [_u(r) for r in ("src/a.ts", "src/b.ts", "src/db.ts", "src/auth.ts", "src/util.ts",
+                         "src/types.ts", "test/db.test.ts")]
+texts = {u["module"]: POLY[u["module"]].splitlines() for u in units}
+texts["__refs__"] = polyglot.reference_lines(poly_root)
+tf = polyglot.tree_findings(units, texts)
+dup = [f for f in tf if "duplicated" in f["title"]]
+dead = sorted(f["symbol"] for f in tf if f["category"] == "liveness")
+check("a function body duplicated across files is found (whitespace aside)",
+      len(dup) == 1 and dup[0]["file"] == "src/a.ts" and "src/b.ts:1" in dup[0]["description"],
+      str([d["title"] for d in dup]))
+check("a non-exported function whose name appears nowhere in the tree is a finding…",
+      dead == ["neverCalled"], str(dead))
+check("…but not an exported one, one referenced from a template, or one declared in a test",
+      "unusedHelper" not in dead and "fromTemplate" not in dead and "helperInTest" not in dead)
+check("the claim is a text fact, in those words, and never says 'unreachable'",
+      all("referenced nowhere" in f["title"] and "unreachable" not in f["title"]
+          and f["confidence"] < 0.95 for f in tf if f["category"] == "liveness"))
+decl = polyglot.declarations(db_lines, "typescript")
+check("declarations are found by shape with their closing brace",
+      {d["name"]: (d["line"], d["end"], d["exported"]) for d in decl}.get("neverCalled") == (12, 14, False)
+      and any(d["name"] == "byName" and d["exported"] for d in decl), str(decl))
+cl = polyglot.checklist(_u("src/db.ts"), db_lines)
+check("the critic's checklist for an unindexed unit lists every function and import by id",
+      {i["id"] for i in cl} >= {"f:byName@5", "f:neverCalled@12", "i:pg", "i:./util.js"}, str([i["id"] for i in cl]))
+
+# outdated dependencies — against a scripted registry
+_latest = deps.LATEST
+REG = {("npm", "express"): "5.1.0", ("npm", "lodash"): "4.17.21", ("npm", "typescript"): "5.9.0",
+       ("PyPI", "requests"): "2.32.0", ("PyPI", "flask"): "3.1.0"}
+def fake_latest(eco, name):
+    if name == "leftpad":
+        raise urllib.error.HTTPError("u", 404, "gone", {}, None)
+    return REG[(eco, name)]
+deps.LATEST = fake_latest
+try:
+    od = deps.outdated(poly_root)
+    titles = {f["symbol"]: f for f in od["findings"]}
+    check("a direct dependency a major version behind the registry is a machine-verified finding",
+          "outdated:express" in titles and titles["outdated:express"]["severity"] == "medium"
+          and "outdated:requests" in titles and titles["outdated:requests"]["severity"] == "low"
+          and "outdated:flask" in titles, str(sorted(titles)))
+    check("…a minor version behind is not, a git reference is not guessed at, and a 404 is not a gap",
+          "outdated:lodash" not in titles and "outdated:typescript" not in titles
+          and "outdated:weird" not in titles and not od["gaps"] and od["checked"] == 6,
+          f"checked {od['checked']}, gaps {od['gaps']}")
+    check("…citing the manifest line and the versions on both sides",
+          titles["outdated:express"]["file"] == "package.json" and titles["outdated:express"]["line_range"] == "1-1"
+          and "3.2.0" in titles["outdated:express"]["title"] and "5.1.0" in titles["outdated:express"]["title"])
+    deps.LATEST = lambda e, n: (_ for _ in ()).throw(OSError("registry down"))
+    od2 = deps.outdated(poly_root)
+    check("when the registry is unreachable the check is a recorded refusal, not a crash",
+          not od2["findings"] and od2["gaps"] and "registry" in od2["gaps"][0]["reason"])
+finally:
+    deps.LATEST = _latest
+
+# the whole path on a tree with no Python at all
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), fake_latest
+try:
+    pr = analyse.run(poly_root, name="poly", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+pf = store.findings(run_id=pr["run_id"])
+pg = {g["scope"]: g["reason"] for g in store.gaps(run_id=pr["run_id"])}
+check("a tree with no Python is analysed end to end, with findings",
+      pr["status"] == "complete" and pr["findings"] >= 10 and pr["modules"] == 7,
+      f"{pr['findings']} findings over {pr['modules']} units in {pr['languages']}")
+check("the language it could not parse is a recorded refusal naming what it did and did not get",
+      "typescript" in pg and "Python only" in pg["typescript"] and "7 typescript" in pg["typescript"],
+      pg.get("typescript", "")[:80])
+check("the repository records its languages and LOC, not 'python'",
+      next(r for r in store.repos() if r["id"] == pr["repo_id"])["languages"] == "typescript"
+      and next(r for r in store.repos() if r["id"] == pr["repo_id"])["loc"] > 50)
+check("findings from every scanner reach the record: security, slop, liveness-by-text, outdated",
+      {f["category"] for f in pf} >= {"security", "slop", "liveness", "outdated"},
+      str(sorted({f["category"] for f in pf})))
+check("nothing in a test file or a bundle is reported",
+      not any("test/" in f["evidence"][0]["file"] or "dist/" in f["evidence"][0]["file"] for f in pf))
+empty_root = tempfile.mkdtemp(prefix="mechanic-empty-")
+with open(os.path.join(empty_root, "README.md"), "w") as f:
+    f.write("nothing here\n")
+er = analyse.run(empty_root, name="empty", budget_cents=0)
+check("a tree with no source at all says so, instead of 'complete, 0 findings'",
+      any(g["scope"] == "source" and "no source files" in g["reason"] for g in store.gaps(run_id=er["run_id"])))
+shutil.rmtree(empty_root, ignore_errors=True)
+
+# the panel on an unindexed unit: text claims admitted, graph claims refused
+from mechanic.index import Index as _Idx, build as _build                 # noqa: E402
+_pdb = os.path.join(poly_root, "poly-index.sqlite")
+_build(poly_root, _pdb)
+_pidx = _Idx(_pdb, poly_root)
+try:
+    pu = next(u for u in decompose.units(_pidx) if u["module"] == "src/db.ts")
+    ok_c, why_c = panel._admit({"title": "t", "claim": "line 6 interpolates name", "line_range": "6-6",
+                                "symbol": "byName", "claim_kind": "text", "category": "security",
+                                "severity": "high"}, pu, _pidx, "security")
+    no_c, why_n = panel._admit({"title": "t", "claim": "nothing calls it", "line_range": "12-14",
+                                "symbol": "neverCalled", "claim_kind": "graph"}, pu, _pidx, "quality")
+    check("a text claim on an unindexed unit is admitted with its symbol kept as text",
+          ok_c is not None and ok_c["symbol"] == "byName", why_c)
+    check("a graph claim on an unindexed unit is refused — there is no graph to check it against",
+          no_c is None and "unverifiable" in why_n, why_n)
+    check("the unit's context tells the analyst it is not indexed",
+          "not indexed" in decompose.context(pu, poly_root, _pidx, {}))
+    check("the critic's checklist comes from the text for such a unit",
+          any(i["id"] == "f:neverCalled@12" for i in decompose.checklist(pu, _pidx)))
+    check("the challenger's cite rule does not fire where there is no index (§10 needs one)",
+          _pidx.lang_of("src/db.ts") == "typescript" and _pidx.lang_of("nope") == "python")
+finally:
+    _pidx.close()
+_saved_seam = brainseam.SEAM["ask"]
+brainseam.SEAM["ask"] = lambda *a, **k: ("--- a/src/util.ts\n+++ b/src/util.ts\n@@ -1,2 +1,2 @@\n"
+                                         "-export function unusedHelper() {}\n+export function unusedHelper() { return 0; }\n"
+                                         " export function usedHelper(r: unknown) { return r; }\n")
+try:
+    fx = fixer.propose({"file": "src/util.ts", "title": "t", "line_range": "1-1"}, poly_root, budget.Budget(100))
+    check("a patch to a non-Python file is verified to apply, and says the parse check did not run",
+          fx["status"] == "applies-and-parses" and "Python-only" in fx["note"], fx["note"])
+finally:
+    brainseam.SEAM["ask"] = _saved_seam
+shutil.rmtree(poly_root, ignore_errors=True)
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+
 shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)
