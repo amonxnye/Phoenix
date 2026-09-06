@@ -104,6 +104,30 @@ function. Run on itself, the analyst found a queued analysis that could be dropp
 between a lock release and the next start, and a docstring that promised more than
 the code kept; both are fixed, and the mechanic on itself is back at zero.
 
+## Measured, not judged — complexity, and where to look first
+
+`metrics.py` measures every unit: McCabe's cyclomatic complexity per function, Halstead
+volume, the maintainability index, and churn from the history where there is one. The
+numbers are facts; "too complex" is an opinion (Charter §2), so they are never findings.
+They order the work — after centrality, the riskiest unit is analysed first, so a budget
+that halts partway has read the likeliest code — and they appear as **where to look
+first** in the report and on the page, and in each analyst's context. The risk score is
+the transparent product of the measured factors with its weights in the code; it is not
+a fitted model, because there is no bug history here to fit one to.
+
+A framework for AI code review, sent with the brief, asks for more than this. What the
+mechanic does with each of its pillars, and why:
+
+| The framework asks for | The mechanic does | Why |
+|---|---|---|
+| interprocedural dataflow (weighted pushdown systems) for error propagation | the same three questions, per function, on the AST and by shape (`errors.py`), every finding with its path | a WPDS over Python and TypeScript is a research project; the per-function facts are checkable today and stated as facts |
+| cyclomatic complexity, Halstead, maintainability, churn entropy | measured for every unit; order the work; shown as a reading order | facts, cheap, and honest as measurements — never as findings |
+| a fitted risk model (logistic regression on bug history) | a transparent score with stated weights | no bug history to fit; an invented coefficient would read as evidence |
+| Markov failure probability, Bayesian root cause | not adopted | no transition or cause data exists; a number without a measurement behind it is a wish |
+| symbolic execution with an SMT solver | not adopted | out of scope for a stdlib-only mechanic; the judged panel reads the paths instead |
+| differential (diff-aware) analysis | the watch: a run per new commit, findings carried across by fingerprint, fixed-upstream when they vanish | already the mechanic's model of change |
+| chain-of-thought with the path stated | every analyst is asked for the path: produced, received, used | the paper's sample trace, in the prompt |
+
 ## What is deliberately not here yet
 
 In the handoff's order, because each milestone answers a question that decides

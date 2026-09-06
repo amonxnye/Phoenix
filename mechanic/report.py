@@ -9,7 +9,7 @@ answers next to the code they are about.
 
 import time
 
-from . import posture, store
+from . import metrics, posture, store
 
 
 def render(run_id: str) -> str:
@@ -45,6 +45,15 @@ def render(run_id: str) -> str:
         out += [f"*…and {v['more']} more, below.*" if v.get("more") else "", ""]
     if held:
         out += ["## What held up", ""] + [f"- {h}" for h in held] + [""]
+    look = metrics.look_first(store.units(run_id))
+    if look and any(u["risk"] for u in look):
+        out += ["## Where to look first", "",
+                "Measured, not judged: the units with the most complex functions, the lowest "
+                "maintainability and the most churn, after centrality. Not findings — a reading order.", "",
+                "| Unit | Max CC (in) | Maintainability | Risk | LOC |", "|---|---|---|---|---|"]
+        out += [f"| `{u['file']}` | {u['complexity']} (`{u['hotspot']}`) | {u['maintainability']} | "
+                f"{u['risk']} | {u['loc']} |" for u in look]
+        out += [""]
     if mv:
         out += ["## Machine-verified", "",
                 "Each of these rests on a graph fact that was re-checked when this report "

@@ -129,6 +129,8 @@ def init() -> None:
 
 _EXT = False
 _EXTRA = {
+    "units": [("complexity", "INT DEFAULT 0"), ("maintainability", "REAL DEFAULT 0"),
+              ("risk", "REAL DEFAULT 0"), ("hotspot", "TEXT DEFAULT ''")],
     "repos": [("watch", "INT DEFAULT 0"), ("interval_s", "INT DEFAULT 21600"),
               ("last_sha", "TEXT DEFAULT ''"), ("last_checked", "REAL DEFAULT 0"),
               ("halts", "INT DEFAULT 0")],
@@ -275,10 +277,19 @@ def units_add(run_id: str, units: list[dict]) -> list[str]:
         n = c.execute("SELECT COUNT(*) FROM units").fetchone()[0]
         for i, u in enumerate(units, start=n + 1):
             uid = f"ripa-unt-{i:05d}"
-            c.execute("INSERT OR REPLACE INTO units(id, run_id, module, file, loc, "
-                      "symbols, centrality, dynamic) VALUES(?,?,?,?,?,?,?,?)",
-                      (uid, run_id, u["module"], u.get("file", ""), u.get("loc", 0),
-                       u.get("symbols", 0), u.get("centrality", 0), u.get("dynamic", "")))
+            if _EXT:
+                c.execute("INSERT OR REPLACE INTO units(id, run_id, module, file, loc, "
+                          "symbols, centrality, dynamic, complexity, maintainability, risk, "
+                          "hotspot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (uid, run_id, u["module"], u.get("file", ""), u.get("loc", 0),
+                           u.get("symbols", 0), u.get("centrality", 0), u.get("dynamic", ""),
+                           int(u.get("complexity") or 0), float(u.get("maintainability") or 0),
+                           float(u.get("risk") or 0), u.get("hotspot", "")))
+            else:
+                c.execute("INSERT OR REPLACE INTO units(id, run_id, module, file, loc, "
+                          "symbols, centrality, dynamic) VALUES(?,?,?,?,?,?,?,?)",
+                          (uid, run_id, u["module"], u.get("file", ""), u.get("loc", 0),
+                           u.get("symbols", 0), u.get("centrality", 0), u.get("dynamic", "")))
             ids.append(uid)
         c.commit()
         return ids

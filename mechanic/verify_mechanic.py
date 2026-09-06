@@ -1436,6 +1436,65 @@ check("in the verdict, error handling ranks after security and before outdated d
 shutil.rmtree(eh_root, ignore_errors=True)
 os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
 
+
+# ── measured, not judged: complexity orders the work and names where to look first ──
+print("\nMetrics — measured, not judged; where to look first")
+from mechanic import metrics                                              # noqa: E402
+mt_root = tempfile.mkdtemp(prefix="mechanic-metrics-")
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(mt_root, "data")
+with open(os.path.join(mt_root, "tangled.py"), "w") as f:
+    f.write("def knot(a, b, c):\n" + "".join(f"    if a > {i} and b < {i}:\n        c += {i}\n" for i in range(12))
+            + "    return c\n\ndef plain(x):\n    return x + 1\n")
+with open(os.path.join(mt_root, "simple.py"), "w") as f:
+    f.write("import tangled\n\ndef one(x):\n    return tangled.plain(x)\n")
+fns = {f["name"]: f["cc"] for f in metrics.python_functions(open(os.path.join(mt_root, "tangled.py")).read().splitlines())}
+check("cyclomatic complexity is McCabe's: one plus each decision, boolean operands counted",
+      fns == {"knot": 25, "plain": 1}, str(fns))
+mm = metrics.unit_metrics({"module": "tangled", "file": "tangled.py", "lang": "python"},
+                          open(os.path.join(mt_root, "tangled.py")).read().splitlines())
+check("a unit's metrics name the hotspot function and give a maintainability index on 0–100",
+      mm["complexity"] == 25 and mm["hotspot"] == "knot@1" and 0 <= mm["maintainability"] <= 100
+      and mm["functions"] == 2, str(mm))
+r0 = metrics.risk(mm, None)
+check("the risk score is the stated product of measured factors, churn counting only where a history exists",
+      abs(r0 - round(0.5 * 25 / 50 + 0.3 * (1 - mm["maintainability"] / 100), 3)) < 0.002
+      and metrics.risk(mm, {"commits": 30}) > r0)
+_q0, _d0, _l0 = deps.QUERY, deps.DETAIL, deps.LATEST
+deps.QUERY, deps.DETAIL, deps.LATEST = (lambda pk: {}), (lambda v: {}), (lambda e, n: "")
+try:
+    mr = analyse.run(mt_root, name="metrics", budget_cents=0)
+finally:
+    deps.QUERY, deps.DETAIL, deps.LATEST = _q0, _d0, _l0
+mus = {u["module"]: u for u in store.units(mr["run_id"])}
+check("every unit's measurements are on the record",
+      mus["tangled"]["complexity"] == 25 and mus["tangled"]["hotspot"] == "knot@1"
+      and mus["simple"]["complexity"] == 1 and mus["tangled"]["risk"] > mus["simple"]["risk"])
+look = metrics.look_first(store.units(mr["run_id"]))
+check("where to look first is the riskiest unit — after centrality, which `tangled` also has (simple imports it)",
+      look and look[0]["module"] == "tangled")
+check("metrics are never findings: nothing in the run is about complexity, maintainability or risk",
+      not any(w in f["title"].lower() for f in store.findings(run_id=mr["run_id"])
+              for w in ("complex", "maintainab", "risk")),
+      "; ".join(f["title"][:40] for f in store.findings(run_id=mr["run_id"])))
+mrep = report.render(mr["run_id"])
+check("the report shows where to look first, as a reading order, not a finding",
+      "## Where to look first" in mrep and "`tangled.py`" in mrep and "knot@1" in mrep)
+_mv = json.loads(web.handle_get("/api/mechanic/findings?repo=" + mr["repo_id"])[2])["verdict"]
+check("the page carries the same reading order", (_mv.get("look_first") or [{}])[0].get("module") == "tangled")
+from mechanic.index import Index as _MIdx, build as _mbuild                # noqa: E402
+_mdb = os.path.join(mt_root, "m.sqlite"); _mbuild(mt_root, _mdb); _midx = _MIdx(_mdb, mt_root)
+try:
+    tu = next(u for u in decompose.units(_midx) if u["module"] == "tangled")
+    tu.update(metrics.unit_metrics(tu, open(os.path.join(mt_root, "tangled.py")).read().splitlines()))
+    tu["risk"] = metrics.risk(tu, None)
+    check("the analyst's context names the hotspot; the critic's checklist carries each function's CC",
+          "complexity: max cyclomatic 25 in `knot@1`" in decompose.context(tu, mt_root, _midx, {})
+          and any(i["id"] == "f:knot@1" and "CC 25" in i["what"] for i in decompose.checklist(tu, _midx)))
+finally:
+    _midx.close()
+shutil.rmtree(mt_root, ignore_errors=True)
+os.environ["MECHANIC_DATA_DIR"] = os.path.join(root, "data")
+
 shutil.rmtree(root, ignore_errors=True)   # last, after every section that writes into it
 print(f"\n{sum(results)}/{len(results)} checks passed\n")
 sys.exit(0 if all(results) else 1)

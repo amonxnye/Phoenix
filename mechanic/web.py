@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
-from . import analyse, charter, ingest, posture, store, watch
+from . import analyse, charter, ingest, metrics, posture, store, watch
 
 # The interface the console calls. Declared, because the mechanic run on itself
 # reported these unreachable — correctly: their caller lives outside the package. An
@@ -137,6 +137,11 @@ def handle_get(path: str) -> tuple:
                                           .get("languages") or "").split(",") if x.strip()]
         v = posture.verdict(finds, held, {"units": units, "languages": sorted(set(langs)),
                                           "refusals": len(gaps)})
+        look = []
+        for r_id, last in _latest_runs().items():
+            if last and not (rid and r_id != rid):
+                look += store.units(last["id"])
+        v["look_first"] = metrics.look_first(look)
         return _json(200, {"findings": finds, "gaps": gaps, "verdict": v})
     if p == "/api/mechanic/runs":
         rid = (q.get("repo") or [""])[0]
@@ -492,7 +497,9 @@ async function findings(){
   $('vrows').innerHTML=v.rows.length?`<table><thead><tr><th>severity</th><th>finding</th><th>assessment</th></tr></thead><tbody>`+
     v.rows.map(x=>`<tr><td><span class="tag s-${esc(x.severity)}">${esc(x.severity)}</span> <span class="tag ${x.basis==='machine-verified'?'mv':'jd'}">${x.basis==='machine-verified'?'verified':'judged'}</span></td>
       <td>${esc(x.title)}<br><span class=loc>${esc(x.file)}${x.line_range?':'+esc(x.line_range):''}</span></td><td>${esc(x.assessment)}</td></tr>`).join('')+'</tbody></table>'+(v.more?`<div class=note>…and ${v.more} more in the findings below.</div>`:''):'';
-  $('held').innerHTML=v.held.length?'<b>What held up</b><br>'+v.held.map(h=>'&#10003; '+esc(h)).join('<br>'):'';
+  $('held').innerHTML=(v.held.length?'<b>What held up</b><br>'+v.held.map(h=>'&#10003; '+esc(h)).join('<br>'):'')+
+    ((v.look_first||[]).some(u=>u.risk)?'<br><b>Where to look first</b> <span class=loc>(measured, not judged: complexity, maintainability, churn)</span><br>'+
+      v.look_first.map(u=>`${esc(u.file)} — max CC ${u.complexity} in <code>${esc(u.hotspot)}</code>, maintainability ${u.maintainability}, risk ${u.risk}`).join('<br>'):'');
   $('gn').textContent=ALL.gaps.length+' refusal(s)';
   $('gaps').innerHTML=ALL.gaps.length?ALL.gaps.map(g=>`<div class=gap><b>${esc(g.scope)}</b> <span class=rp>${esc(g.repo)}</span><br>${esc(g.reason)}</div>`).join('')
     :'<div class=empty>None — every symbol examined could be judged.</div>';

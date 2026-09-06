@@ -16,8 +16,8 @@ import os
 import time
 
 from . import (adjudicate, brainseam, budget as budget_mod, charter, decompose, deps,
-               errors, fixer, history, liveness, panel, polyglot, posture, report, review,
-               slop, store)
+               errors, fixer, history, liveness, metrics, panel, polyglot, posture, report,
+               review, slop, store)
 from .index import Index, build
 
 
@@ -76,7 +76,7 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
         idx = Index(db, root)
         try:
             us = decompose.units(idx)
-            unit_ids = dict(zip((u["module"] for u in us), store.units_add(run_id, us)))
+            texts = {u["module"]: polyglot.read_lines(os.path.join(root, u["file"])) for u in us}
             store.run_set(run_id, unit_count=len(us))         # every language, not only the parsed one
             # What the tree is made of, and what each part gets. The first public run
             # read a TypeScript repository as "0 modules, 0 findings, complete": nothing
@@ -102,6 +102,13 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
             if not ok_hist:
                 store.gap_add(run_id, "history", why_hist)
                 counts["gaps"] += 1
+            # Measured, not judged: complexity and churn order the work after centrality,
+            # so a budget that halts partway has read the likeliest code first.
+            for u in us:
+                u.update(metrics.unit_metrics(u, texts[u["module"]]))
+                u["risk"] = 0.0 if u["is_test"] else metrics.risk(u, hist.get(u["file"]))
+            us.sort(key=lambda u: (-u["centrality"], -u["risk"], u["module"]))
+            unit_ids = dict(zip((u["module"] for u in us), store.units_add(run_id, us)))
             contexts = [decompose.context(u, root, idx, hist) for u in us]
 
             # ── free and exact: liveness, and the injection scan ────────────
@@ -110,7 +117,6 @@ def run(root: str, name: str = "", url: str = "", budget_cents: int | None = Non
                 store.gap_add(run_id, g["scope"], g["reason"])
                 counts["gaps"] += 1
             mv = list(res["findings"])
-            texts = {u["module"]: polyglot.read_lines(os.path.join(root, u["file"])) for u in us}
             for u in us:
                 if not u["is_test"]:
                     lines = texts[u["module"]]
