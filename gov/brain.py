@@ -125,14 +125,6 @@ def default_extras(model_name: str) -> dict:
     return {}
 
 
-def prompt_suffix(model_name: str) -> str:
-    """Qwen3's soft switch. The gateway's OpenAI-compatible endpoint ignored
-    `think: false` — the first production brain check on qwen3:30b spent 582 chars
-    of reasoning on a one-word reply — but the model itself honours `/no_think` at
-    the end of the user turn, whatever the transport. Sent only to qwen3."""
-    return " /no_think" if "qwen3" in (model_name or "").lower() else ""
-
-
 def clip(field: str, text) -> str:
     """Bound ONE prompt input, and count what was cut.
 
@@ -179,6 +171,43 @@ def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""
                               int(pt or 0), int(ct or 0), ok, error)
     except Exception:
         pass                                       # telemetry must never break a call
+
+
+# Ollama's native chat endpoint is the one transport that honours `think: false`
+# for every model it serves: the OpenAI-compatible endpoint ignored the field AND
+# Qwen3's own /no_think switch on production (890 chars of reasoning for "alive").
+# Tried first for a tagged model; if the gateway does not expose it (403/404/405)
+# the process remembers and uses the OpenAI-compatible path from then on.
+NATIVE = {"ok": None}                         # None: untested; True/False: measured
+
+
+def _native_url(base_url: str) -> str:
+    return base_url.rstrip("/").removesuffix("/v1") + "/api/chat"
+
+
+def _ollama_chat(p: dict, messages: list, max_tokens: int, temperature: float,
+                 purpose: str) -> tuple[str, dict]:
+    import urllib.request
+    body = {"model": p["model"], "messages": messages, "stream": False, "think": False,
+            "options": {"num_predict": max_tokens, "temperature": temperature}}
+    req = urllib.request.Request(
+        _native_url(p["base_url"]), data=_json_mod.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {p['key']}"})
+    with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
+                          what=f"{p['model']} {purpose} native", idempotent=True,  # a read with a cost
+                          key=_host(p)) as r:
+        d = _json_mod.loads(r.read())
+    msg = d.get("message") or {}
+    out, inline = _split_think((msg.get("content") or "").strip())
+    rc = msg.get("thinking") or inline
+    LAST_RAW.update(finish_reason=d.get("done_reason", ""), content_chars=len(out),
+                    reasoning_chars=len(rc), reasoning_head=rc[:160],
+                    completion_tokens=d.get("eval_count"), model=p["model"],
+                    extra={"think": False, "transport": "ollama /api/chat"},
+                    attempts=netretry.last().get("attempts", 1),
+                    waited_s=netretry.last().get("waited_s", 0))
+    return out, {"input_tokens": d.get("prompt_eval_count", 0),
+                 "output_tokens": d.get("eval_count", 0)}
 
 
 def _host(p: dict) -> str:
@@ -235,7 +264,20 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
         raise RuntimeError("no model configured")
     t0 = _time.time()
     try:
-        if p["kind"] == "anthropic":
+        native = p["kind"] == "openai" and ":" in p["model"] and NATIVE["ok"] is not False
+        if native:
+            try:
+                out, usage = _ollama_chat(p, messages, max_tokens, temperature, purpose)
+                NATIVE["ok"] = True
+            except Exception as e:                 # noqa: BLE001 — classified below
+                if netretry.status_of(e) in (403, 404, 405):
+                    NATIVE["ok"] = False           # not exposed here: measured once, remembered
+                    native = False
+                else:
+                    raise
+        if native:
+            pass
+        elif p["kind"] == "anthropic":
             out, usage = _anthropic_chat(p, messages, max_tokens, temperature)
         else:
             from openai import OpenAI
@@ -245,10 +287,6 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             client = OpenAI(api_key=p["key"], base_url=p["base_url"],
                             timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                             max_retries=0)
-            suffix = prompt_suffix(p["model"])
-            if suffix and messages and messages[-1].get("role") == "user":
-                messages = messages[:-1] + [{**messages[-1],
-                                             "content": messages[-1]["content"] + suffix}]
             kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
                   "temperature": temperature}
             extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
