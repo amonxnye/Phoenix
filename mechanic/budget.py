@@ -34,7 +34,8 @@ def calibrate(model_name: str, base_url: str = "") -> str:
     import os
     m = (model_name or "").lower()
     forced = os.environ.get("MECHANIC_PRICE", "").strip().lower()
-    if forced == "self-hosted" or (not forced and ":" in m):
+    own_gateway = "ripaplatform" in (base_url or "")     # the platform's own hardware, any name
+    if forced == "self-hosted" or (not forced and (":" in m or own_gateway)):
         PRICE["strong"] = PRICE["cheap"] = (0.0, 0.0)
         PRICED_FOR = (f"self-hosted ({model_name}): metered at 0¢ — the money ceiling "
                       "does not bind; the structural bounds do")

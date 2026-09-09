@@ -595,6 +595,8 @@ try:
               (not _b) or (_p["scope"] == "mechanic" and _p["base_url"] == "https://gateway.example/v1"
                            and brainseam.name() == "qwen3:30b" and _b.provider() == _shared),
               str(brainseam.describe()))
+        check("a service name on the platform's own gateway is self-hosted too — no tag needed",
+              budget.calibrate("mechanic-service", "https://svc.ripaplatform.com/v1").startswith("self-hosted"))
         check("a self-hosted model is metered at 0¢ and the record says the ceiling does not bind",
               budget.calibrate("qwen3:30b", "https://gateway.example/v1").startswith("self-hosted")
               and budget.PRICE["strong"] == (0.0, 0.0) and budget._cents("strong", 10**6, 10**6) == 0.0)

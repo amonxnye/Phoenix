@@ -122,11 +122,54 @@ def retry_after(exc) -> float | None:
         return None
 
 
+def body_of(exc) -> str:
+    """The error body a provider sent, whatever library raised it — read once."""
+    cached = getattr(exc, "_body_text", None)
+    if cached is not None:
+        return cached
+    text = ""
+    b = getattr(exc, "body", None)                       # openai.APIStatusError
+    if b:
+        text = b if isinstance(b, str) else str(b)
+    if not text:
+        resp = getattr(exc, "response", None)
+        text = getattr(resp, "text", "") or ""
+    if not text and hasattr(exc, "read"):                # urllib.error.HTTPError
+        try:
+            text = (exc.read() or b"")[:2000].decode("utf-8", "replace")
+        except Exception:                                # noqa: BLE001 — a readout, best effort
+            text = ""
+    text = text or str(exc)
+    try:
+        exc._body_text = text
+    except Exception:                                    # noqa: BLE001 — some exceptions forbid attributes
+        pass
+    return text
+
+
 def retryable(exc) -> tuple[bool, str]:
-    """(should we retry, why) — the classification the record shows."""
+    """(should we retry, why) — the classification the record shows.
+
+    The platform gateway's own semantics (its llms.txt) decide three statuses that a
+    generic table gets wrong:
+      403 + code model_disabled — the administrator switched the model off: pick another.
+      503 + code model_warming  — the routed model is still loading: retry (Retry-After 30).
+      503 without that code     — no usable model at all: an administrator is needed.
+      429 on the service API    — the service limit is reached: a retry cannot help.
+    """
     if isinstance(exc, CircuitOpen):
         return False, "circuit open"
     st = status_of(exc)
+    if st == 503:
+        warming = "model_warming" in body_of(exc)
+        return warming, ("HTTP 503 model_warming: the model is still loading" if warming
+                         else "HTTP 503 without model_warming: no usable model — needs an administrator")
+    if st == 403 and "model_disabled" in body_of(exc):
+        return False, "HTTP 403 model_disabled: the administrator switched this model off — pick another"
+    if st == 429:
+        limited = retry_after(exc) is not None or "rate" in body_of(exc).lower()
+        return limited, ("HTTP 429 rate limit" if limited
+                         else "HTTP 429: service limit reached — cannot self-register; needs an administrator")
     if st is not None:
         return st in RETRY_STATUS, f"HTTP {st}"
     if isinstance(exc, (socket.timeout, TimeoutError)):

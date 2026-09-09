@@ -827,6 +827,56 @@ try:
     except _Rate:
         pass
     check("a 429's own Retry-After sets the wait", len(_slept) == 1 and 5 <= _slept[0] <= 9)
+    # the gateway's own error semantics (its llms.txt): two 503s mean opposite things
+    class _Body(_Http):
+        def __init__(self, code, body, headers=None):
+            super().__init__(code); self.body = body; self.headers = headers or {}
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Body(503, {"error": {"code": "model_warming"}}, {"Retry-After": "30"})),
+               what="svc", retries=1, idempotent=True)
+    except _Body: pass
+    check("503 model_warming is retried after the gateway's Retry-After (the model is loading)",
+          len(_slept) == 1 and 20 <= _slept[0] <= 40 and "loading" in N.last()["errors"][0])
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Body(503, {"error": {"message": "no usable model"}})), what="svc", idempotent=True)
+    except _Body: pass
+    check("503 WITHOUT model_warming is not retried — no usable model needs an administrator",
+          not _slept and N.last()["gave_up"] == "not retryable" and "administrator" in N.last()["errors"][0])
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Body(403, {"error": {"code": "model_disabled"}})), what="gw", idempotent=True)
+    except _Body: pass
+    check("403 model_disabled is not retried and says to pick another model",
+          not _slept and "pick another" in N.last()["errors"][0])
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Body(429, {"error": {"message": "service limit reached"}})), what="svc", idempotent=True)
+    except _Body: pass
+    check("429 without Retry-After or rate-limit wording is the service limit — not retried",
+          not _slept and "service limit" in N.last()["errors"][0])
+    _slept.clear()
+    try:
+        N.call(lambda: (_ for _ in ()).throw(_Body(429, {"error": {"message": "rate limit"}}, {"Retry-After": "2"})), what="gw", retries=1, idempotent=True)
+    except _Body: pass
+    check("…while a 429 rate limit with Retry-After is retried after it", len(_slept) == 1 and 1 <= _slept[0] <= 3)
+    _envfb = os.environ.get("BRAIN_MODEL_FALLBACKS")
+    os.environ["BRAIN_MODEL_FALLBACKS"] = "qwen3:30b, phi3:14b-instruct, llama3.1:8b"
+    try:
+        B.DISABLED.clear(); B.DISABLED.add("phi3:14b-instruct")
+        _nx = B._fallback({"model": "qwen3:30b", "base_url": "x", "key": "k", "kind": "openai"})
+        check("on model_disabled the seam takes the NEXT operator-listed model that is not disabled",
+              _nx is not None and _nx["model"] == "llama3.1:8b")
+    finally:
+        B.DISABLED.clear()
+        os.environ.pop("BRAIN_MODEL_FALLBACKS", None)
+        if _envfb is not None: os.environ["BRAIN_MODEL_FALLBACKS"] = _envfb
+    import anchor as _A2
+    B._log_call({"base_url": "https://svc.example/v1", "model": "my-service", "kind": "openai"}, "t", time.time(), None, True, served="qwen3:4b")
+    _lastrow = _A2._conn().execute("SELECT model FROM model_calls ORDER BY id DESC LIMIT 1").fetchone()
+    check("a service call is logged under the model that actually served it, not the service name",
+          _lastrow is not None and _lastrow[0] == "qwen3:4b")
     # the guards that make one shared retry layer safe
     N.reset(); _slept.clear()
     try:

@@ -159,14 +159,28 @@ def prompt_overruns() -> dict:
     return {k: dict(v) for k, v in sorted(_OVERRUN.items())}
 
 
-def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = ""):
+DISABLED: set = set()          # models the gateway answered model_disabled for, this process
+
+
+def _fallback(p: dict) -> dict | None:
+    """The next model from BRAIN_MODEL_FALLBACKS (comma-separated) that the gateway has
+    not disabled, or None. The seam never picks a model on its own — it picks the next
+    one the operator listed, and the record names the model that actually answered."""
+    for m in [x.strip() for x in os.environ.get("BRAIN_MODEL_FALLBACKS", "").split(",")]:
+        if m and m != p["model"] and m not in DISABLED:
+            return dict(p, model=m)
+    return None
+
+
+def _log_call(p: dict, purpose: str, t0: float, usage, ok: bool, error: str = "",
+              served: str = ""):
     try:
         import anchor
         pt = getattr(usage, "prompt_tokens", 0) or (usage or {}).get("input_tokens", 0) \
             if not hasattr(usage, "prompt_tokens") else usage.prompt_tokens
         ct = getattr(usage, "completion_tokens", 0) or (usage or {}).get("output_tokens", 0) \
             if not hasattr(usage, "completion_tokens") else usage.completion_tokens
-        anchor.model_call_log(p["base_url"], p["model"], purpose,
+        anchor.model_call_log(p["base_url"], served or p["model"], purpose,
                               round((_time.time() - t0) * 1000),
                               int(pt or 0), int(ct or 0), ok, error,
                               attempts=int(LAST_RAW.get("attempts") or 1),
@@ -196,16 +210,20 @@ def gateway_status(p: dict | None = None) -> dict:
     if not p or p["kind"] != "openai" or ":" not in p["model"]:
         return {"error": "not an Ollama gateway"}
     root = p["base_url"].rstrip("/").removesuffix("/v1")
+    # The service API (svc.) serves only chat; the compute readout lives on the api. host.
+    api_root = root.replace("://svc.", "://api.") if "://svc." in root else root
     hdr = {"Authorization": f"Bearer {p['key']}", "User-Agent": USER_AGENT}
     out = {}
     try:
-        for name, path in (("version", "/api/version"), ("ps", "/api/ps"), ("tags", "/api/tags")):
-            req = urllib.request.Request(root + path, headers=hdr)
+        for name, path in (("health", "/healthz"), ("version", "/api/version"),
+                           ("ps", "/api/ps"), ("tags", "/api/tags")):
+            req = urllib.request.Request(api_root + path, headers=hdr)
             with netretry.urlopen(req, timeout=15, what=f"gateway {name}", retries=1,
                                   idempotent=True, key=_host(p)) as r:
                 out[name] = _json_mod.loads(r.read() or b"{}")
     except Exception as e:                        # noqa: BLE001 — a readout reports, never raises
         return {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    h = out.get("health") or {}
     loaded = []
     for m in (out.get("ps") or {}).get("models") or []:
         det = m.get("details") or {}
@@ -216,6 +234,9 @@ def gateway_status(p: dict | None = None) -> dict:
                        "quantization": det.get("quantization_level", ""),
                        "expires_at": (m.get("expires_at") or "")[:19].replace("T", " ")})
     return {"version": (out.get("version") or {}).get("version", ""), "loaded": loaded,
+            "health": {"ok": bool(h.get("ok")), "gateway_build": str(h.get("version", "")),
+                       "uptime_s": int(h.get("uptimeSec") or 0)},
+            "readout_host": api_root,
             "available": sorted(m.get("name", "") for m in (out.get("tags") or {}).get("models") or [])}
 
 
@@ -358,6 +379,9 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                                  key=_host(p))
             msg = resp.choices[0].message
             out, usage = (msg.content or "").strip(), resp.usage
+            # The service API routes a service NAME to a model and says which one served;
+            # the record names the model that answered, not the name that was asked for.
+            served = getattr(resp, "model", "") or p["model"]
             # A reasoning model may spend the whole reply thinking and leave `content`
             # empty. Record what came back so a silent reply is never a mystery again.
             rc = (getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
@@ -368,12 +392,20 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                             content_chars=len(out), reasoning_chars=len(rc),
                             reasoning_head=rc[:160],
                             completion_tokens=getattr(usage, "completion_tokens", None),
-                            model=p["model"], extra=extras,
+                            model=p["model"], served_model=served, extra=extras,
                             attempts=netretry.last().get("attempts", 1),
                             waited_s=netretry.last().get("waited_s", 0))
-        _log_call(p, purpose, t0, usage, True)
+        _log_call(p, purpose, t0, usage, True, served=LAST_RAW.get("served_model", ""))
         return out
     except Exception as e:
+        if netretry.status_of(e) == 403 and "model_disabled" in netretry.body_of(e):
+            DISABLED.add(p["model"])
+            netretry._emit("model_disabled", _host(p), f"{p['model']} switched off by the administrator")
+            nxt = _fallback(p)
+            if nxt is not None:
+                _log_call(p, purpose, t0, None, False, f"model_disabled → falling back to {nxt['model']}")
+                return _chat(messages, max_tokens, temperature, purpose, extra_body,
+                             provider_override=nxt)
         LAST_RAW.update(model=p["model"], error=str(e)[:200],
                         attempts=netretry.last().get("attempts", 1),
                         gave_up=netretry.last().get("gave_up", ""))
