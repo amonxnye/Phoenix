@@ -936,6 +936,93 @@ try:
 finally:
     N._SLEEP = time.sleep
 
+# ── Article XI: the self-improvement cycle, offline — scripted candidates, scripted oracle ──
+import improve as IMP
+import hashlib as _hl
+_fixture_rel = "gov/verify_fixture_improve.py"           # a real file in the live tree, for the copy
+_fixture_abs = os.path.join(os.path.dirname(HERE), _fixture_rel)
+with open(_fixture_abs, "w") as _f:
+    _f.write("def hello():\n    return 1\n")
+_live_before = _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest()
+_cand = {"finding_id": "f1", "title": "hello should say so", "severity": "low", "category": "quality",
+         "file": _fixture_rel, "patch": "--- a/gov/verify_fixture_improve.py\n+++ b/gov/verify_fixture_improve.py\n@@ -1,2 +1,2 @@\n def hello():\n-    return 1\n+    return 2\n"}
+_seen_trees = []
+def _green(tree):
+    _seen_trees.append(tree)
+    patched = "return 2" in open(os.path.join(tree, _fixture_rel)).read()
+    return {"green": True, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": ""},
+                                      "settlement": {"passed": 200 + (1 if patched else 0), "total": 200 + (1 if patched else 0), "ok": True, "seconds": 2, "tail": ""}}}
+_o0, _c0 = IMP.ORACLE, IMP.CANDIDATES
+IMP.ORACLE, IMP.CANDIDATES = _green, lambda: [_cand]
+try:
+    _r = IMP.cycle("test")
+    check("a cycle takes the mechanic's patches, tries each on a COPY against the suites, and parks what survived",
+          _r["status"] == "complete" and _r["candidates"] == 1 and _r["tried"] == 1 and _r["verified"] == 1
+          and len(_seen_trees) == 2 and all(t != os.path.dirname(HERE) and not os.path.exists(t) for t in _seen_trees),
+          str(_r))
+    _p = IMP.proposals(status="verified")
+    check("the verified improvement waits at the gate with its diff and the suite delta",
+          _p and _p[0]["file"] == _fixture_rel and "+    return 2" in _p[0]["patch"]
+          and _p[0]["after_json"]["suites"]["settlement"]["passed"] == 201 and IMP.status()["parked"] >= 1)
+    check("the live tree was never written — the fixture's digest is unchanged",
+          _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest() == _live_before)
+    def _red(tree):
+        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x"},
+                                           "settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": ""}}}
+    IMP.ORACLE = lambda tree: _green(tree) if "return 2" not in open(os.path.join(tree, _fixture_rel)).read() else _red(tree)
+    _r2 = IMP.cycle("test")
+    check("a patch that turns a suite red is rejected, naming the suite, and recorded as a lesson",
+          _r2["verified"] == 0 and _r2["rejected"] == 1
+          and any(p["status"] == "rejected" and "governor (15/16)" in p["note"] for p in IMP.proposals())
+          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-rejected'").fetchone()[0] >= 1,
+          f"{_r2} | notes {[p['note'][:60] for p in IMP.proposals()]} | rejected events "
+          f"{A._conn().execute(chr(83)+'ELECT COUNT(*) FROM knowledge WHERE kind=?', ('improve-rejected',)).fetchone()[0]}")
+    _envt = os.environ.pop("GITHUB_TOKEN", None)
+    _ap = IMP.approve(_p[0]["id"], "tester")
+    check("approval without a GITHUB_TOKEN hands the patch to the human — nothing is pushed",
+          _ap["ok"] and _ap["status"] == "approved" and "+    return 2" in _ap["patch"]
+          and IMP.proposal(_p[0]["id"])["status"] == "approved")
+    if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
+    IMP.CANDIDATES = lambda: []
+    for _ in range(IMP.EMPTY_CYCLES_ESCALATE):
+        IMP.cycle("test")
+    check("three consecutive empty cycles are an escalation to the Chief Governor, not a quiet repeat",
+          IMP.status()["empty_streak"] >= IMP.EMPTY_CYCLES_ESCALATE
+          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
+    check("the constitution names the article and its enforcing code, and bumped its version",
+          "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text()
+          and re.search(r"^Version: 1\.2", A.charter_text(), re.M) is not None)
+finally:
+    IMP.ORACLE, IMP.CANDIDATES = _o0, _c0
+    os.remove(_fixture_abs)
+# the pull request is made of reads retried and writes made once, as a draft
+import ghpr as GH
+_calls = []
+class _R:
+    def __init__(self, b): self._b = b
+    def read(self): return _json_mod.dumps(self._b).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def _gh_open(req, timeout=None, context=None):
+    _calls.append((req.get_method(), req.full_url.replace(GH.API, ""), _json_mod.loads(req.data) if req.data else None))
+    u = req.full_url
+    if u.endswith("/repos/o/r"): return _R({"default_branch": "main"})
+    if "/git/ref/heads/main" in u: return _R({"object": {"sha": "abc"}})
+    if "/git/ref/heads/phoenix/improve-1" in u: raise urllib.error.HTTPError(u, 404, "no", {}, None)
+    if "/contents/" in u and req.get_method() == "GET": return _R({"sha": "old"})
+    if u.endswith("/pulls"): return _R({"html_url": "https://github.com/o/r/pull/9"})
+    return _R({})
+_open0, N._OPEN = N._OPEN, _gh_open
+try:
+    _url = GH.open_pr("o/r", "tok", "phoenix/improve-1", {"gov/x.py": "print(1)\n"}, "t", "b")
+    _writes = [c for c in _calls if c[0] != "GET"]
+    check("an approval opens a DRAFT pull request: branch from the default branch, file put, PR draft:true",
+          _url.endswith("/pull/9") and [c[0] for c in _writes] == ["POST", "PUT", "POST"]
+          and _writes[0][2]["ref"] == "refs/heads/phoenix/improve-1" and _writes[1][2]["sha"] == "old"
+          and _writes[2][2]["draft"] is True and _writes[2][2]["head"] == "phoenix/improve-1", str([c[:2] for c in _calls]))
+finally:
+    N._OPEN = _open0
+
 # ── the model review: every call's telemetry, downtime from the record, events from the breaker ──
 import anchor as _A
 import models_page as _MP

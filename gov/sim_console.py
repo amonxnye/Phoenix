@@ -1958,6 +1958,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/models":
             self._count_view()
             return self._send(200, MODELS_PAGE, "text/html; charset=utf-8")
+        if self.path == "/improve":
+            self._count_view()
+            return self._send(200, IMPROVE_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/improve":
+            import improve
+            return self._send(200, json.dumps({"status": improve.status(), "cycles": improve.cycles(),
+                                               "proposals": improve.proposals()}))
+        if self.path.startswith("/api/improve/") and self.path.endswith(".patch"):
+            import improve
+            try:
+                p = improve.proposal(int(self.path.rsplit("/", 1)[1][:-6]))
+            except ValueError:
+                p = None
+            if not p:
+                return self._send(404, json.dumps({"error": "no such proposal"}))
+            return self._send(200, p["patch"] or "", "text/x-diff; charset=utf-8")
         if self.path.startswith("/api/models"):
             import models_page
             import netretry
@@ -2309,6 +2325,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/mechanic/"):      # POWER: gated by the token above
             code, ctype, body = _mechanic_web().handle_post(self.path, self._read_json())
             return self._send(code, body, ctype)
+        if self.path.startswith("/api/improve/"):       # POWER: the gate is a human act
+            import improve
+            body = self._read_json()
+            action = self.path.rsplit("/", 1)[1]
+            actor = "console-token" if tok else "console"
+            if action == "run":
+                if improve._STATE["running"]:
+                    return self._send(409, json.dumps({"status": "busy", "note": improve._STATE["current"]}))
+                threading.Thread(target=improve.cycle, args=("manual",), daemon=True).start()
+                return self._send(202, json.dumps({"status": "started"}))
+            if action == "approve":
+                return self._send(200, json.dumps(improve.approve(int(body.get("id") or 0), actor)))
+            if action == "reject":
+                return self._send(200, json.dumps(improve.reject(int(body.get("id") or 0),
+                                                                 str(body.get("reason") or ""), actor)))
+            return self._send(404, json.dumps({"error": "no such improve action"}))
         if self.path == "/api/resume":
             body = self._read_json()
             uid, decision = body.get("unit_id"), body.get("decision")
@@ -2617,6 +2649,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <a class=navlink href="/flow">Decision Flow &rarr;</a>
     <a class=navlink href="/network">Network &rarr;</a>
     <a class=navlink href="/models">Models &rarr;</a>
+    <a class=navlink href="/improve">Self-Improvement &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -3616,7 +3649,9 @@ tick(); setInterval(tick,4000);
 
 
 import models_page as _models_page                     # noqa: E402
+import improve_page as _improve_page                   # noqa: E402
 MODELS_PAGE = _page(_models_page.PAGE)
+IMPROVE_PAGE = _page(_improve_page.PAGE)
 
 COMMS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -4441,6 +4476,12 @@ def main(argv):
               file=sys.stderr, flush=True)
     threading.Thread(target=_drive, daemon=True).start()
     threading.Thread(target=_health_sampler, daemon=True).start()
+    try:
+        import improve                            # Article XI: the world improves itself, gated
+        print(f"[improve] scheduler {'started' if improve.start() else 'not started'} — "
+              f"every {improve.INTERVAL_S // 3600}h, IMPROVE=0 disables", file=sys.stderr, flush=True)
+    except Exception as _e:                       # noqa: BLE001 — the loop must never block boot
+        print(f"[improve] skipped: {type(_e).__name__}: {str(_e)[:80]}", file=sys.stderr, flush=True)
     port = int(os.environ.get("PORT", "8788"))
     host = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
     srv = QuietServer((host, port), Handler)

@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.1
+Version: 1.2
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -315,6 +315,31 @@ Everything below is those two laws, applied.
    rules. Silence here would make the version worse than no version at all — it would
    look like evidence.
 > Enforced by `anchor.py` (`charter`, `reason_add`) and `sim_console.py` (`/rules`).
+
+## Article XI — The world improves itself, and every improvement stops at the gate
+
+1. **Improvement is a measured cycle, not an aspiration.** On a schedule the world runs
+   its own mechanic on its own code, takes the patches that applied and parsed, applies
+   each to a scratch copy of the repository, and runs every verification suite it ships
+   on that copy — with no credentials and no network. A candidate is *verified* only if
+   every suite is green at or above the unpatched baseline. No model judges whether a
+   change is good; the suites do (`improve.cycle`, `improve.run_suites`).
+2. **The live tree is never written by a cycle.** A digest of the running code is taken
+   before and after; a cycle that finds it changed is halted and escalated as a broken
+   invariant, whatever else it produced (`improve._tree_digest`).
+3. **Verified means parked.** A verified improvement waits at the gate with its diff, the
+   suite delta and the hours it has waited. A human approves or rejects it at the
+   console. Only an approval pushes a branch and opens a *draft* pull request, and only
+   when a token was given to the orchestrator — never to a sandbox. Merging remains a
+   human act on GitHub (`improve.approve`, `ghpr.open_pr`).
+4. **What was rejected is a lesson, not a loss.** Every rejection — by the suites or by
+   the human — is written to the record with its reason, so the next cycle's proposals
+   can be steered by what failed before (`anchor.record`, kind `improve-rejected`).
+5. **Producing nothing is a fact, and repeated nothing is an escalation.** Three
+   consecutive cycles that verify nothing are reported to the Chief Governor with the
+   last reason, not silently repeated (Article IX applied to improvement).
+> Enforced by `improve.py` (`cycle`, `run_suites`, `verdict`, `approve`, `reject`),
+> `ghpr.py` and `sim_console.py` (`/improve`, `/api/improve/*`).
 
 ## Amending this constitution
 
