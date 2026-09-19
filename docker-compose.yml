@@ -1,0 +1,46 @@
+# Phoenix on RupertCloud — one container, one volume, the host's own Ollama.
+#
+#   cp .env.example .env   # fill in BRAIN_API_KEY (any value for local Ollama), CONSOLE_TOKEN
+#   docker compose up -d --build
+#   docker compose logs -f phoenix
+#
+services:
+  phoenix:
+    build:
+      context: .
+      args:
+        PHOENIX_COMMIT: "${PHOENIX_COMMIT:-}"
+    image: phoenix:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8788"
+      GOV_DATA_DIR: /data
+    ports:
+      - "${PHOENIX_PORT:-8788}:8788"
+    volumes:
+      # THE record. Named volume so `docker compose down` keeps it; only `down -v` erases it.
+      - phoenix-data:/data
+    extra_hosts:
+      # Lets BRAIN_BASE_URL=http://host.docker.internal:11434/v1 reach Ollama on the host
+      # directly — no Cloudflare 100 s cap, no gateway auth, no public round trip.
+      - "host.docker.internal:host-gateway"
+    # The worker sandbox and the improvement oracle run untrusted code under
+    # `unshare -rn` (a private network namespace, Article V). Docker's default seccomp
+    # profile blocks that syscall; this lifts it for THIS container only. Without it
+    # both still run, credential-stripped, and the console reports the weaker mode —
+    # a claim the system cannot enforce is reported, never asserted.
+    security_opt:
+      - seccomp=unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8788/healthz"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+volumes:
+  phoenix-data:

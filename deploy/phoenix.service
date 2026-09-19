@@ -1,0 +1,29 @@
+# Phoenix without a container — systemd on the RupertCloud host.
+#   sudo useradd -r -m -d /opt/phoenix phoenix
+#   sudo -u phoenix git clone https://github.com/amonxnye/Phoenix /opt/phoenix/app
+#   sudo -u phoenix python3 -m venv /opt/phoenix/venv && \
+#     sudo -u phoenix /opt/phoenix/venv/bin/pip install -r /opt/phoenix/app/requirements.txt
+#   sudo mkdir -p /var/lib/phoenix && sudo chown phoenix: /var/lib/phoenix
+#   sudo cp /opt/phoenix/app/.env.example /etc/phoenix.env && sudo chmod 600 /etc/phoenix.env  # then edit
+#   sudo cp /opt/phoenix/app/deploy/phoenix.service /etc/systemd/system/ && sudo systemctl enable --now phoenix
+# For the sandbox's private network namespace: sysctl kernel.unprivileged_userns_clone=1
+[Unit]
+Description=Phoenix — the Governor, the Mechanic, the improvement cycle
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+User=phoenix
+WorkingDirectory=/opt/phoenix/app
+EnvironmentFile=/etc/phoenix.env
+Environment=PORT=8788 GOV_DATA_DIR=/var/lib/phoenix BRAIN_BASE_URL=http://127.0.0.1:11434/v1
+ExecStart=/opt/phoenix/venv/bin/python gov/sim_console.py --seed
+Restart=always
+RestartSec=5
+# The console writes only under GOV_DATA_DIR and its own scratch copies.
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

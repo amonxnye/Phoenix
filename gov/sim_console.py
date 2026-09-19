@@ -1922,6 +1922,19 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.path == "/healthz":
+            # The host's health check: process up, record writable, commit, uptime.
+            import improve as _imp
+            try:
+                anchor.config_get("healthz")
+                writable = os.access(anchor._DATA_DIR, os.W_OK)
+            except Exception:                     # noqa: BLE001 — a probe reports
+                writable = False
+            return self._send(200 if writable else 503, json.dumps({
+                "ok": writable, "commit": os.environ.get("PHOENIX_COMMIT", ""),
+                "uptime_s": int(time.time() - _BOOT_TS), "data_dir": anchor._DATA_DIR,
+                "brain": brain.brain_name(), "improve": _imp.enabled(),
+                "isolation": _imp.workspace.sandbox_mode()}))
         if self.path in ("/", "/index.html"):
             self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
@@ -4449,6 +4462,9 @@ async function load(){
 load();setInterval(load,2000);requestAnimationFrame(draw);
 </script>
 </html>""")
+
+
+_BOOT_TS = time.time()
 
 
 def main(argv):

@@ -936,6 +936,21 @@ try:
 finally:
     N._SLEEP = time.sleep
 
+# ── the deploy package: one container, one volume, a health endpoint ──────────
+_root = os.path.dirname(HERE)
+_df = open(os.path.join(_root, "Dockerfile")).read() if os.path.exists(os.path.join(_root, "Dockerfile")) else ""
+_dc = open(os.path.join(_root, "docker-compose.yml")).read() if os.path.exists(os.path.join(_root, "docker-compose.yml")) else ""
+_ee = open(os.path.join(_root, ".env.example")).read() if os.path.exists(os.path.join(_root, ".env.example")) else ""
+check("the deploy package mounts the record at /data and points GOV_DATA_DIR at it",
+      "phoenix-data:/data" in _dc and "GOV_DATA_DIR=/data" in _df and "GOV_DATA_DIR: /data" in _dc)
+check("the container installs unshare for the sandbox and lifts the seccomp block for it, saying why",
+      "util-linux" in _df and "seccomp=unconfined" in _dc and "unshare -rn" in _dc)
+check("every variable the code reads is in .env.example",
+      all(v in _ee for v in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "CONSOLE_TOKEN", "GITHUB_TOKEN",
+                             "IMPROVE_INTERVAL_S", "MECHANIC_BASE_URL", "NET_RETRIES", "SANDBOX_NETNS")))
+check("the host health check exists and reports the record's writability, commit and isolation",
+      '"/healthz"' in open(os.path.join(HERE, "sim_console.py")).read() and "healthz" in _df and "healthz" in _dc)
+
 # ── Article XI: the self-improvement cycle, offline — scripted candidates, scripted oracle ──
 import improve as IMP
 import hashlib as _hl

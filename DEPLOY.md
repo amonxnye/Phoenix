@@ -1,23 +1,74 @@
-# Deploying the Governor console to Railway
+# Deploying Phoenix
 
-The console is a standard-library HTTP server, so Railway can run it with no web
-framework. Everything it needs is already in the repo.
+Phoenix is one process — the Governor console, the Software Mechanic and the Article XI
+improvement cycle — on a standard-library HTTP server. It needs Python 3.11, the packages
+in `requirements.txt`, a writable data directory, and a model endpoint.
 
-## What's wired for Railway
+## RupertCloud (own host) — the current production target
+
+Running on the same machine as the Ollama gateway removes the Cloudflare 100 s cap and
+the public round trip from every model call, and gives the record a real disk.
+
+### With Docker Compose
+
+```
+git clone https://github.com/amonxnye/Phoenix && cd Phoenix
+cp .env.example .env            # BRAIN_API_KEY, CONSOLE_TOKEN, GITHUB_TOKEN, BRAIN_MODEL
+PHOENIX_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+curl -s http://127.0.0.1:8788/healthz
+```
+
+- The record is the named volume `phoenix-data`, mounted at `/data`. `docker compose down`
+  keeps it; only `down -v` erases it.
+- `BRAIN_BASE_URL=http://host.docker.internal:11434/v1` reaches Ollama on the host
+  directly (compose maps that name to the host gateway).
+- `security_opt: seccomp=unconfined` lets the worker sandbox and the improvement oracle
+  open a private network namespace (`unshare -rn`). Without it they run
+  credential-stripped only and the console says so — never assumed.
+- Updating: `git pull && PHOENIX_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build`.
+- Put a reverse proxy (Caddy or nginx) in front for TLS; the console serves plain HTTP.
+
+### With Coolify (what RupertCloud runs)
+
+Coolify builds the branch with Railpack from the `Procfile` (Python 3.13 works — the
+pinned packages install and the suites pass) and fronts it with Traefik. Three settings
+decide whether it comes up:
+
+- **Persistent Storage** — one volume, destination path **`/data`** (never `/`: Docker
+  refuses a volume mounted at the root and the rolling update fails with "destination
+  can't be '/'"), and the environment variable `GOV_DATA_DIR=/data`.
+- **Port** — `Ports Exposes` = `8788` and the variable `PORT=8788`; the console binds
+  `0.0.0.0` when `PORT` is set. Traefik's plain-text "404 page not found" on the domain
+  means no healthy container is behind the router, not that a page is missing.
+- **Environment** — the table below; `BRAIN_BASE_URL=http://host.docker.internal:11434/v1`
+  reaches Ollama on the same host only if the container can resolve that name (add
+  `host.docker.internal:host-gateway` under extra hosts, or use the host's LAN IP).
+
+Build pack "Dockerfile" uses the `Dockerfile` here instead of Railpack and adds
+`unshare` for the sandbox's private network namespace; under Railpack the sandbox runs
+credential-stripped only and the console says so.
+
+### Without a container (systemd)
+
+`deploy/phoenix.service` carries the unit and, in its header, the six commands that set
+up a `phoenix` user, a venv, `/var/lib/phoenix` for the record and `/etc/phoenix.env` for
+the variables. For the private network namespace set
+`sysctl kernel.unprivileged_userns_clone=1`.
+
+### Health
+
+`GET /healthz` answers 200 with `{ok, commit, uptime_s, data_dir, brain, improve,
+isolation}` when the data directory is writable, 503 otherwise. Compose and the
+Dockerfile poll it.
+
+## Railway (legacy)
 
 - **`Procfile`** — `web: python gov/sim_console.py --seed` is the start command.
-- **`$PORT` / `0.0.0.0`** — `sim_console.py` reads Railway's injected `PORT` and binds
-  `0.0.0.0` (locally it still defaults to `127.0.0.1:8788`).
-- **`requirements.txt`** — Railway's Python builder installs it automatically.
+- **`$PORT` / `0.0.0.0`** — the console reads the injected `PORT` and binds `0.0.0.0`.
+- Attach a Volume at `/data` and set `GOV_DATA_DIR=/data`, or every redeploy erases the
+  record — measured, twice.
 
-## Deploy steps
-
-1. Push this branch (already done) and, in Railway, **New Project → Deploy from GitHub
-   repo → `amonxnye/Phoenix`**, branch `claude/project-review-1l2hho`.
-2. Railway detects Python, installs `requirements.txt`, and runs the `Procfile`.
-3. Open the generated URL — the AoE console renders live.
-
-## Environment variables (Railway → Variables)
+## Environment variables (all hosts)
 
 | Variable | Purpose |
 |---|---|

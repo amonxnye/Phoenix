@@ -1,0 +1,13 @@
+.git/objects/pack/*.idx
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+sandbox/*.sqlite*
+gov/*.sqlite*
+gov/aoe-events.jsonl
+gov/scorecard.json
+scorecard.json
+data/
+.improve-data/
+*.log
