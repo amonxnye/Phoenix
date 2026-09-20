@@ -63,6 +63,8 @@ EXCLUDE = {"node_modules", "__pycache__", ".venv", "data", ".improve-data"}
 # (the workspace `sandbox/` IS copied: the work suite is its oracle; its databases are not.
 #  `.git` is copied when present — a few MB — so history facts read the same as live.)
 _PASSED = re.compile(r"(\d+)/(\d+) checks passed")
+_FAILED = re.compile(r"FAIL\S*\]\s+(.+?)(?:\s+—\s|$)")     # the suites' own FAIL lines, by name
+VERIFIABLE = (".py",)         # what the suites exercise; anything else is parked, never "verified"
 
 # Replaceable seams — the suite scripts both so the whole loop runs offline.
 ORACLE = None            # callable(tree_dir) -> {"green", "suites": {name: {...}}}
@@ -162,10 +164,12 @@ def copy_tree() -> str:
     return tree
 
 
-def run_suites(tree: str) -> dict:
+def run_suites(tree: str, only: list | None = None) -> dict:
     """Phoenix's own verification suites on a tree, each in a stripped subprocess:
     no keys, no tokens, its own data directory inside the tree, no network where the
-    platform allows. The verdict is the suites' own count line."""
+    platform allows. The verdict is the suites' own count line, plus the NAMES of the
+    checks that failed — a flaky check is told apart from a real one by name, not by
+    count. `only` re-runs a subset (the flake guard)."""
     data = os.path.join(tree, ".improve-data")
     os.makedirs(data, exist_ok=True)
     import site
@@ -180,6 +184,8 @@ def run_suites(tree: str) -> dict:
             env[k] = os.environ[k]
     prefix, _mode = workspace._sandbox()
     want = [s for s in SUITES if s[0] in os.environ.get("IMPROVE_SUITES", ",".join(n for n, _ in SUITES)).split(",")]
+    if only is not None:
+        want = [s for s in want if s[0] in only]
     out, green = {}, True
     for name, rel in want:
         t0 = time.time()
@@ -192,18 +198,36 @@ def run_suites(tree: str) -> dict:
             ok = proc.returncode == 0 and total > 0 and passed == total
             tail = "\n".join(ln for ln in text.splitlines() if "FAIL" in ln or "Traceback" in ln
                              or "Error" in ln)[-1200:]
+            failed = sorted({m.group(1).strip() for m in _FAILED.finditer(text)})
         except subprocess.TimeoutExpired:
-            passed, total, ok, tail = 0, 0, False, f"timed out after {SUITE_TIMEOUT_S}s"
+            passed, total, ok, tail, failed = 0, 0, False, f"timed out after {SUITE_TIMEOUT_S}s", []
         except OSError as e:
-            passed, total, ok, tail = 0, 0, False, f"could not run: {e}"
-        out[name] = {"passed": passed, "total": total, "ok": ok,
+            passed, total, ok, tail, failed = 0, 0, False, f"could not run: {e}", []
+        out[name] = {"passed": passed, "total": total, "ok": ok, "failed": failed,
                      "seconds": round(time.time() - t0, 1), "tail": tail}
         green = green and ok
     return {"green": green, "suites": out, "isolation": _mode}
 
 
-def _oracle(tree: str) -> dict:
-    return (ORACLE or run_suites)(tree)
+def _oracle(tree: str, only: list | None = None) -> dict:
+    fn = ORACLE or run_suites
+    if only is None:
+        return fn(tree)
+    try:
+        return fn(tree, only=only)
+    except TypeError:                              # a scripted oracle that takes no subset
+        return fn(tree)
+
+
+def verifiable(cand: dict) -> tuple[bool, str]:
+    """Can the suites say anything about this patch? They exercise Python; a change to
+    a manifest, a workflow or a document passes them without being tested at all, and
+    "verified" would be a false claim. Such a patch is parked as UNVERIFIED — a human
+    judges it — never as verified."""
+    f = cand.get("file", "")
+    if f.endswith(VERIFIABLE):
+        return True, ""
+    return False, f"the suites do not exercise {f}: parked unverified for a human to judge"
 
 
 def apply_to_tree(tree: str, cand: dict) -> str:
@@ -236,26 +260,40 @@ def usable(baseline: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def verdict(after: dict, before: dict) -> tuple[bool, str]:
-    """Measured against the baseline, suite by suite: every suite must have run, passed
-    at least as many checks as it did unpatched, and not gone red where it was green.
-    A count comparison, not a demand for perfection — a check that is flaky under load
-    fails the same way with or without the patch, and the record shows the counts."""
-    red, worse = [], []
+def new_failures(after: dict, before: dict) -> dict:
+    """Per suite, the checks that fail on the patched copy and did not fail unpatched —
+    by NAME. A check that fails both ways is the world's problem, not the patch's."""
+    out = {}
+    for n, b in (before.get("suites") or {}).items():
+        s = (after.get("suites") or {}).get(n) or {}
+        new = sorted(set(s.get("failed") or []) - set(b.get("failed") or []))
+        if new:
+            out[n] = new
+    return out
+
+
+def verdict(after: dict, before: dict) -> tuple[bool, str, dict]:
+    """Measured against the baseline, suite by suite. A suite must have run. Then, by
+    name: a check that fails on the patched copy and passed unpatched is a new failure
+    and the patch is rejected naming it. Where a suite reports no names (a scripted
+    oracle, a crash), the counts decide instead. The third value is the suites that
+    would need a re-run to tell a flake from a real failure."""
+    suspects = {}
     for n, b in (before.get("suites") or {}).items():
         s = (after.get("suites") or {}).get(n)
         if not s or not s.get("total"):
-            return False, f"suite could not run on the patched copy: {n} — {(s or {}).get('tail', '')[-160:]}"
-        if s["passed"] < b.get("passed", 0):
-            worse.append(f"{n} ({s['passed']}/{s['total']} vs baseline {b['passed']}/{b['total']})")
-        if b.get("ok") and not s.get("ok"):
-            red.append(f"{n} ({s['passed']}/{s['total']})")
-    if red:
-        return False, "suite red: " + ", ".join(red)
-    if worse:
-        return False, "regression: " + ", ".join(worse)
-    return True, "every suite at or above baseline: " + ", ".join(
-        f"{n} {s['passed']}/{s['total']}" for n, s in after["suites"].items())
+            return False, f"suite could not run on the patched copy: {n} — {(s or {}).get('tail', '')[-160:]}", {}
+    named = new_failures(after, before)
+    for n, names in named.items():
+        suspects[n] = names
+    for n, b in (before.get("suites") or {}).items():
+        s = after["suites"][n]
+        if not s.get("failed") and not b.get("failed") and s["passed"] < b.get("passed", 0):
+            suspects[n] = [f"{s['passed']}/{s['total']} vs baseline {b['passed']}/{b['total']}"]
+    if suspects:
+        return False, "new failures: " + "; ".join(f"{n}: {', '.join(v)}" for n, v in suspects.items()), suspects
+    return True, "no new failure in any suite: " + ", ".join(
+        f"{n} {s['passed']}/{s['total']}" for n, s in after["suites"].items()), {}
 
 
 # ── candidates: the mechanic on Phoenix itself ───────────────────────────────
@@ -347,15 +385,33 @@ def cycle(trigger: str = "scheduled") -> dict:
         for cand in cands[:MAX_TRIES]:
             counts["tried"] += 1
             _STATE["current"] = f"trying {cand['file']}: {cand['title'][:60]}"
-            tree = copy_tree()
-            try:
-                why = apply_to_tree(tree, cand)
-                after = _oracle(tree) if not why else {"green": False, "suites": {}}
-            finally:
-                shutil.rmtree(os.path.dirname(tree), ignore_errors=True)
-            ok, reason = (False, f"could not apply to the copy: {why}") if why else verdict(after, baseline)
-            status = "verified" if ok else "rejected"
-            counts["verified" if ok else "rejected"] += 1
+            can, why_not = verifiable(cand)
+            if not can:
+                after, ok, reason, status = {"green": False, "suites": {}}, False, why_not, "unverified"
+                counts["unverified"] = counts.get("unverified", 0) + 1
+            else:
+                tree = copy_tree()
+                try:
+                    why = apply_to_tree(tree, cand)
+                    after = _oracle(tree) if not why else {"green": False, "suites": {}}
+                    ok, reason, suspects = ((False, f"could not apply to the copy: {why}", {}) if why
+                                            else verdict(after, baseline))
+                    if suspects and not why:
+                        # The flake guard: a check that fails once under load and passes on a
+                        # re-run of the same patched copy was never the patch's fault. Cycle 1
+                        # on production rejected three sound patches on one flaky check.
+                        _STATE["current"] = f"re-running {', '.join(suspects)} to tell a flake from a failure"
+                        again = _oracle(tree, only=list(suspects))
+                        for n, s in (again.get("suites") or {}).items():
+                            after["suites"][n] = dict(s, first_run=after["suites"].get(n))
+                        ok, reason2, still = verdict(after, baseline)
+                        first = "; ".join(n + ": " + ", ".join(v) for n, v in suspects.items())
+                        reason = (f"{reason2} — first run failed {first}, which passed on re-run "
+                                  f"(flaky, not the patch)" if ok else f"{reason2} (confirmed on re-run)")
+                finally:
+                    shutil.rmtree(os.path.dirname(tree), ignore_errors=True)
+                status = "verified" if ok else "rejected"
+                counts["verified" if ok else "rejected"] += 1
             c = _conn()
             try:
                 c.execute("INSERT INTO improvements(cycle_id, ts, finding_id, title, file, severity, "
@@ -372,6 +428,7 @@ def cycle(trigger: str = "scheduled") -> dict:
                 anchor.record(-1, "improve-rejected", f"{cand['file']}: {cand['title'][:80]} — {reason[:160]}")
         if not note:
             note = (f"{counts['verified']} verified and parked at the gate, {counts['rejected']} rejected"
+                    + (f", {counts['unverified']} parked unverified (a human must judge)" if counts.get("unverified") else "")
                     if counts["tried"] else "no candidate patch to try")
         status = "complete"
     except Exception as e:                        # noqa: BLE001 — closed, not abandoned
@@ -428,8 +485,8 @@ def approve(pid: int, actor: str = "console") -> dict:
     p = proposal(pid)
     if not p:
         return {"ok": False, "error": "no such proposal"}
-    if p["status"] != "verified":
-        return {"ok": False, "error": f"proposal is {p['status']}, not verified"}
+    if p["status"] not in ("verified", "unverified"):
+        return {"ok": False, "error": f"proposal is {p['status']}, not waiting at the gate"}
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     repo = os.environ.get("IMPROVE_REPO", "amonxnye/Phoenix").strip()
     if not token:
@@ -506,7 +563,7 @@ def start() -> bool:
 
 def status() -> dict:
     last = cycles(limit=1)
-    parked = proposals(status="verified")
+    parked = proposals(status="verified") + proposals(status="unverified")
     return {"enabled": enabled(), "running": _STATE["running"], "current": _STATE["current"],
             "thread": bool(_STATE["thread"] and _STATE["thread"].is_alive()),
             "interval_s": INTERVAL_S, "max_tries": MAX_TRIES,

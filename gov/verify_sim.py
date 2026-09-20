@@ -982,16 +982,49 @@ try:
     check("the live tree was never written — the fixture's digest is unchanged",
           _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest() == _live_before)
     def _red(tree):
-        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x"},
+        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x",
+                                                        "failed": ["the gate holds"]},
                                            "settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": ""}}}
     IMP.ORACLE = lambda tree: _green(tree) if "return 2" not in open(os.path.join(tree, _fixture_rel)).read() else _red(tree)
     _r2 = IMP.cycle("test")
-    check("a patch that turns a suite red is rejected, naming the suite, and recorded as a lesson",
+    check("a patch that makes a check fail is rejected NAMING the check, confirmed on a re-run, and recorded as a lesson",
           _r2["verified"] == 0 and _r2["rejected"] == 1
-          and any(p["status"] == "rejected" and "governor (15/16)" in p["note"] for p in IMP.proposals())
+          and any(p["status"] == "rejected" and "governor: the gate holds" in p["note"] and "confirmed on re-run" in p["note"]
+                  for p in IMP.proposals())
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-rejected'").fetchone()[0] >= 1,
           f"{_r2} | notes {[p['note'][:60] for p in IMP.proposals()]} | rejected events "
           f"{A._conn().execute(chr(83)+'ELECT COUNT(*) FROM knowledge WHERE kind=?', ('improve-rejected',)).fetchone()[0]}")
+    # the flake guard: a check that fails once and passes on the re-run was not the patch
+    _runs = {"n": 0}
+    def _flaky(tree, only=None):
+        _runs["n"] += 1
+        if _runs["n"] == 1 or "return 2" not in open(os.path.join(tree, _fixture_rel)).read():
+            return _green(tree)
+        if _runs["n"] == 2:
+            return {"green": False, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": "", "failed": []},
+                                               "settlement": {"passed": 200, "total": 201, "ok": False, "seconds": 2, "tail": "",
+                                                              "failed": ["the time series accounts for every decision"]}}}
+        return {"green": True, "suites": {"settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": "", "failed": []}}}
+    IMP.ORACLE = _flaky
+    _r3 = IMP.cycle("test")
+    _p3 = IMP.proposals()[0]
+    check("a check that fails on the first run and passes on a re-run of the same copy is a flake: verified, and the note says so",
+          _r3["verified"] == 1 and _p3["status"] == "verified" and "flaky, not the patch" in _p3["note"]
+          and "the time series" in _p3["note"] and _p3["after_json"]["suites"]["settlement"].get("first_run"),
+          _p3["note"][:200])
+    # a manifest the suites never exercise is parked UNVERIFIED, never called verified
+    IMP.ORACLE = _green
+    IMP.CANDIDATES = lambda: [dict(_cand, file="requirements.txt", title="bump a pin",
+                                   patch="--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1 +1 @@\n-x\n+y\n")]
+    _r4 = IMP.cycle("test")
+    _p4 = IMP.proposals()[0]
+    check("a patch to a file the suites do not exercise is parked unverified — never 'verified' — and still approvable",
+          _r4["verified"] == 0 and _p4["status"] == "unverified" and "do not exercise requirements.txt" in _p4["note"]
+          and IMP.status()["parked"] >= 2 and "unverified" in _r4["note"])
+    check("the suites' FAIL lines are read by name",
+          IMP._FAILED.search("  [\x1b[31mFAIL\x1b[0m] the time series accounts for every decision, not a sample  — 0 buckets").group(1).strip()
+          == "the time series accounts for every decision, not a sample")
+    IMP.CANDIDATES = lambda: [_cand]
     _envt = os.environ.pop("GITHUB_TOKEN", None)
     _ap = IMP.approve(_p[0]["id"], "tester")
     check("approval without a GITHUB_TOKEN hands the patch to the human — nothing is pushed",

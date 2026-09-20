@@ -1931,7 +1931,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:                     # noqa: BLE001 — a probe reports
                 writable = False
             return self._send(200 if writable else 503, json.dumps({
-                "ok": writable, "commit": os.environ.get("PHOENIX_COMMIT", ""),
+                "ok": writable, "commit": (os.environ.get("PHOENIX_COMMIT") or
+                                           os.environ.get("SOURCE_COMMIT", ""))[:12],
                 "uptime_s": int(time.time() - _BOOT_TS), "data_dir": anchor._DATA_DIR,
                 "brain": brain.brain_name(), "improve": _imp.enabled(),
                 "isolation": _imp.workspace.sandbox_mode()}))
