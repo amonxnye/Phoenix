@@ -106,3 +106,5 @@ every redeploy. For durable state either:
 This deploys the operator console for **your own tooling** — there is no auth or
 multi-tenancy yet (that's out of scope for the MVP). Don't expose a public URL you
 wouldn't want anyone approving Age-ups on; keep it private or add auth first.
+
+Done well
