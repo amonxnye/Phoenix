@@ -53,5 +53,30 @@ def open_pr(repo: str, token: str, branch: str, files: dict, title: str, body: s
     return pr.get("html_url", "")
 
 
+def get_file(repo: str, token: str, branch: str, path: str) -> tuple[str | None, str]:
+    """(content, sha) of a file on a branch, or (None, '') if it is not there."""
+    cur = _req(token, "GET", f"/repos/{repo}/contents/{path}?ref={branch}", ok404=True)
+    if not cur or not cur.get("sha"):
+        return None, ""
+    raw = base64.b64decode((cur.get("content") or "").encode("ascii")).decode("utf-8", "replace")
+    return raw, cur["sha"]
+
+
+def commit_file(repo: str, token: str, branch: str, path: str, content: str, message: str,
+                expect_sha: str = "") -> dict:
+    """One commit on `branch` that sets `path` to `content`. `expect_sha` is the blob
+    the caller last saw — the API refuses the write if the file changed underneath
+    (a concurrent human edit), which is the point. Returns {sha, url}."""
+    if not expect_sha:
+        _, expect_sha = get_file(repo, token, branch, path)
+    put = {"message": message, "branch": branch,
+           "content": base64.b64encode(content.encode("utf-8")).decode("ascii")}
+    if expect_sha:
+        put["sha"] = expect_sha
+    r = _req(token, "PUT", f"/repos/{repo}/contents/{path}", put)
+    c = r.get("commit") or {}
+    return {"sha": c.get("sha", ""), "url": c.get("html_url", "")}
+
+
 def configured() -> bool:
     return bool(os.environ.get("GITHUB_TOKEN", "").strip())

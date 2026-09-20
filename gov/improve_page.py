@@ -33,7 +33,7 @@ td:first-child,th:first-child{text-align:left}
 .p{border-bottom:1px solid var(--line);padding:10px 14px}
 .p h3{margin:0 0 4px;font-size:13px}.p h3 small{color:var(--dim);font-weight:400}
 .st{display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid var(--line)}
-.st-verified{color:#fbbf24;border-color:#fbbf24}.st-unverified{color:#f87171;border-color:#f87171}.st-proposed{color:#22c55e;border-color:#22c55e}.st-approved{color:#22c55e}.st-rejected{color:#f87171}.st-stale{color:var(--dim)}
+.st-committed{color:#22c55e;border-color:#22c55e}.st-unresearched{color:#f87171}.st-refused{color:#f87171}.st-reverted{color:var(--dim)}.st-verified{color:#fbbf24;border-color:#fbbf24}.st-unverified{color:#f87171;border-color:#f87171}.st-proposed{color:#22c55e;border-color:#22c55e}.st-approved{color:#22c55e}.st-rejected{color:#f87171}.st-stale{color:var(--dim)}
 pre.diff{background:#0e0a05;border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow:auto;max-height:320px;font-size:11px;margin:8px 0}
 pre.diff .a{color:#22c55e}pre.diff .d{color:#f87171}pre.diff .h{color:var(--gold)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
@@ -41,7 +41,7 @@ pre.diff .a{color:#22c55e}pre.diff .d{color:#f87171}pre.diff .h{color:var(--gold
 dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;padding:10px 14px;margin:0;font-size:12px}
 dt{color:var(--dim)}dd{margin:0}
 </style>
-<header><h1>SELF-IMPROVEMENT</h1><a href="/">&larr; Console</a><a href="/models">Models</a><a href="/mechanic">Mechanic</a><a href="/rules">Rules</a>
+<header><h1>SELF-IMPROVEMENT</h1><a href="/">&larr; Console</a><a href="/research">Research</a><a href="/models">Models</a><a href="/mechanic">Mechanic</a><a href="/rules">Rules</a>
 <span class=meta id=meta>loading…</span>
 <span class=meta style="margin-left:0"><input id=tok type=password placeholder="console token" style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 8px;font:inherit;width:160px" title="CONSOLE_TOKEN — needed to approve, reject or run a cycle; kept only in this browser"> <button class=ghost id=savetok>save</button></span></header>
 <main>
@@ -66,21 +66,23 @@ function diff(p){return '<pre class=diff>'+p.split('\\n').map(l=>l.startsWith('+
 function suites(j){const s=(j&&j.suites)||{};return Object.entries(s).map(([n,v])=>`<span class=${v.ok?'good':'bad'}>${n} ${v.passed}/${v.total}</span>`).join(' · ')||'—'}
 function prop(p,gate){
   return `<div class=p><h3>#${p.id} ${esc(p.title)} <small>${esc(p.file)} · ${esc(p.severity)} · ${esc(p.category)}</small> <span class="st st-${esc(p.status)}">${esc(p.status)}</span></h3>
-  <div style="color:var(--dim);font-size:11px">${esc(p.note)}${p.pr_url?' · <a href="'+esc(p.pr_url)+'" target=_blank>pull request</a>':''}</div>
+  <div style="color:var(--dim);font-size:11px">${esc(p.note)}${p.pr_url?' · <a href="'+esc(p.pr_url)+'" target=_blank>'+(p.status==='committed'||p.status==='reverted'?'commit':'pull request')+'</a>':''}${p.status==='committed'?' · <button class=ghost onclick="revert('+p.id+')">revert this commit</button>':''}</div>
   <div style="font-size:11px">before: ${suites(p.before_json)}<br>after: &nbsp;${suites(p.after_json)}</div>
   <details><summary style="cursor:pointer;color:var(--gold);font-size:11px">diff</summary>${diff(p.patch||'')}</details>
   ${gate?`<div class=row><button class=go onclick="approve(${p.id})">approve → ${p.github?'open draft PR':'hand me the patch'}</button><input id="r${p.id}" placeholder="reason to reject"><button class=ghost onclick="reject(${p.id})">reject</button> <span style="color:var(--dim);font-size:11px">waiting ${p.hours_waiting} h</span></div>`:''}</div>`}
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':TOKEN},body:JSON.stringify(body||{})});if(r.status===401){alert('console token required — paste CONSOLE_TOKEN in the box at the top right and save');return {ok:false,error:'console token required'}}return r.json()}
 async function approve(id){const r=await post('/api/improve/approve',{id});alert(r.ok?(r.pr_url?'draft PR opened: '+r.pr_url:r.note||'approved'):('failed: '+r.error));load()}
+async function revert(id){if(!confirm('Put the file back to what it was before #'+id+'? This is one more commit on the deploy branch.'))return;const r=await post('/api/improve/revert',{id});alert(r.ok?'reverted':'failed: '+r.error);load()}
 async function reject(id){const r=await post('/api/improve/reject',{id,reason:$('r'+id).value});alert(r.ok?'rejected':'failed: '+r.error);load()}
 $('run').onclick=async()=>{$('run').disabled=true;const r=await post('/api/improve/run');alert(r.status==='busy'?'a cycle is already running: '+r.note:'cycle started');setTimeout(load,1500)};
 async function load(){
   const d=await (await fetch('/api/improve')).json();const s=d.status;
-  $('meta').textContent=(s.enabled?'enabled':'DISABLED (IMPROVE=0)')+' · every '+(s.interval_s/3600).toFixed(1)+' h · isolation: '+s.isolation+' · github: '+(s.github?'token set':'no token — patches are handed over');
+  $('meta').textContent=(s.enabled?'enabled':'DISABLED (IMPROVE=0)')+' · every '+(s.interval_s/3600).toFixed(1)+' h · isolation: '+s.isolation+' · github: '+(s.github?(s.push_branch?'verified patches are COMMITTED to '+s.push_branch:'verified patches open draft PRs'):'no token — patches are handed over');
   $('cur').textContent=s.running?'running — '+s.current:'';$('run').disabled=!!s.running;
   $('next').textContent=s.last_cycle?'next scheduled in '+Math.round(s.next_due_in_s/60)+' min':'no cycle yet';
   const l=s.last_cycle||{};
   $('kpi').innerHTML=[['cycles',d.cycles.length],['parked at gate',s.parked],['last: candidates',l.candidates??'—'],['last: tried',l.tried??'—'],['last: verified',l.verified??'—'],['last: rejected',l.rejected??'—'],['empty streak',s.empty_streak],['proposed (PRs)',d.proposals.filter(p=>p.status==='proposed').length]].map(([a,b])=>`<div><b>${b}</b><span>${a}</span></div>`).join('');
+  $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'BROKEN'):'');
   const gate=d.proposals.filter(p=>p.status==='verified'||p.status==='unverified').map(p=>({...p,github:s.github,hours_waiting:((Date.now()/1000-p.ts)/3600).toFixed(1)}));
   $('gate').innerHTML=gate.length?gate.map(p=>prop(p,true)).join(''):'<div class=empty>nothing waiting — every verified improvement has been decided</div>';
   $('cycles').innerHTML='<tr><th>when</th><th>trigger</th><th>status</th><th>candidates</th><th>tried</th><th>verified</th><th>rejected</th><th>seconds</th><th>model</th><th>note</th></tr>'+

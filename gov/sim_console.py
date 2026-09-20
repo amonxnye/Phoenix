@@ -1975,6 +1975,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/improve":
             self._count_view()
             return self._send(200, IMPROVE_PAGE, "text/html; charset=utf-8")
+        if self.path == "/research":
+            self._count_view()
+            return self._send(200, RESEARCH_PAGE, "text/html; charset=utf-8")
+        if self.path == "/research.md":
+            import research
+            return self._send(200, research.render(), "text/markdown; charset=utf-8")
+        if self.path == "/api/research":
+            import research
+            return self._send(200, json.dumps({"chain": research.verify_chain(),
+                                               "entries": research.entries(limit=500)}))
         if self.path == "/api/improve":
             import improve
             return self._send(200, json.dumps({"status": improve.status(), "cycles": improve.cycles(),
@@ -2351,6 +2361,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(202, json.dumps({"status": "started"}))
             if action == "approve":
                 return self._send(200, json.dumps(improve.approve(int(body.get("id") or 0), actor)))
+            if action == "revert":
+                return self._send(200, json.dumps(improve.revert(int(body.get("id") or 0), actor)))
             if action == "reject":
                 return self._send(200, json.dumps(improve.reject(int(body.get("id") or 0),
                                                                  str(body.get("reason") or ""), actor)))
@@ -2664,6 +2676,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <a class=navlink href="/network">Network &rarr;</a>
     <a class=navlink href="/models">Models &rarr;</a>
     <a class=navlink href="/improve">Self-Improvement &rarr;</a>
+    <a class=navlink href="/research">Research &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -3664,6 +3677,8 @@ tick(); setInterval(tick,4000);
 
 import models_page as _models_page                     # noqa: E402
 import improve_page as _improve_page                   # noqa: E402
+import research_page as _research_page                 # noqa: E402
+RESEARCH_PAGE = _page(_research_page.PAGE)
 MODELS_PAGE = _page(_models_page.PAGE)
 IMPROVE_PAGE = _page(_improve_page.PAGE)
 

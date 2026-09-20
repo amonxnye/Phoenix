@@ -19,10 +19,11 @@ Four rules hold the loop inside the constitution:
    every verification suite Phoenix ships passes on the patched copy with at least
    the baseline's count — in a subprocess with no keys, no tokens and, where the
    platform allows, no network. No model judges whether a fix is good; the suites do.
-3. **Verified means parked, not merged.** A verified improvement waits at the gate
-   with its diff, the suite delta and the cost of waiting. A human approves it; only
-   then is a branch pushed and a draft pull request opened (with a GITHUB_TOKEN), or
-   the patch handed over for the human to apply. Merging stays a human act on GitHub.
+3. **Verified means proposed, never merged.** A verified improvement is pushed to its
+   own branch and opened as a DRAFT pull request on its own (IMPROVE_AUTO_PR=1, with a
+   GITHUB_TOKEN held by the orchestrator); the merge is the human act, on GitHub, with
+   the diff and the suite delta in front of them. Without a token, or for a patch the
+   suites cannot judge, the proposal waits at the console gate for a human instead.
 4. **A cycle that finds nothing is a fact, and repeated nothing is an escalation.**
    Article IX applied to improvement: three consecutive empty cycles are reported to
    the Chief Governor, never quietly repeated.
@@ -51,11 +52,19 @@ if REPO not in sys.path:
 
 import anchor                                    # noqa: E402
 import brain                                     # noqa: E402
+import research                                  # noqa: E402
 import workspace                                 # noqa: E402
 
 SUITES = (("governor", "gov/verify.py"), ("work", "gov/verify_work.py"),
           ("settlement", "gov/verify_sim.py"), ("mechanic", "mechanic/verify_mechanic.py"))
-INTERVAL_S = int(os.environ.get("IMPROVE_INTERVAL_S", str(6 * 3600)))
+INTERVAL_S = int(os.environ.get("IMPROVE_INTERVAL_S", str(3600)))       # hourly
+AUTO_PR = os.environ.get("IMPROVE_AUTO_PR", "1").strip() != "0"          # verified → published
+# Where a verified patch goes. Empty: its own branch and a DRAFT pull request (the merge
+# is the human act). A branch name: committed straight onto that branch — if that is the
+# branch the host deploys, the change is LIVE minutes later with no human having read
+# it. The operator chose that; the record keeps the undo: every commit names its
+# proposal and `revert` puts the file back with one click.
+PUSH_BRANCH = os.environ.get("IMPROVE_PUSH_BRANCH", "").strip()
 MAX_TRIES = int(os.environ.get("IMPROVE_MAX_TRIES", "3"))   # candidates tried per cycle
 SUITE_TIMEOUT_S = int(os.environ.get("IMPROVE_SUITE_TIMEOUT_S", "600"))
 EMPTY_CYCLES_ESCALATE = 3
@@ -85,6 +94,10 @@ def _init(c) -> None:
               "title TEXT, file TEXT, severity TEXT, category TEXT, patch TEXT, "
               "before_json TEXT, after_json TEXT, status TEXT, note TEXT, pr_url TEXT, "
               "actor TEXT, decided_ts REAL)")
+    have = {r[1] for r in c.execute("PRAGMA table_info(improvements)")}
+    for col in ("original", "committed_sha"):        # the undo: what the file was, and the commit
+        if col not in have:
+            c.execute(f"ALTER TABLE improvements ADD COLUMN {col} TEXT DEFAULT ''")
 
 
 _ANCHOR_READY = {"ok": False}
@@ -330,6 +343,20 @@ def _signals() -> dict:
     return sig
 
 
+def _already_proposed(cand: dict) -> str:
+    """The same change must not be proposed again every hour. A proposal for the same
+    file and finding that is waiting, open as a PR, approved, or rejected by a HUMAN
+    blocks a repeat; one the suites rejected may be tried again (the flake guard and a
+    new patch can change that verdict)."""
+    for p in proposals(limit=1000):
+        if p["file"] == cand.get("file") and p["title"] == cand.get("title"):
+            if p["status"] in ("verified", "unverified", "proposed", "approved", "committed"):
+                return f"already {p['status']} as #{p['id']}"
+            if p["status"] == "rejected" and (p.get("note") or "").startswith("rejected by"):
+                return f"rejected by a human as #{p['id']}"
+    return ""
+
+
 def _empty_streak() -> int:
     n = 0
     for c in cycles(limit=EMPTY_CYCLES_ESCALATE + 1):
@@ -371,6 +398,11 @@ def cycle(trigger: str = "scheduled") -> dict:
         _STATE["current"] = "proposing (the mechanic on Phoenix itself)"
         cands = _candidates()
         counts["candidates"] = len(cands)
+        skipped = [(c, _already_proposed(c)) for c in cands]
+        for c, why in skipped:
+            if why:
+                anchor.record(-1, "improve-skipped", f"{c['file']}: {c['title'][:80]} — {why}")
+        cands = [c for c, why in skipped if not why]
         if cands:
             _STATE["current"] = "baseline: the suites on an unpatched copy"
             base_tree = copy_tree()
@@ -386,7 +418,14 @@ def cycle(trigger: str = "scheduled") -> dict:
             counts["tried"] += 1
             _STATE["current"] = f"trying {cand['file']}: {cand['title'][:60]}"
             can, why_not = verifiable(cand)
-            if not can:
+            if research.protected(cand.get("file", "")):
+                # Article XI.6: the research record, the rules and the researcher are out of
+                # the agents' reach. Refused before any suite runs; recorded as a refusal.
+                can, why_not = False, f"protected: agents may not change {cand['file']}"
+                after, ok, reason, status = {"green": False, "suites": {}}, False, why_not, "refused"
+                counts["refused"] = counts.get("refused", 0) + 1
+                anchor.record(-1, "improve-refused", f"{cand['file']}: {cand['title'][:80]} — {why_not}")
+            elif not can:
                 after, ok, reason, status = {"green": False, "suites": {}}, False, why_not, "unverified"
                 counts["unverified"] = counts.get("unverified", 0) + 1
             else:
@@ -423,11 +462,29 @@ def cycle(trigger: str = "scheduled") -> dict:
                 c.commit()
             finally:
                 c.close()
-            if not ok:
+            if not ok and status == "rejected":
                 # what failed becomes a lesson the record keeps: the next fixer prompt can cite it
                 anchor.record(-1, "improve-rejected", f"{cand['file']}: {cand['title'][:80]} — {reason[:160]}")
+            if status == "verified":
+                # Article XI.6: the research is the condition. Written first, from the measured
+                # facts, into the append-only record. No research — no change, and it says so.
+                row = proposals(limit=1)[0]
+                _STATE["current"] = f"researching advantage and risk for #{row['id']}"
+                rs = research.research(row, {"before": _suite_counts(baseline), "after": _suite_counts(after)})
+                if not rs["ok"]:
+                    _set(row["id"], status="unresearched", note=f"{row['note']} — NOT published: {rs['error']}")
+                    counts["unresearched"] = counts.get("unresearched", 0) + 1
+                    anchor.record(-1, "improve-unresearched", f"#{row['id']} {cand['file']}: {rs['error'][:160]}")
+                elif AUTO_PR:
+                    # Article XI.3: published on its own — a draft PR, or a commit on the branch the
+                    # operator named. The research entry goes to GitHub FIRST, in RESEARCH.md.
+                    _STATE["current"] = f"publishing #{row['id']} with research R{rs['entry']['id']}"
+                    res = publish(row["id"], actor="cycle (Article XI.3)")
+                    counts["proposed"] = counts.get("proposed", 0) + (1 if res.get("ok") else 0)
         if not note:
-            note = (f"{counts['verified']} verified and parked at the gate, {counts['rejected']} rejected"
+            note = (f"{counts['verified']} verified ({counts.get('proposed', 0)} published with research), {counts['rejected']} rejected"
+                    + (f", {counts['unresearched']} held back for want of research" if counts.get("unresearched") else "")
+                    + (f", {counts['refused']} refused as protected" if counts.get("refused") else "")
                     + (f", {counts['unverified']} parked unverified (a human must judge)" if counts.get("unverified") else "")
                     if counts["tried"] else "no candidate patch to try")
         status = "complete"
@@ -460,6 +517,11 @@ def cycle(trigger: str = "scheduled") -> dict:
     return {"cycle_id": cid, "status": status, "note": note, "seconds": round(time.time() - t0, 1), **counts}
 
 
+def _suite_counts(res: dict) -> dict:
+    return {n: {"passed": s.get("passed"), "total": s.get("total")}
+            for n, s in (res.get("suites") or {}).items()}
+
+
 def _tree_digest() -> str:
     """A digest of every Python file in the live tree — the invariant a cycle must keep."""
     h = hashlib.sha256()
@@ -479,21 +541,37 @@ def _tree_digest() -> str:
 # ── the gate ─────────────────────────────────────────────────────────────────
 
 def approve(pid: int, actor: str = "console") -> dict:
-    """A human approves a verified improvement. With a GITHUB_TOKEN the branch is
-    pushed and a DRAFT pull request opened — merging remains a human act on GitHub.
-    Without one, the patch is handed over for the human to apply."""
+    """A human approves a proposal at the console gate — an unverified one, or a
+    verified one that could not be published on its own. With a GITHUB_TOKEN the
+    branch is pushed and a DRAFT pull request opened; without one the patch is
+    handed over for the human to apply. Merging remains a human act on GitHub."""
     p = proposal(pid)
     if not p:
         return {"ok": False, "error": "no such proposal"}
     if p["status"] not in ("verified", "unverified"):
         return {"ok": False, "error": f"proposal is {p['status']}, not waiting at the gate"}
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    repo = os.environ.get("IMPROVE_REPO", "amonxnye/Phoenix").strip()
-    if not token:
+    if not os.environ.get("GITHUB_TOKEN", "").strip():
         _set(pid, status="approved", actor=actor, decided_ts=time.time(),
              note=p["note"] + " — approved; no GITHUB_TOKEN, apply the patch by hand")
         return {"ok": True, "status": "approved", "patch": p["patch"],
                 "note": "approved — no GITHUB_TOKEN configured, so the patch is yours to apply"}
+    return publish(pid, actor)
+
+
+def publish(pid: int, actor: str) -> dict:
+    """Send a proposal to GitHub. With IMPROVE_PUSH_BRANCH: one commit straight onto
+    that branch (status `committed`, the undo kept). Otherwise: its own branch and a
+    DRAFT pull request (status `proposed`). Never merges. A failure leaves the proposal
+    at the gate with the reason in its note."""
+    p = proposal(pid)
+    if not p:
+        return {"ok": False, "error": "no such proposal"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("IMPROVE_REPO", "amonxnye/Phoenix").strip()
+    if not token:
+        return {"ok": False, "error": "no GITHUB_TOKEN — waiting at the console gate"}
+    if PUSH_BRANCH:
+        return _commit_to_branch(p, repo, token, actor)
     try:
         import ghpr
         from mechanic import fixer
@@ -503,18 +581,102 @@ def approve(pid: int, actor: str = "console") -> dict:
         if new is None:
             _set(pid, status="stale", note=f"no longer applies to the live tree: {why}")
             return {"ok": False, "error": f"stale: {why}"}
-        url = ghpr.open_pr(repo, token, branch=f"phoenix/improve-{pid}", files={p["file"]: new},
+        entry = research.for_proposal(pid)
+        if entry is None:
+            return {"ok": False, "error": "no research entry — Article XI.6 forbids publishing without one"}
+        url = ghpr.open_pr(repo, token, branch=f"phoenix/improve-{pid}",
+                           files={research.FILE: research.render(), p["file"]: new},
                            title=f"Self-improvement #{pid}: {p['title'][:70]}",
                            body=(f"Proposed by the Phoenix improvement cycle {p['cycle_id']} and verified: "
                                  f"{p['note']}.\n\nFinding: {p['title']}\nFile: `{p['file']}`\n\n"
                                  f"Suites after the patch: " +
                                  ", ".join(f"{n} {s['passed']}/{s['total']}" for n, s in (p["after_json"].get("suites") or {}).items()) +
-                                 f"\n\nApproved at the console by {actor}. Merging is the human act."))
+                                 f"\n\nResearch R{entry['id']} (RESEARCH.md): advantage — {entry['body'].get('advantage', '')[:300]} "
+                                 f"/ risk — {entry['body'].get('risk', '')[:300]}"
+                                 f"\n\nOpened by: {actor}. Verdict: {p['status']}. Merging is the human act."))
         _set(pid, status="proposed", pr_url=url, actor=actor, decided_ts=time.time())
         return {"ok": True, "status": "proposed", "pr_url": url}
     except Exception as e:                        # noqa: BLE001 — reported at the gate, not raised
         _set(pid, note=f"{p['note']} — PR failed: {type(e).__name__}: {str(e)[:160]}")
         return {"ok": False, "error": f"PR failed: {type(e).__name__}: {str(e)[:160]}"}
+
+
+def _commit_to_branch(p: dict, repo: str, token: str, actor: str) -> dict:
+    """The patch, applied to the file AS IT IS ON THE BRANCH (not the local tree — the
+    branch may be ahead), committed with the proposal's number in the message. The
+    pre-patch content is kept for `revert`."""
+    try:
+        import ghpr
+        from mechanic import fixer
+        cur, sha = ghpr.get_file(repo, token, PUSH_BRANCH, p["file"])
+        if cur is None:
+            _set(p["id"], status="stale", note=f"{p['file']} is not on {PUSH_BRANCH}")
+            return {"ok": False, "error": f"stale: {p['file']} is not on {PUSH_BRANCH}"}
+        new, why = fixer.apply(cur, fixer.parse(p["patch"]) or [])
+        if new is None:
+            _set(p["id"], status="stale", note=f"no longer applies on {PUSH_BRANCH}: {why}")
+            return {"ok": False, "error": f"stale: {why}"}
+        entry = research.for_proposal(p["id"])
+        if entry is None:
+            return {"ok": False, "error": "no research entry — Article XI.6 forbids publishing without one"}
+        # The research goes first. The branch's RESEARCH.md must end exactly where the record
+        # says it should; a file that differs was edited or diverged, and the cycle stops.
+        cur_r, sha_r = ghpr.get_file(repo, token, PUSH_BRANCH, research.FILE)
+        want_prefix = research.expected_tail(entry["id"]).rstrip()
+        if cur_r is not None and cur_r.rstrip() and cur_r.rstrip() != want_prefix and not want_prefix.startswith(cur_r.rstrip()):
+            anchor.record(-1, "escalation", f"{research.FILE} on {PUSH_BRANCH} does not match the research record — "
+                                            f"not appending; a human must reconcile it")
+            _set(p["id"], note=f"{p['note']} — {research.FILE} on {PUSH_BRANCH} differs from the record: "
+                               f"refused to append; a human must reconcile it")
+            return {"ok": False, "error": f"{research.FILE} on {PUSH_BRANCH} differs from the record — refused to append"}
+        ghpr.commit_file(repo, token, PUSH_BRANCH, research.FILE, research.render(),
+                         f"Research R{entry['id']} for self-improvement #{p['id']}: {p['title'][:60]}\n\n"
+                         f"Advantage: {entry['body'].get('advantage', '')[:400]}\n\nRisk: {entry['body'].get('risk', '')[:400]}",
+                         expect_sha=sha_r)
+        suites = ", ".join(f"{n} {s['passed']}/{s['total']}" for n, s in (p["after_json"].get("suites") or {}).items())
+        msg = (f"Self-improvement #{p['id']}: {p['title'][:70]}\n\n{p['note'][:300]}\n\n"
+               f"Research: R{entry['id']} in {research.FILE} (advantage, risk, blast radius, detection, undo).\n"
+               f"File: {p['file']}\nSuites on the patched copy: {suites}\n"
+               f"Committed by: {actor} (Article XI.3). Undo: /improve → revert #{p['id']}.")
+        r = ghpr.commit_file(repo, token, PUSH_BRANCH, p["file"], new, msg, expect_sha=sha)
+        _set(p["id"], status="committed", pr_url=r.get("url", ""), committed_sha=r.get("sha", ""),
+             original=cur, actor=actor, decided_ts=time.time())
+        anchor.record(-1, "improve-committed", f"#{p['id']} {p['file']}: {p['title'][:80]} → {PUSH_BRANCH} {r.get('sha', '')[:10]}")
+        return {"ok": True, "status": "committed", "pr_url": r.get("url", ""), "sha": r.get("sha", "")}
+    except Exception as e:                        # noqa: BLE001 — reported at the gate, not raised
+        _set(p["id"], note=f"{p['note']} — commit to {PUSH_BRANCH} failed: {type(e).__name__}: {str(e)[:160]}")
+        return {"ok": False, "error": f"commit failed: {type(e).__name__}: {str(e)[:160]}"}
+
+
+def revert(pid: int, actor: str = "console") -> dict:
+    """The undo for a committed improvement: put the file back to what it was, as one
+    commit that names the proposal. Refused if the file has changed since — a later
+    edit is not this proposal's to undo."""
+    p = proposal(pid)
+    if not p:
+        return {"ok": False, "error": "no such proposal"}
+    if p["status"] != "committed":
+        return {"ok": False, "error": f"proposal is {p['status']}, nothing to revert"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("IMPROVE_REPO", "amonxnye/Phoenix").strip()
+    branch = PUSH_BRANCH
+    if not token or not branch:
+        return {"ok": False, "error": "no GITHUB_TOKEN / IMPROVE_PUSH_BRANCH"}
+    try:
+        import ghpr
+        from mechanic import fixer
+        cur, sha = ghpr.get_file(repo, token, branch, p["file"])
+        expected, _ = fixer.apply(p.get("original") or "", fixer.parse(p["patch"]) or [])
+        if cur is None or (expected is not None and cur.rstrip() != expected.rstrip()):
+            return {"ok": False, "error": f"{p['file']} has changed on {branch} since the commit — revert by hand"}
+        r = ghpr.commit_file(repo, token, branch, p["file"], p.get("original") or "",
+                             f"Revert self-improvement #{p['id']}: {p['title'][:60]}\n\nReverted by {actor}.", expect_sha=sha)
+        _set(p["id"], status="reverted", actor=actor, decided_ts=time.time(),
+             note=f"{p['note']} — reverted by {actor}: {r.get('sha', '')[:10]}")
+        anchor.record(-1, "improve-reverted", f"#{p['id']} {p['file']} by {actor}")
+        return {"ok": True, "status": "reverted", "url": r.get("url", "")}
+    except Exception as e:                        # noqa: BLE001
+        return {"ok": False, "error": f"revert failed: {type(e).__name__}: {str(e)[:160]}"}
 
 
 def reject(pid: int, reason: str = "", actor: str = "console") -> dict:
@@ -570,6 +732,7 @@ def status() -> dict:
             "last_cycle": last[0] if last else None,
             "next_due_in_s": max(0, int(INTERVAL_S - (time.time() - last[0]["ts"]))) if last else 0,
             "parked": len(parked), "empty_streak": _empty_streak(),
+            "push_branch": PUSH_BRANCH, "auto_pr": AUTO_PR, "research": research.verify_chain(),
             "isolation": workspace.sandbox_mode(), "github": bool(os.environ.get("GITHUB_TOKEN", "").strip()),
             "waiting_cost": [{"id": p["id"], "title": p["title"],
                               "hours_waiting": round((time.time() - p["ts"]) / 3600, 1)} for p in parked]}

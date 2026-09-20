@@ -951,54 +951,70 @@ check("every variable the code reads is in .env.example",
 check("the host health check exists and reports the record's writability, commit and isolation",
       '"/healthz"' in open(os.path.join(HERE, "sim_console.py")).read() and "healthz" in _df and "healthz" in _dc)
 
-# ── Article XI: the self-improvement cycle, offline — scripted candidates, scripted oracle ──
+# ── Article XI: the self-improvement cycle, offline — scripted candidates, oracle, researcher ──
 import improve as IMP
+import research as RS
+import ghpr as _GH
 import hashlib as _hl
 _fixture_rel = "gov/verify_fixture_improve.py"           # a real file in the live tree, for the copy
 _fixture_abs = os.path.join(os.path.dirname(HERE), _fixture_rel)
 with open(_fixture_abs, "w") as _f:
     _f.write("def hello():\n    return 1\n")
 _live_before = _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest()
-_cand = {"finding_id": "f1", "title": "hello should say so", "severity": "low", "category": "quality",
+_tag = "[%d]" % int(time.time())                        # titles unique per run: the record persists across runs
+_cand = {"finding_id": "f1", "title": "hello should say so " + _tag, "severity": "low", "category": "quality",
          "file": _fixture_rel, "patch": "--- a/gov/verify_fixture_improve.py\n+++ b/gov/verify_fixture_improve.py\n@@ -1,2 +1,2 @@\n def hello():\n-    return 1\n+    return 2\n"}
 _seen_trees = []
-def _green(tree):
+def _green(tree, only=None):
     _seen_trees.append(tree)
     patched = "return 2" in open(os.path.join(tree, _fixture_rel)).read()
-    return {"green": True, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": ""},
-                                      "settlement": {"passed": 200 + (1 if patched else 0), "total": 200 + (1 if patched else 0), "ok": True, "seconds": 2, "tail": ""}}}
-_o0, _c0 = IMP.ORACLE, IMP.CANDIDATES
-IMP.ORACLE, IMP.CANDIDATES = _green, lambda: [_cand]
+    return {"green": True, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": "", "failed": []},
+                                      "settlement": {"passed": 200 + (1 if patched else 0), "total": 200 + (1 if patched else 0), "ok": True, "seconds": 2, "tail": "", "failed": []}}}
+_asked = []
+def _researcher(prompt):
+    _asked.append(prompt)
+    return ('{"advantage": "hello now says 2, which the patched settlement suite counts as one more passing check", '
+            '"risk": "a caller that expected 1 would see 2", "blast_radius": "callers of hello()", '
+            '"detection": "the settlement suite", "undo": "revert the commit", "alternatives": "leave it", "confidence": "high — trivial diff"}')
+_saved_seams = (IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file)
+_envt = os.environ.pop("GITHUB_TOKEN", None)          # the suite must never reach GitHub
+IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK = _green, (lambda: [_cand]), False, "", _researcher
 try:
     _r = IMP.cycle("test")
     check("a cycle takes the mechanic's patches, tries each on a COPY against the suites, and parks what survived",
           _r["status"] == "complete" and _r["candidates"] == 1 and _r["tried"] == 1 and _r["verified"] == 1
-          and len(_seen_trees) == 2 and all(t != os.path.dirname(HERE) and not os.path.exists(t) for t in _seen_trees),
-          str(_r))
+          and len(_seen_trees) == 2 and all(t != os.path.dirname(HERE) and not os.path.exists(t) for t in _seen_trees), str(_r))
     _p = IMP.proposals(status="verified")
     check("the verified improvement waits at the gate with its diff and the suite delta",
           _p and _p[0]["file"] == _fixture_rel and "+    return 2" in _p[0]["patch"]
           and _p[0]["after_json"]["suites"]["settlement"]["passed"] == 201 and IMP.status()["parked"] >= 1)
     check("the live tree was never written — the fixture's digest is unchanged",
           _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest() == _live_before)
-    def _red(tree):
-        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x",
-                                                        "failed": ["the gate holds"]},
-                                           "settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": ""}}}
-    IMP.ORACLE = lambda tree: _green(tree) if "return 2" not in open(os.path.join(tree, _fixture_rel)).read() else _red(tree)
+    _e = RS.for_proposal(_p[0]["id"])
+    check("the research — advantage AND risk — was written for the verified change from the measured facts, before anything else",
+          _e is not None and _e["body"]["advantage"].startswith("hello now says 2") and _e["body"]["risk"]
+          and _e["evidence"]["suites_after"]["settlement"]["passed"] == 201 and "BEGIN DIFF" in _asked[-1]
+          and "return 2" in _asked[-1] and RS.verify_chain()["intact"])
+    check("the record is a file too — RESEARCH.md regenerated from the ledger, never edited",
+          "R%d" % _e["id"] in RS.render() and "**Advantage.** hello now says 2" in RS.render()
+          and os.path.exists(RS.local_path()))
+    # a rejection, by name, confirmed on re-run
+    def _red(tree, only=None):
+        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x", "failed": ["the gate holds"]},
+                                           "settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": "", "failed": []}}}
+    IMP.ORACLE = lambda tree, only=None: _green(tree) if "return 2" not in open(os.path.join(tree, _fixture_rel)).read() else _red(tree)
+    IMP.CANDIDATES = lambda: [dict(_cand, title="red one " + _tag)]
     _r2 = IMP.cycle("test")
     check("a patch that makes a check fail is rejected NAMING the check, confirmed on a re-run, and recorded as a lesson",
           _r2["verified"] == 0 and _r2["rejected"] == 1
-          and any(p["status"] == "rejected" and "governor: the gate holds" in p["note"] and "confirmed on re-run" in p["note"]
-                  for p in IMP.proposals())
+          and any(p["status"] == "rejected" and "governor: the gate holds" in p["note"] and "confirmed on re-run" in p["note"] for p in IMP.proposals())
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-rejected'").fetchone()[0] >= 1,
-          f"{_r2} | notes {[p['note'][:60] for p in IMP.proposals()]} | rejected events "
-          f"{A._conn().execute(chr(83)+'ELECT COUNT(*) FROM knowledge WHERE kind=?', ('improve-rejected',)).fetchone()[0]}")
-    # the flake guard: a check that fails once and passes on the re-run was not the patch
+          str([p["note"][:80] for p in IMP.proposals()[:2]]))
+    # the flake guard
     _runs = {"n": 0}
     def _flaky(tree, only=None):
         _runs["n"] += 1
-        if _runs["n"] == 1 or "return 2" not in open(os.path.join(tree, _fixture_rel)).read():
+        if "return 2" not in open(os.path.join(tree, _fixture_rel)).read():
             return _green(tree)
         if _runs["n"] == 2:
             return {"green": False, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": "", "failed": []},
@@ -1006,31 +1022,95 @@ try:
                                                               "failed": ["the time series accounts for every decision"]}}}
         return {"green": True, "suites": {"settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": "", "failed": []}}}
     IMP.ORACLE = _flaky
-    _r3 = IMP.cycle("test")
-    _p3 = IMP.proposals()[0]
+    IMP.CANDIDATES = lambda: [dict(_cand, title="flaky one " + _tag)]
+    _r3 = IMP.cycle("test"); _p3 = IMP.proposals()[0]
     check("a check that fails on the first run and passes on a re-run of the same copy is a flake: verified, and the note says so",
           _r3["verified"] == 1 and _p3["status"] == "verified" and "flaky, not the patch" in _p3["note"]
-          and "the time series" in _p3["note"] and _p3["after_json"]["suites"]["settlement"].get("first_run"),
-          _p3["note"][:200])
-    # a manifest the suites never exercise is parked UNVERIFIED, never called verified
+          and "the time series" in _p3["note"] and _p3["after_json"]["suites"]["settlement"].get("first_run"), _p3["note"][:200])
     IMP.ORACLE = _green
-    IMP.CANDIDATES = lambda: [dict(_cand, file="requirements.txt", title="bump a pin",
+    # unverifiable, protected, unresearched
+    IMP.CANDIDATES = lambda: [dict(_cand, file="requirements.txt", title="bump a pin " + _tag,
                                    patch="--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1 +1 @@\n-x\n+y\n")]
-    _r4 = IMP.cycle("test")
-    _p4 = IMP.proposals()[0]
+    _r4 = IMP.cycle("test"); _p4 = IMP.proposals()[0]
     check("a patch to a file the suites do not exercise is parked unverified — never 'verified' — and still approvable",
-          _r4["verified"] == 0 and _p4["status"] == "unverified" and "do not exercise requirements.txt" in _p4["note"]
-          and IMP.status()["parked"] >= 2 and "unverified" in _r4["note"])
+          _r4["verified"] == 0 and _p4["status"] == "unverified" and "do not exercise requirements.txt" in _p4["note"] and "unverified" in _r4["note"], str(_r4))
+    IMP.CANDIDATES = lambda: [dict(_cand, file="RESEARCH.md", title="rewrite the record " + _tag,
+                                   patch="--- a/RESEARCH.md\n+++ b/RESEARCH.md\n@@ -1 +1 @@\n-x\n+y\n"),
+                              dict(_cand, file="CONSTITUTION.md", title="loosen a rule " + _tag,
+                                   patch="--- a/CONSTITUTION.md\n+++ b/CONSTITUTION.md\n@@ -1 +1 @@\n-x\n+y\n")]
+    _r5 = IMP.cycle("test")
+    check("a patch to the research record or the constitution is REFUSED before any suite runs — agents cannot reach them",
+          _r5.get("refused") == 2 and all(p["status"] == "refused" and "protected" in p["note"] for p in IMP.proposals()[:2])
+          and "refused as protected" in _r5["note"] and RS.protected("gov/research.py") and RS.protected("mechanic/CHARTER.md")
+          and not RS.protected("gov/improve.py"), str(_r5))
+    RS.ASK = lambda prompt: "I cannot say."
+    IMP.CANDIDATES = lambda: [dict(_cand, title="no research possible " + _tag)]
+    _r6 = IMP.cycle("test"); _p6 = IMP.proposals()[0]
+    check("no research — no change: a verified patch whose research lacks advantage and risk is held back, never published",
+          _p6["status"] == "unresearched" and "NOT published" in _p6["note"] and _r6.get("proposed", 0) == 0
+          and "want of research" in _r6["note"] and RS.for_proposal(_p6["id"]) is None, _p6["note"][:160])
+    RS.ASK = _researcher
     check("the suites' FAIL lines are read by name",
           IMP._FAILED.search("  [\x1b[31mFAIL\x1b[0m] the time series accounts for every decision, not a sample  — 0 buckets").group(1).strip()
           == "the time series accounts for every decision, not a sample")
-    IMP.CANDIDATES = lambda: [_cand]
-    _envt = os.environ.pop("GITHUB_TOKEN", None)
+    # the gate without a token: approved → the patch is handed over
     _ap = IMP.approve(_p[0]["id"], "tester")
     check("approval without a GITHUB_TOKEN hands the patch to the human — nothing is pushed",
-          _ap["ok"] and _ap["status"] == "approved" and "+    return 2" in _ap["patch"]
-          and IMP.proposal(_p[0]["id"])["status"] == "approved")
-    if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
+          _ap["ok"] and _ap["status"] == "approved" and "+    return 2" in _ap["patch"] and IMP.proposal(_p[0]["id"])["status"] == "approved")
+    # Article XI.3: published on its own — a draft PR carrying RESEARCH.md
+    _opened = []
+    _GH.open_pr = lambda repo, token, branch, files, title, body, base="": (_opened.append((branch, sorted(files), title, body)) or "https://github.com/o/r/pull/42")
+    os.environ["GITHUB_TOKEN"] = "tok"; IMP.AUTO_PR = True
+    IMP.CANDIDATES = lambda: [dict(_cand, title="publish me " + _tag)]
+    _r7 = IMP.cycle("test"); _p7 = IMP.proposals()[0]
+    check("a verified, researched patch is pushed to its own branch and opened as a draft PR with RESEARCH.md — the merge stays human",
+          _r7["verified"] == 1 and _r7.get("proposed") == 1 and _p7["status"] == "proposed" and _p7["pr_url"].endswith("/pull/42")
+          and _opened and _opened[-1][0] == "phoenix/improve-%d" % _p7["id"] and _opened[-1][1] == ["RESEARCH.md", _fixture_rel]
+          and "advantage" in _opened[-1][3], str(_p7["note"])[:120])
+    _r8 = IMP.cycle("test")
+    check("the same change is not proposed again while its PR is open — skipped and recorded",
+          _r8["tried"] == 0 and _r8["candidates"] == 1
+          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-skipped'").fetchone()[0] >= 1, str(_r8))
+    # the operator names the deploy branch: research committed FIRST, then the patch; the undo kept
+    _branch_files = {_fixture_rel: ("def hello():\n    return 1\n", "sha-a")}
+    _commits = []
+    _GH.get_file = lambda repo, token, branch, path: _branch_files.get(path, (None, ""))
+    def _fake_commit(repo, token, branch, path, content, message, expect_sha=""):
+        assert expect_sha == _branch_files.get(path, (None, ""))[1], "the write must name the blob it last saw"
+        _commits.append((branch, path, content, message)); _branch_files[path] = (content, "sha-%d" % len(_commits))
+        return {"sha": "c" * 40, "url": "https://github.com/o/r/commit/" + "c" * 40}
+    _GH.commit_file = _fake_commit
+    IMP.PUSH_BRANCH = "claude/project-review-1l2hho"
+    IMP.CANDIDATES = lambda: [dict(_cand, title="straight to the branch " + _tag)]
+    _r9 = IMP.cycle("test"); _p9 = IMP.proposals()[0]
+    check("with IMPROVE_PUSH_BRANCH: RESEARCH.md is committed first, then the patch, naming the proposal; the original is kept",
+          _p9["status"] == "committed" and len(_commits) >= 2 and _commits[-2][1] == "RESEARCH.md" and "Research R" in _commits[-2][3]
+          and "**Advantage.**" in _commits[-2][2] and _commits[-1][0] == "claude/project-review-1l2hho"
+          and "return 2" in _commits[-1][2] and "Self-improvement #%d" % _p9["id"] in _commits[-1][3]
+          and _p9["original"] == "def hello():\n    return 1\n", str(_p9["note"])[:120])
+    _rv = IMP.revert(_p9["id"], "tester")
+    check("revert puts the file back as one commit and the proposal reads reverted",
+          _rv["ok"] and _commits[-1][2] == "def hello():\n    return 1\n" and "Revert self-improvement" in _commits[-1][3]
+          and IMP.proposal(_p9["id"])["status"] == "reverted", str(_rv))
+    _branch_files["RESEARCH.md"] = ("# someone rewrote the research file\n", "sha-t")
+    IMP.CANDIDATES = lambda: [dict(_cand, title="tampered record " + _tag)]
+    _r10 = IMP.cycle("test"); _p10 = IMP.proposals()[0]
+    check("a RESEARCH.md on the branch that does not match the record stops the publish and escalates — never overwritten",
+          _p10["status"] == "verified" and "refused to append" in _p10["note"]
+          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE '%does not match the research record%'").fetchone()[0] >= 1,
+          _p10["note"][-160:])
+    _branch_files["RESEARCH.md"] = (RS.expected_tail(10**9), "sha-u")
+    IMP.CANDIDATES = lambda: [dict(_cand, title="edited underneath " + _tag)]
+    _r11 = IMP.cycle("test"); _p11 = IMP.proposals()[0]
+    _branch_files[_fixture_rel] = ("def hello():\n    return 3   # a human edited this since\n", "sha-z")
+    _rv2 = IMP.revert(_p11["id"], "tester")
+    check("a revert is refused when the file changed since the commit — a later edit is not the proposal's to undo",
+          _p11["status"] == "committed" and not _rv2["ok"] and "changed" in _rv2["error"] and IMP.proposal(_p11["id"])["status"] == "committed", str(_rv2))
+    check("the research chain is intact after every append, and has no edit or delete anywhere in the module",
+          RS.verify_chain()["intact"] and RS.verify_chain()["entries"] >= 4
+          and "UPDATE research" not in open(os.path.join(HERE, "research.py")).read()
+          and "DELETE FROM research" not in open(os.path.join(HERE, "research.py")).read())
+    # escalation after three empty cycles
     IMP.CANDIDATES = lambda: []
     for _ in range(IMP.EMPTY_CYCLES_ESCALATE):
         IMP.cycle("test")
@@ -1038,10 +1118,12 @@ try:
           IMP.status()["empty_streak"] >= IMP.EMPTY_CYCLES_ESCALATE
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
     check("the constitution names the article and its enforcing code, and bumped its version",
-          "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text()
-          and re.search(r"^Version: 1\.2", A.charter_text(), re.M) is not None)
+          "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
+          and re.search(r"^Version: 1\.4", A.charter_text(), re.M) is not None)
 finally:
-    IMP.ORACLE, IMP.CANDIDATES = _o0, _c0
+    IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file = _saved_seams
+    os.environ.pop("GITHUB_TOKEN", None)
+    if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
     os.remove(_fixture_abs)
 # the pull request is made of reads retried and writes made once, as a draft
 import ghpr as GH

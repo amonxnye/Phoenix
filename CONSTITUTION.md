@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.2
+Version: 1.4
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -327,19 +327,43 @@ Everything below is those two laws, applied.
 2. **The live tree is never written by a cycle.** A digest of the running code is taken
    before and after; a cycle that finds it changed is halted and escalated as a broken
    invariant, whatever else it produced (`improve._tree_digest`).
-3. **Verified means parked.** A verified improvement waits at the gate with its diff, the
-   suite delta and the hours it has waited. A human approves or rejects it at the
-   console. Only an approval pushes a branch and opens a *draft* pull request, and only
-   when a token was given to the orchestrator — never to a sandbox. Merging remains a
-   human act on GitHub (`improve.approve`, `ghpr.open_pr`).
+3. **Verified means proposed, never merged.** A verified improvement is pushed to its own
+   branch and opened as a *draft* pull request by the cycle itself, when a token was given
+   to the orchestrator — never to a sandbox — so the human decides on GitHub with the
+   diff and the suite delta in front of them; the merge is the human act. Without a
+   token, or for a patch the suites cannot judge, the proposal waits at the console gate
+   for a human. The same change is never proposed twice while one proposal for it is
+   open or a human has rejected it (`improve.publish`, `improve._already_proposed`,
+   `ghpr.open_pr`).
+   **The operator may name a branch instead** (`IMPROVE_PUSH_BRANCH`): then a verified
+   patch is committed straight onto it, and if that is the branch the host deploys, the
+   change is live minutes later with no human having read it. That is the operator's
+   choice, made once, in the environment. What the record guarantees in return is the
+   undo the first law demands: every commit names its proposal, the pre-patch content is
+   kept, and `revert` puts the file back as one commit — refused if the file has changed
+   since, because a later edit is not the proposal's to undo (`improve._commit_to_branch`,
+   `improve.revert`, `ghpr.commit_file`).
 4. **What was rejected is a lesson, not a loss.** Every rejection — by the suites or by
    the human — is written to the record with its reason, so the next cycle's proposals
    can be steered by what failed before (`anchor.record`, kind `improve-rejected`).
 5. **Producing nothing is a fact, and repeated nothing is an escalation.** Three
    consecutive cycles that verify nothing are reported to the Chief Governor with the
    last reason, not silently repeated (Article IX applied to improvement).
+6. **No change without its research, and the research is out of the agents' reach.**
+   Before a verified change is published, its advantage and its risk are researched from
+   the measured facts — what improves and how that is known; what could break, how far it
+   reaches, how a failure would be detected, how it is undone, what else was considered,
+   and with what confidence — and written into a record that is append-only and
+   hash-chained: every entry names the one before it, the chain is verified on every
+   read, and nothing in the code edits or deletes an entry. The record is also a file,
+   `RESEARCH.md`, regenerated from the ledger and committed to the repository ahead of the
+   change it justifies; a copy on the branch that does not match the record stops the
+   cycle rather than being overwritten. No proposed patch may touch the research file, this
+   constitution, the mechanic's charter or the researcher: such a candidate is refused
+   before any suite runs. No research — no change (`research.py`, `improve.cycle`,
+   `improve._commit_to_branch`, `/research`).
 > Enforced by `improve.py` (`cycle`, `run_suites`, `verdict`, `approve`, `reject`),
-> `ghpr.py` and `sim_console.py` (`/improve`, `/api/improve/*`).
+> `research.py`, `ghpr.py` and `sim_console.py` (`/improve`, `/research`, `/api/improve/*`).
 
 ## Amending this constitution
 
