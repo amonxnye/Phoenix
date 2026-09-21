@@ -36,6 +36,7 @@ shown on /improve.
 import hashlib
 import json
 import os
+import resource
 import re
 import shutil
 import subprocess
@@ -203,8 +204,16 @@ def run_suites(tree: str, only: list | None = None) -> dict:
     for name, rel in want:
         t0 = time.time()
         try:
+            def _limits():
+                resource.setrlimit(resource.RLIMIT_CPU, (SUITE_TIMEOUT_S, SUITE_TIMEOUT_S))
+                resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 ** 3, 2 * 1024 ** 3))
+                resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 ** 2, 512 * 1024 ** 2))
+                resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+                os.setsid()
             proc = subprocess.run(prefix + [sys.executable, os.path.join(tree, rel)], cwd=tree,
-                                  env=env, capture_output=True, text=True, timeout=SUITE_TIMEOUT_S)
+                                  env=env, capture_output=True, text=True, timeout=SUITE_TIMEOUT_S,
+                                  preexec_fn=_limits)
             text = (proc.stdout or "") + (proc.stderr or "")
             m = list(_PASSED.finditer(text))
             passed, total = (int(m[-1].group(1)), int(m[-1].group(2))) if m else (0, 0)
