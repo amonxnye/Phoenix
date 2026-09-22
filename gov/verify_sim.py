@@ -1106,6 +1106,9 @@ try:
     _rv2 = IMP.revert(_p11["id"], "tester")
     check("a revert is refused when the file changed since the commit — a later edit is not the proposal's to undo",
           _p11["status"] == "committed" and not _rv2["ok"] and "changed" in _rv2["error"] and IMP.proposal(_p11["id"])["status"] == "committed", str(_rv2))
+    _cc = IMP._conn(); _cc.execute("INSERT INTO improve_cycles(ts, trigger, status, candidates, tried, verified, rejected, note, seconds, baseline, signals, model, charter) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (time.time(), "test", "running", 0, 0, 0, 0, "cut off", 0, "{}", "{}", "", "")); _cc.commit(); _cc.close()
+    check("a cycle still marked running at boot is reaped as interrupted — a restart mid-cycle is recorded, not left looking alive",
+          IMP.reap() >= 1 and IMP.cycles(limit=1)[0]["status"] == "interrupted" and "restarted" in IMP.cycles(limit=1)[0]["note"])
     check("the research chain is intact after every append, and has no edit or delete anywhere in the module",
           RS.verify_chain()["intact"] and RS.verify_chain()["entries"] >= 4
           and "UPDATE research" not in open(os.path.join(HERE, "research.py")).read()

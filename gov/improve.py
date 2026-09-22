@@ -66,7 +66,7 @@ AUTO_PR = os.environ.get("IMPROVE_AUTO_PR", "1").strip() != "0"          # verif
 # it. The operator chose that; the record keeps the undo: every commit names its
 # proposal and `revert` puts the file back with one click.
 PUSH_BRANCH = os.environ.get("IMPROVE_PUSH_BRANCH", "").strip()
-MAX_TRIES = int(os.environ.get("IMPROVE_MAX_TRIES", "3"))   # candidates tried per cycle
+MAX_TRIES = int(os.environ.get("IMPROVE_MAX_TRIES", "10"))  # candidates tried per cycle
 SUITE_TIMEOUT_S = int(os.environ.get("IMPROVE_SUITE_TIMEOUT_S", "600"))
 EMPTY_CYCLES_ESCALATE = 3
 EXCLUDE = {"node_modules", "__pycache__", ".venv", "data", ".improve-data"}
@@ -400,6 +400,7 @@ def cycle(trigger: str = "scheduled") -> dict:
         c.close()
     live_digest = _tree_digest()
     counts = {"candidates": 0, "tried": 0, "verified": 0, "rejected": 0}
+    to_publish: list[int] = []                   # published in ONE burst at the end, see below
     note, baseline, signals = "", {}, {}
     try:
         _STATE["current"] = "measuring"
@@ -485,11 +486,7 @@ def cycle(trigger: str = "scheduled") -> dict:
                     counts["unresearched"] = counts.get("unresearched", 0) + 1
                     anchor.record(-1, "improve-unresearched", f"#{row['id']} {cand['file']}: {rs['error'][:160]}")
                 elif AUTO_PR:
-                    # Article XI.3: published on its own — a draft PR, or a commit on the branch the
-                    # operator named. The research entry goes to GitHub FIRST, in RESEARCH.md.
-                    _STATE["current"] = f"publishing #{row['id']} with research R{rs['entry']['id']}"
-                    res = publish(row["id"], actor="cycle (Article XI.3)")
-                    counts["proposed"] = counts.get("proposed", 0) + (1 if res.get("ok") else 0)
+                    to_publish.append(row["id"])
         if not note:
             note = (f"{counts['verified']} verified ({counts.get('proposed', 0)} published with research), {counts['rejected']} rejected"
                     + (f", {counts['unresearched']} held back for want of research" if counts.get("unresearched") else "")
@@ -500,7 +497,7 @@ def cycle(trigger: str = "scheduled") -> dict:
     except Exception as e:                        # noqa: BLE001 — closed, not abandoned
         status, note = "halted", f"{type(e).__name__}: {str(e)[:200]}"
     finally:
-        _STATE.update(running=False, current="")
+        _STATE["current"] = ""
     if _tree_digest() != live_digest:
         status, note = "halted", "INVARIANT BROKEN: the live tree changed during the cycle — " + note
         anchor.record(-1, "escalation", "improve cycle: the live tree changed during a cycle; " + note)
@@ -513,6 +510,24 @@ def cycle(trigger: str = "scheduled") -> dict:
         c.commit()
     finally:
         c.close()
+    # Article XI.3, published as ONE burst after the cycle's record is closed. In branch
+    # mode every commit makes the host rebuild and restart this process; publishing as
+    # each patch is verified would kill the cycle at its first commit. Ten tries, one
+    # burst, one rebuild — and the record already says what happened if the restart
+    # lands mid-burst (a proposal left "verified" is re-published by `republish`).
+    if status == "complete" and to_publish:
+        _STATE["current"] = f"publishing {len(to_publish)} researched change(s) as one burst"
+        for pid in to_publish:
+            res = publish(pid, actor="cycle (Article XI.3)")
+            counts["proposed"] = counts.get("proposed", 0) + (1 if res.get("ok") else 0)
+        note = note.replace("(0 published with research)", f"({counts.get('proposed', 0)} published with research)")
+        c = _conn()
+        try:
+            c.execute("UPDATE improve_cycles SET note=? WHERE id=?", (note, cid))
+            c.commit()
+        finally:
+            c.close()
+    _STATE.update(running=False, current="")
     if status == "complete" and counts["verified"] == 0 and _empty_streak() >= EMPTY_CYCLES_ESCALATE:
         anchor.record(-1, "escalation",
                       f"IMPROVEMENT STALLED — {EMPTY_CYCLES_ESCALATE} consecutive cycles verified nothing; "
@@ -711,6 +726,10 @@ def due(now: float | None = None) -> bool:
 
 
 def _loop():
+    try:
+        republish()
+    except Exception:                              # noqa: BLE001 — a boot chore, never a crash
+        pass
     while True:
         try:
             _STATE["last_tick"] = time.time()
@@ -721,9 +740,35 @@ def _loop():
         time.sleep(60)
 
 
+def reap() -> int:
+    """A cycle still marked running at boot was cut off by a restart — a deploy, most
+    likely one this loop caused. Marked interrupted, never left looking alive."""
+    c = _conn()
+    try:
+        cur = c.execute("UPDATE improve_cycles SET status='interrupted', "
+                        "note='the process restarted during the cycle (a deploy?) — ' || note "
+                        "WHERE status='running'")
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
+def republish(actor: str = "boot") -> int:
+    """Researched, verified proposals that a restart left unpublished go out now."""
+    if not (AUTO_PR and os.environ.get("GITHUB_TOKEN", "").strip()):
+        return 0
+    n = 0
+    for p in proposals(status="verified"):
+        if research.for_proposal(p["id"]) is not None and publish(p["id"], actor).get("ok"):
+            n += 1
+    return n
+
+
 def start() -> bool:
     if _STATE["thread"] and _STATE["thread"].is_alive():
         return False
+    reap()
     if not enabled():
         return False
     t = threading.Thread(target=_loop, daemon=True, name="phoenix-improve")
