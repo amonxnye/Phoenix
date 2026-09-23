@@ -1801,6 +1801,15 @@ def _normalise(s: str) -> str:
     return " ".join((s or "").split()).lower()
 
 
+def _words(s: str) -> str:
+    """The span as its words only, in order: what survives stripping a page's markup.
+    Tags leave stray spaces around punctuation ("( gristmills )") and pages carry
+    footnote markers ("[1]", "[note 2]") that a summary of the same text drops — the
+    words, and their order, are what the citation must share."""
+    s = re.sub(r"\[\s*(?:\d+|[a-z]\s*\d+|note\s+\d+|citation needed|[a-z])\s*\]", " ", s or "", flags=re.I)
+    return " ".join(re.findall(r"[^\W_]+", s.lower()))
+
+
 def verify_claim(source: str, quote: str) -> tuple[bool, str]:
     """The citation check: (verified, reason).
 
@@ -1815,6 +1824,9 @@ def verify_claim(source: str, quote: str) -> tuple[bool, str]:
         return False, f"source did not resolve: {source[:60] or '(none)'}"
     if _normalise(quote) in _normalise(text):
         return True, "source resolves and contains the quoted span"
+    wq = _words(quote)
+    if len(wq.split()) >= 6 and f" {wq} " in f" {_words(text)} ":
+        return True, "source resolves and contains the quoted span (word for word, markup aside)"
     return False, "source resolves but does NOT contain the quoted span"
 
 

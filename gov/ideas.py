@@ -140,6 +140,21 @@ def _quote(extract: str) -> str:
     return (m.group(1) if m else extract[:200]).strip()[:240]
 
 
+def _sentences(extract: str) -> list[str]:
+    return [x.strip()[:240] for x in re.findall(r".+?[.!?](?=\s|$)", extract) if len(x.split()) >= 6][:6]
+
+
+def _cited_quote(url: str, extract: str) -> str:
+    """The span to cite: the first sentence of the summary that the article itself
+    contains. A summary API condenses the lead, so its first sentence is not always the
+    page's; quoting one the page really holds keeps the check honest without loosening it.
+    Falls back to the first sentence (which will then fail the check, as it should)."""
+    for q in _sentences(extract):
+        if anchor.verify_claim(url, q)[0]:        # the page is fetched once and cached
+            return q
+    return _quote(extract)
+
+
 # ── the topics ───────────────────────────────────────────────────────────────
 
 def topics(world: dict, already: set, limit: int) -> list[str]:
@@ -168,7 +183,7 @@ def consider(cycle_id: int, topic: str, world: dict, situation: str) -> dict:
                    verified=0, knowledge_id=0, proposal="null", research_id=0, status="unread",
                    note="no readable source for this topic", decided_ts=0)
         return {"status": "unread", "id": iid}
-    quote = _quote(page["extract"])
+    quote = _cited_quote(page["url"], page["extract"])
     ing = anchor.ingest(topic, page["url"], page["extract"][:400], quote=quote)
     if not ing["verified"]:
         iid = _add(cycle_id=cycle_id, ts=time.time(), age=age, topic=topic, title=page["title"],

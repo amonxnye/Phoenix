@@ -1305,6 +1305,22 @@ finally:
             _cx.execute(f"DELETE FROM {_tbl} WHERE name=?", (_n,))
     _cx.commit(); _cx.close()
 
+# the citation check reads a real page: markup leaves stray spaces and footnote markers
+import anchor as _A0
+_sf = _A0._fetch_url
+try:
+    _A0._fetch_url = lambda u: ("A windmill is a machine operated by the force of wind acting on vanes or sails to "
+                                "mill grain ( gristmills )[1]. Windmills were used ; widely[note 2].")
+    _v1 = _A0.verify_claim("https://example.org/w", "A windmill is a machine operated by the force of wind acting "
+                                                    "on vanes or sails to mill grain (gristmills).")
+    _v2 = _A0.verify_claim("https://example.org/w", "A windmill is a machine operated by the force of water acting "
+                                                    "on vanes or sails to mill grain (gristmills).")
+    _v3 = _A0.verify_claim("https://example.org/w", "mill grain (gristmills)")
+finally:
+    _A0._fetch_url = _sf
+check("a citation is found word for word through a page's markup and footnotes — a changed word still fails, "
+      "and a short span proves nothing", _v1[0] and not _v2[0] and not _v3[0], f"{_v1} {_v2} {_v3}")
+
 # ── the admin view: systems, compute, actors, the innovation journal, export and reset ──
 import admin as AD
 import tempfile as _tf
