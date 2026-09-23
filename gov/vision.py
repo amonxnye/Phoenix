@@ -72,11 +72,35 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+LEAP_WEIGHT = 0.95        # a full treasury is 95% of the way to the next age; the herald is the rest
+
+
+def _leap_cost(age: str) -> dict | None:
+    """The price of advancing from `age` — read from the world's own ladder."""
+    try:
+        import sim                                # late: sim is the world, vision the goal
+        if not sim.NEXT_AGE.get(age):
+            return None
+        return {r: v for r, v in sim.advance_cost(age).items() if v}
+    except Exception:                             # noqa: BLE001 — no ladder: the age alone counts
+        return None
+
+
 def scorecard(world: dict, structures: dict, side_effects: int, goal: Vision = GOAL) -> dict:
     """The single readout: how close are we to 100% of the vision, and at what cost?"""
     age = LEGACY_AGES.get(world["age"], world["age"])
     age_idx = AGES.index(age) if age in AGES else 0
     target_idx = AGES.index(goal.target_age)
+    # On the way to the target age, the treasury filling toward the NEXT LEAP is
+    # progress in the age itself: each leap costs several times the last, so a world
+    # banking for one is advancing even while no age has changed. Folded into the age
+    # component (never the economy's) so the score rises steadily and steps UP when
+    # the herald advances — and tops out short of the next age until it really does.
+    # Without it the score froze for whole leaps, a false stall was declared, and
+    # honest gathering was counted as waste.
+    leap = _leap_cost(age) if age_idx < target_idx else None
+    fill = (sum(_clamp01(world.get(r, 0) / v) for r, v in leap.items()) / len(leap)) if leap else 0.0
+    age_exact = _clamp01((age_idx + LEAP_WEIGHT * fill) / target_idx) if target_idx else 1.0
     age_pct = _clamp01(age_idx / target_idx) if target_idx else 1.0
 
     dev = sum(structures.values())
@@ -85,7 +109,8 @@ def scorecard(world: dict, structures: dict, side_effects: int, goal: Vision = G
     stock = world["food"] + world["wood"] + world["gold"]
     econ_pct = _clamp01(stock / goal.target_resources) if goal.target_resources else 1.0
 
-    progress = round(100 * (goal.w_age * age_pct + goal.w_dev * dev_pct + goal.w_econ * econ_pct))
+    exact = 100 * (goal.w_age * age_exact + goal.w_dev * dev_pct + goal.w_econ * econ_pct)
+    progress = int(exact) if exact < 100 else 100  # never rounded UP into a goal not met
 
     surplus = max(0, stock - goal.target_resources)
     extra_value_pct = round(100 * surplus / goal.target_resources, 2) if goal.target_resources else 0.0
@@ -93,7 +118,10 @@ def scorecard(world: dict, structures: dict, side_effects: int, goal: Vision = G
     return {
         "vision": goal.name,
         "progress": progress,                 # 0..100 — the number everyone drives to
-        "age_pct": round(100 * age_pct),
+        "progress_exact": round(exact, 3),    # unrounded: a slow leap still shows movement
+        "leap": leap or {},                   # the next leap's price, while below the target age
+        "leap_pct": round(100 * fill),        # how full the treasury is for it
+        "age_pct": round(100 * age_exact),
         "dev_pct": round(100 * dev_pct),
         "econ_pct": round(100 * econ_pct),
         "goal_met": progress >= 100,

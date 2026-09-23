@@ -433,7 +433,7 @@ def _progress_delta(window: int = 25) -> int | None:
         return None
     cur_t, cur_p = hist[-1]
     base = next((p for t, p in hist if t >= cur_t - window), hist[0][1])
-    return cur_p - base
+    return round(cur_p - base, 3)
 
 
 def _board_ctx(affordable: bool, views=None) -> dict:
@@ -496,11 +496,20 @@ def _binding_constraint() -> str:
                                  ("the economy", sc["econ_pct"])) if p < 100]
     if short:
         name, pct = min(short, key=lambda x: x[1])
+        w = sim.world()
+        if name == "the age" and sc.get("leap") and sc.get("leap_pct", 100) < 100:
+            # the treasury is filling toward the leap: say by how much, and what is scarcest
+            fill = {r: min(100, round(100 * w.get(r, 0) / v)) for r, v in sc["leap"].items()}
+            scarce = min(fill, key=fill.get)
+            nxt = sim.NEXT_AGE.get(sim.canonical_age(w["age"]), "the next age")
+            return (f"the treasury for the {nxt} leap — " + ", ".join(f"{r} {p}%" for r, p in fill.items())
+                    + f"; {scarce} is scarcest, so gathering {scarce} moves the score")
         note = ""
         if sc["econ_pct"] >= 100:
             note = (f"; the economy is already full at {sc['extra_value_pct']:,.0f}% "
                     f"surplus, so gathering cannot move the score (Article I.2)")
-        return f"{name} — the only component short, at {pct}%{note}"
+        lead = "the only component short" if len(short) == 1 else "the furthest behind"
+        return f"{name} — {lead}, at {pct}%{note}"
     w = sim.world()
     if len(_S["villagers"]) >= min(_target_villagers(), w["pop_cap"]):
         return "a full roster that is not producing — inspect agent states on /agents"
@@ -1012,7 +1021,7 @@ def _one_turn():
     sc_now = V.scorecard(sim.world(), sim.structures(), _S["side_effects"], _vision())
     # telemetry the board and the liveness check read: progress history + fleet burn
     ph = _S.setdefault("progress_hist", [])
-    ph.append((t, sc_now["progress"]))
+    ph.append((t, sc_now.get("progress_exact", sc_now["progress"])))
     del ph[:-200]
     spent_now = G.spent(views)
     _S["fleet_burn"] = max(0, spent_now - _S.get("last_spent", spent_now)) or _S.get("fleet_burn")

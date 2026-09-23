@@ -1655,8 +1655,30 @@ check("a turn that acts without moving the score is counted as waste",
 check("waste is debited from the Governor's score, not just displayed",
       "score -= min(3, wasted // 50)" in _src)
 check("a stall names the component that is SHORT, not the roster",
-      "the only component short, at" in _src
-      and "gathering cannot move the score (Article I.2)" in _src)
+      '"the only component short" if len(short) == 1 else "the furthest behind"' in _src
+      and "gathering cannot move the score (Article I.2)" in _src
+      and "is scarcest, so gathering" in _src)
+# the treasury banking for a leap is progress in the age — the score never freezes for a whole leap
+import vision as _V
+_st = {"house": 3, "mill": 1, "lumber_camp": 1, "mining_camp": 1, "wheelbarrow": 1}
+_lc = S.advance_cost("Classical Age")
+_s_lo = _V.scorecard({"food": _lc["food"] // 4, "wood": _lc["wood"] // 2, "gold": _lc["gold"] // 2,
+                      "age": "Classical Age"}, _st, 0, _V.get("feudal"))
+_s_hi = _V.scorecard({"food": _lc["food"] // 2, "wood": _lc["wood"] // 2, "gold": _lc["gold"] // 2,
+                      "age": "Classical Age"}, _st, 0, _V.get("feudal"))
+_s_full = _V.scorecard({**_lc, "age": "Classical Age"}, _st, 0, _V.get("feudal"))
+_s_adv = _V.scorecard({"food": 2000, "wood": 2000, "gold": 2000, "age": "Feudal Age"}, _st, 0, _V.get("feudal"))
+check("banking for the next leap moves the vision score; a full treasury is not the goal — only the advance is",
+      _s_lo["progress_exact"] < _s_hi["progress_exact"] < _s_full["progress_exact"] < 100
+      and not _s_full["goal_met"] and _s_adv["goal_met"] and _s_hi["leap"] == _lc and _s_hi["leap_pct"] < 100,
+      f"{_s_lo['progress_exact']} → {_s_hi['progress_exact']} → {_s_full['progress_exact']} → advanced {_s_adv['progress']}")
+_s_t1 = _V.scorecard({**S.advance_cost("Feudal Age"), "age": "Feudal Age"}, _st, 0, _V.get("tech"))
+_rest = {r: 50_000 for r in ("food", "wood", "gold")}
+_s_t2 = _V.scorecard({**_rest, "age": "Castle Age"}, _st, 0, _V.get("tech"))
+check("advancing an age never lowers the score, though it spends the treasury",
+      _s_t2["progress_exact"] >= _s_t1["progress_exact"], f"{_s_t1['progress_exact']} → {_s_t2['progress_exact']}")
+check("the liveness history is unrounded, so a slow leap is not mistaken for a frozen world",
+      'sc_now.get("progress_exact"' in _src)
 
 # ── 15. the views are ARITHMETIC, not decoration ────────────────────────────
 # A share that does not sum to its denominator is worse than no share at all:
