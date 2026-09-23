@@ -71,6 +71,7 @@ PUSH_BRANCH = os.environ.get("IMPROVE_PUSH_BRANCH", "").strip()
 # `code`: the mechanic's patches to Phoenix itself, verified by the suites. `both`.
 MODE = os.environ.get("IMPROVE_MODE", "world").strip().lower()
 MAX_TRIES = int(os.environ.get("IMPROVE_MAX_TRIES", "10"))  # candidates tried per cycle
+EFFICIENCY_REVIEW = os.environ.get("IMPROVE_EFFICIENCY_REVIEW", "1") != "0"   # review compute after each cycle
 SUITE_TIMEOUT_S = int(os.environ.get("IMPROVE_SUITE_TIMEOUT_S", "600"))
 EMPTY_CYCLES_ESCALATE = 3
 EXCLUDE = {"node_modules", "__pycache__", ".venv", "data", ".improve-data"}
@@ -392,8 +393,20 @@ def cycle(trigger: str = "scheduled") -> dict:
         r = _world_cycle(trigger)
         if MODE == "world":
             _STATE.update(running=False, current="")
-            return r
-    return _code_cycle(trigger)
+            return _reflect(r)
+    return _reflect(_code_cycle(trigger))
+
+
+def _reflect(r: dict) -> dict:
+    """After every cycle the world looks at how its compute was spent (the efficiency
+    review, within its own token budget) and writes it to the innovation journal."""
+    if EFFICIENCY_REVIEW and r.get("status") not in ("busy",):
+        try:
+            import admin
+            r["efficiency"] = admin.efficiency_review()["journal_id"]
+        except Exception as e:                    # noqa: BLE001 — a review never breaks a cycle
+            anchor.record(-1, "improve", f"efficiency review skipped: {type(e).__name__}: {str(e)[:120]}")
+    return r
 
 
 def _world_cycle(trigger: str) -> dict:

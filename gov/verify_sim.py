@@ -1126,7 +1126,7 @@ try:
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
     check("the constitution names the article and its enforcing code, and bumped its version",
           "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
-          and re.search(r"^Version: 1\.6", A.charter_text(), re.M) is not None)
+          and re.search(r"^Version: 1\.([6-9]|\d\d)", A.charter_text(), re.M) is not None)
     # ── the ten ages, 10,000× per leap, food + wood + gold; a legacy world keeps its place ──
     check("ten ages, each leap the previous one times one growth factor, in food, wood and gold, the ladder readable",
           len(S.AGE_ORDER) == 10 and S.AGE_ORDER[0] == "Stone Age" and S.AGE_ORDER[-1] == "Tech Age"
@@ -1304,6 +1304,83 @@ finally:
         for _tbl in ("custom_devs", "placements", "conditions"):
             _cx.execute(f"DELETE FROM {_tbl} WHERE name=?", (_n,))
     _cx.commit(); _cx.close()
+
+# ── the admin view: systems, compute, actors, the innovation journal, export and reset ──
+import admin as AD
+import tempfile as _tf
+_sy = AD.systems({"turn": 1, "agents": 0})
+check("admin: one reading covers process, world, brain, utopia, network, improvement, research and storage",
+      all(k in _sy for k in ("process", "world", "brain", "utopia", "network", "improve", "research", "storage"))
+      and "disk" in _sy["storage"] and "anchor" in _sy["storage"]["files"])
+import anchor as _A
+_A.model_call_log("suite", "suite-model", "suite-admin", 120, 1000, 200, True)
+_A.model_call_log("suite", "suite-model", "suite-admin", 90, 400, 0, False, "boom")
+_cp = AD.compute(1)
+_pp = next((x for x in _cp["purposes"] if x["purpose"] == "suite-admin"), None)
+check("admin: compute counts tokens by purpose and hour, and failed calls as waste",
+      _pp and _pp["calls"] >= 2 and _pp["errors"] >= 1 and _pp["tokens"] >= 1600 and _pp["wasted"] >= 400
+      and _cp["totals"]["model_tokens"] >= 1600 and _cp["hourly"]
+      and sum(h["model_tokens"] for h in _cp["hourly"]) == _cp["totals"]["model_tokens"], str(_pp))
+_ac = AD.actors()
+check("admin: actors carry rank, compute, efficiency and flags; incidents are grouped by source; "
+      "enforcement is left for the agents to propose",
+      all({"agent", "rank", "per_1k", "flags", "renewals", "free_will", "projects"} <= set(a) for a in _ac["agents"])
+      and isinstance(_ac["chaos"], list) and isinstance(_ac["questionable_decisions"], list)
+      and "propose" in _ac["note"] and "police" not in open(os.path.join(HERE, "admin.py")).read().lower())
+_jid = AD.note("note", "suite", "suite note " + _tag, "a thought worth a paper " + _tag)
+_jr = AD.journal()
+check("admin: the journal gathers notes, ideas, research, cycles, proposals and lessons in one timeline",
+      any(e["title"] == "suite note " + _tag for e in _jr) and {"kind", "source", "title", "body", "ref"} <= set(_jr[0]))
+_asrc = open(os.path.join(HERE, "admin.py")).read()
+check("admin: the journal is append-only — nothing in the code edits or deletes an entry",
+      not re.search(r"(UPDATE|DELETE\s+FROM)\s+journal", _asrc, re.I))
+_md = AD.journal_markdown()
+check("admin: the journal exports as Markdown to write papers from, every entry cited",
+      _md.startswith("# Phoenix — Innovation Journal") and ("suite note " + _tag) in _md and f"J{_jid}" in _md)
+_saved_ask = AD.ASK
+try:
+    AD.ASK = lambda prompt: '{"observation": "suite saw it", "innovation": "batch the suite prompts", "measure": "tokens per outcome"}'
+    _er = AD.efficiency_review()
+finally:
+    AD.ASK = _saved_ask
+check("admin: the efficiency review reads the compute, proposes an innovation and writes it to the journal",
+      "batch the suite prompts" in _er["innovation"] and _er["how"] == "rules + brain"
+      and any(e["kind"] == "efficiency" and "batch the suite prompts" in e["body"] for e in AD.journal()))
+check("admin: every improvement cycle is followed by an efficiency review",
+      "def _reflect(" in open(os.path.join(HERE, "improve.py")).read()
+      and "admin.efficiency_review()" in open(os.path.join(HERE, "improve.py")).read())
+_xd = _tf.mkdtemp()
+_xp = os.path.join(_xd, "world.json")
+_ex = AD.export_all(_xp)
+_xj = _json_mod.load(open(_xp))
+check("admin: the whole world exports as one valid JSON document — every database's tables and the event log",
+      {"world", "anchor"} <= set(_xj["databases"]) and "journal" in _xj["databases"]["anchor"]
+      and "rows" in _xj["databases"]["world"]["world"] and isinstance(_xj["events"], list)
+      and _ex["counts"]["anchor.journal"] >= 1, str(_ex["bytes"]))
+# a full reset on a scratch world: exported first, then gone
+_sdb = os.path.join(_xd, "scratch.sqlite"); _sev = os.path.join(_xd, "events.jsonl"); _sar = os.path.join(_xd, "archive")
+_c = sqlite3.connect(_sdb); _c.execute("CREATE TABLE t(x)"); _c.execute("INSERT INTO t VALUES(42)"); _c.commit(); _c.close()
+open(_sev, "w").write('{"kind": "suite"}\n'); os.makedirs(_sar); open(os.path.join(_sar, "events-x.jsonl.gz"), "w").write("x")
+_sv = (AD.databases, _A.EVENTS_PATH, _A.ARCHIVE_DIR, _A._DATA_DIR)
+try:
+    AD.databases = lambda: {"scratch": _sdb}
+    _A.EVENTS_PATH, _A.ARCHIVE_DIR, _A._DATA_DIR = _sev, _sar, _xd
+    _fr = AD.full_reset()
+    _fj = _json_mod.load(open(_fr["export"]))
+finally:
+    AD.databases, _A.EVENTS_PATH, _A.ARCHIVE_DIR, _A._DATA_DIR = _sv
+check("admin: a full reset exports first, then deletes every database and the log; archives move beside the export",
+      _fj["databases"]["scratch"]["t"]["rows"] == [[42]] and _fj["events"] == [{"kind": "suite"}]
+      and not os.path.exists(_sdb) and not os.path.exists(_sev) and not os.path.exists(_sar)
+      and any(n.startswith("archive-") for n in os.listdir(os.path.join(_xd, "exports"))), str(_fr))
+_csrc2 = open(os.path.join(HERE, "sim_console.py")).read()
+_fsec = _csrc2.split('if what == "full-reset":')[1].split("return self._send(200")[0]
+check("admin: the full reset needs ADMIN_TOKEN (disabled without one) and the typed confirmation",
+      'os.environ.get("ADMIN_TOKEN"' in _fsec and "403" in _fsec and "_admin_token_ok()" in _fsec
+      and "RESET EVERYTHING" in _fsec and _fsec.index("_admin_token_ok()") < _fsec.index("admin.full_reset()"))
+check("admin: the page and its API are routed, and the console links to it",
+      'self.path == "/admin"' in _csrc2 and '"/api/admin/"' in _csrc2 and 'href="/admin"' in _csrc2
+      and "ADMIN_PAGE" in _csrc2)
 
 # the pull request is made of reads retried and writes made once, as a draft
 import ghpr as GH

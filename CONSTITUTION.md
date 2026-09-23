@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.6
+Version: 1.7
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -222,7 +222,17 @@ Everything below is those two laws, applied.
    (ACCP §7) — two agents faulting at each other is a loop, not a conversation. Both
    refusals are recorded when they bite, because a refusal nobody can see is not
    governance (`anchor._envelope`).
-> Enforced by `governor.py`, `anchor.py`, `sim_console.py`; tracing via `LANGCHAIN_*` env vars.
+11. **One view of everything, and the world reads its own compute.** `/admin` shows
+   every system, the compute spent over time and what it bought, the agents and
+   incidents worth a second look, and every record as a download — the whole world
+   as one JSON file. After every improvement cycle the world reviews how its tokens
+   were spent and writes what it sees, with one innovation, to the innovation
+   journal; the journal is append-only and exports as a paper-ready document.
+   Enforcement is not built in: if the world needs watchmen, its agents may propose
+   them, and they go to the Board and the human like any other idea. The full reset
+   exports first and needs `ADMIN_TOKEN` — it is never open to the public
+   (`admin.py`, `improve._reflect`).
+> Enforced by `governor.py`, `anchor.py`, `sim_console.py`, `admin.py`; tracing via `LANGCHAIN_*` env vars.
 
 ---
 

@@ -1947,6 +1947,103 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    # ── /admin: the operator's view of everything ────────────────────────────
+    def _admin_token_ok(self) -> bool:
+        """ADMIN_TOKEN guards what must never be public: the full reset, and the
+        whole-world export. It is separate from CONSOLE_TOKEN and has no open default."""
+        import hmac
+        want = os.environ.get("ADMIN_TOKEN", "").strip()
+        return bool(want) and hmac.compare_digest(self.headers.get("X-Admin-Token", "").strip(), want)
+
+    def _send_file(self, path: str, ctype: str, download: str):
+        """Stream a file in chunks — a whole-world export never has to fit in memory."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+            self.send_header("Content-Length", str(os.path.getsize(path)))
+            self.end_headers()
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _admin_get(self):
+        import admin
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        what = u.path.rsplit("/", 1)[1]
+        if what == "systems":
+            live = {"turn": _S["turn"], "agents": len(_S["villagers"]), "goal_met": _S["goal_met"]}
+            return self._send(200, json.dumps(admin.systems(live), default=str))
+        if what == "compute":
+            try:
+                hours = max(1, min(24 * 90, int(q.get("hours", ["48"])[0])))
+            except ValueError:
+                hours = 48
+            return self._send(200, json.dumps(admin.compute(hours), default=str))
+        if what == "actors":
+            return self._send(200, json.dumps(admin.actors(), default=str))
+        if what == "journal":
+            return self._send(200, json.dumps(admin.journal(), default=str))
+        if what == "journal.md":
+            return self._send(200, admin.journal_markdown(), "text/markdown; charset=utf-8",
+                              download="phoenix-innovation-journal.md")
+        if what == "export.json":
+            if os.environ.get("ADMIN_TOKEN", "").strip() and not self._admin_token_ok():
+                return self._send(401, json.dumps({"error": "admin token required for the whole-world export"}))
+            d = os.path.join(anchor._DATA_DIR, "exports")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, f"download-{os.getpid()}-{threading.get_ident()}.json")
+            try:
+                admin.export_all(path)
+                self._send_file(path, "application/json",
+                                time.strftime("phoenix-world-%Y%m%d-%H%M%S.json", time.gmtime()))
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return None
+        return self._send(404, json.dumps({"error": "no such admin view"}))
+
+    def _admin_post(self):
+        import admin
+        body = self._read_json()
+        what = self.path.rsplit("/", 1)[1]
+        if what == "efficiency":
+            return self._send(200, json.dumps(admin.efficiency_review(), default=str))
+        if what == "note":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return self._send(400, json.dumps({"error": "text required"}))
+            jid = admin.note("note", "operator", text.split("\n")[0][:120], text)
+            anchor.record(_S["turn"], "operator", f"journal note J{jid}: {text[:120]}")
+            return self._send(200, json.dumps({"ok": True, "journal_id": jid}))
+        if what == "full-reset":
+            if not os.environ.get("ADMIN_TOKEN", "").strip():
+                return self._send(403, json.dumps({"error": "full reset is disabled: set ADMIN_TOKEN on the server"}))
+            if not self._admin_token_ok():
+                return self._send(401, json.dumps({"error": "admin token required"}))
+            if str(body.get("confirm", "")).strip() != "RESET EVERYTHING":
+                return self._send(400, json.dumps({"error": "confirm with the words RESET EVERYTHING"}))
+            anchor.record(_S["turn"], "operator", "FULL RESET ordered — exporting the whole world, then "
+                                                  "deleting every database and the event log")
+            with _LOCK:                            # the director stops writing while we export
+                out = admin.full_reset()
+
+            def _restart():
+                time.sleep(0.7)                   # let the response flush first
+                os._exit(1)                        # the supervisor starts a world from nothing
+            threading.Thread(target=_restart, daemon=True).start()
+            return self._send(200, json.dumps({"ok": True, "restarting": True, **out}))
+        return self._send(404, json.dumps({"error": "no such admin action"}))
+
     def do_GET(self):
         if self.path == "/healthz":
             # The host's health check: process up, record writable, commit, uptime.
@@ -2001,6 +2098,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/improve":
             self._count_view()
             return self._send(200, IMPROVE_PAGE, "text/html; charset=utf-8")
+        if self.path == "/admin":
+            self._count_view()
+            return self._send(200, ADMIN_PAGE, "text/html; charset=utf-8")
+        if self.path.startswith("/api/admin/"):
+            return self._admin_get()
         if self.path == "/utopia":
             self._count_view()
             return self._send(200, UTOPIA_PAGE, "text/html; charset=utf-8")
@@ -2384,6 +2486,8 @@ class Handler(BaseHTTPRequestHandler):
                 anchor.metric_bump("public_chats")
             else:
                 return self._send(401, json.dumps({"error": "console token required"}))
+        if self.path.startswith("/api/admin/"):         # POWER; full reset also needs ADMIN_TOKEN
+            return self._admin_post()
         if self.path.startswith("/api/mechanic/"):      # POWER: gated by the token above
             code, ctype, body = _mechanic_web().handle_post(self.path, self._read_json())
             return self._send(code, body, ctype)
@@ -2720,6 +2824,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <a class=navlink href="/improve">Self-Improvement &rarr;</a>
     <a class=navlink href="/research">Research &rarr;</a>
     <a class=navlink href="/utopia">Utopia &rarr;</a>
+    <a class=navlink href="/admin">Admin &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -3722,6 +3827,8 @@ import models_page as _models_page                     # noqa: E402
 import improve_page as _improve_page                   # noqa: E402
 import research_page as _research_page                 # noqa: E402
 import utopia_page as _utopia_page                     # noqa: E402
+import admin_page as _admin_page                       # noqa: E402
+ADMIN_PAGE = _page(_admin_page.PAGE)
 UTOPIA_PAGE = _page(_utopia_page.PAGE)
 RESEARCH_PAGE = _page(_research_page.PAGE)
 MODELS_PAGE = _page(_models_page.PAGE)
