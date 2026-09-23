@@ -163,8 +163,15 @@ cond = S.conditions().get("mill", 100)
 check("built assets decay over time", ok_b and cond < 100, f"mill condition {cond}%")
 y_worn = S.effective_yield("food")
 check("a worn asset gives a weaker bonus", y_worn <= y_full, f"{y_full} → {y_worn}")
+_rc_worn = S.repair_cost("mill")
 ok_r, msg = S.repair("mill")
 check("repair restores full condition", ok_r and S.conditions()["mill"] == 100, msg)
+_mill_price = S.STRUCTURES["mill"]["cost"]
+check("a repair is priced by the damage it mends — a lightly worn asset is cheap to keep",
+      S.repair_cost("mill") and all(S.repair_cost("mill")[r] <= _rc_worn[r] for r in _rc_worn)
+      and all(_rc_worn[r] <= max(1, int(v * S.REPAIR_FRACTION)) for r, v in _mill_price.items()),
+      f"worn {_rc_worn} · fresh {S.repair_cost('mill')} · flat quarter was "
+      f"{ {r: int(v * S.REPAIR_FRACTION) for r, v in _mill_price.items()} }")
 cap_now = S.food_cap()
 S._world_add("food", max(0, cap_now + 2_000 - S.world()["food"]))
 loss, cap2 = S.spoil_tick()
@@ -733,6 +740,17 @@ check("effort is steered to the component that is actually short",
 check("no work is aimed at an age the Vision has already reached",
       _sc_short["age_pct"] == 100 and "Age-up shortfall" not in _why)
 
+# Saving for a leap: every resource the leap costs counts, as a share of its price.
+# The live world (Classical, saving for Feudal) sent its fleet to food — the largest
+# raw shortfall — while wood, the furthest behind, fell to 36%.
+_cl = S.advance_cost("Classical Age")
+_cw = {"food": int(_cl["food"] * 0.68), "wood": int(_cl["wood"] * 0.36), "gold": int(_cl["gold"] * 0.68),
+       "age": "Classical Age", "pop_cap": 9}
+_ccs = _V.scorecard({**_cw, **_short}, _short, 0, _V.get("feudal"))
+_cres, _cwhy = SC._choose_gather({**_cw, **_short}, _ccs)
+check("saving for a leap gathers the resource furthest behind as a share of its price — wood included",
+      _cres == "wood" and "wood 36%" in _cwhy and "shortfall" in _cwhy, _cwhy)
+
 _done = {**_short, "granary": 1}
 _sc_done = _V.scorecard({**_live_w, **_done}, _done, 0, _V.get("castle"))
 SC._S["recent_gathers"] = []
@@ -1253,6 +1271,13 @@ try:
     S._world_add("wood", 10)
     S.build_development(_nm)
     _u1 = S.utopia_state()
+    _c0 = S.conditions().get(_nm, 100)
+    S.decay_tick(S.DECAY_EVERY)                       # a base-tree tick: a civic work does not wear
+    _c1 = S.conditions().get(_nm, 100)
+    S.decay_tick(S.CIVIC_DECAY_EVERY)                 # its own, slower tick: one point
+    _c2 = S.conditions().get(_nm, 100)
+    check("a civic work is built to last: one point of wear per civic tick, never the base tree's pace",
+          _c1 == _c0 and _c2 == _c1 - 1, f"{_c0} → {_c1} → {_c2}")
     check("a built civic work raises its quality with diminishing returns, and the index discounts imbalance",
           ok_ and _u1["qualities"]["beauty"] > _u0["qualities"]["beauty"] and _u1["qualities"]["beauty"] < 100
           and _u1["index"] < _u1["qualities"]["beauty"] and _u1["works"] >= 1, str(_u1["qualities"]))

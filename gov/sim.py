@@ -253,7 +253,9 @@ def effective_yield(resource: str, w: dict | None = None) -> int:
 # ── decay, repair & spoilage — assets cost upkeep, food rots ─────────────────
 
 DECAY_EVERY = 5          # decay tick cadence (turns)
-REPAIR_FRACTION = 0.25   # repair costs this share of the build price
+CIVIC_DECAY_EVERY = 25   # civic works are built to last: one point per this many turns
+REPAIR_FRACTION = 0.25   # restoring a fully ruined asset costs this share of its build price;
+                         # a repair is priced by the damage it mends, not a flat fee
 FOOD_SPOIL_PCT = 2       # % of overflow that rots per turn
 
 
@@ -277,10 +279,17 @@ def decay_tick(turn: int) -> list[tuple[str, int]]:
         for d in dev_catalog():
             if not d["built"]:
                 continue
+            # A civic work is priced as a share of the age-up; at the base tree's wear
+            # (its rank every 5 turns) keeping five of them standing cost more than the
+            # settlement gathered, and the treasury for the leap drained into repairs.
+            civic = d.get("kind") == "utopia"
+            if civic and turn % CIVIC_DECAY_EVERY:
+                continue
+            wear = 1 if civic else max(1, math.ceil(d["rank"] * (1 - slow)))
             c.execute("INSERT OR IGNORE INTO conditions(name, condition) VALUES(?, 100)",
                       (d["name"],))
             c.execute("UPDATE conditions SET condition=MAX(0, condition-?) WHERE name=?",
-                      (max(1, math.ceil(d["rank"] * (1 - slow))), d["name"]))
+                      (wear, d["name"]))
             out.append((d["name"],
                         c.execute("SELECT condition FROM conditions WHERE name=?",
                                   (d["name"],)).fetchone()[0]))
@@ -291,10 +300,13 @@ def decay_tick(turn: int) -> list[tuple[str, int]]:
 
 
 def repair_cost(name: str) -> dict:
+    """What mending `name` back to full costs: its share of the build price for the
+    damage actually done — a lightly worn asset is cheap to keep."""
     d = next((x for x in dev_catalog() if x["name"] == name), None)
     if not d:
         return {}
-    return {r: max(1, int(v * REPAIR_FRACTION)) for r, v in d["cost"].items()}
+    damage = (100 - conditions().get(name, 100)) / 100
+    return {r: max(1, int(v * REPAIR_FRACTION * max(0.05, damage))) for r, v in d["cost"].items()}
 
 
 def repair(name: str) -> tuple[bool, str]:
@@ -472,7 +484,8 @@ def dev_catalog() -> list[dict]:
     out = [{"name": k, "cost": v["cost"], "effect": v["effect"], "rank": v["rank"],
             "built": w[k], "custom": False} for k, v in STRUCTURES.items()]
     out += [{"name": d["name"], "cost": d["cost"], "effect": _custom_effect_text(d),
-             "rank": d["rank"], "built": d["built"], "custom": True, "source": d["source"]}
+             "rank": d["rank"], "built": d["built"], "custom": True, "source": d["source"],
+             "kind": d["kind"]}
             for d in custom_devs()]
     return sorted(out, key=lambda x: (x["rank"], x["name"]))
 

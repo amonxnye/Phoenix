@@ -223,18 +223,21 @@ def _note_gather(res: str) -> None:
 def _choose_gather(w: dict, sc: dict | None = None) -> tuple[str, str]:
     """Pick a resource AND say why — the reasoning is first-class, not implicit."""
     cost = sim.advance_cost(w["age"])
-    need_food = max(0, cost["food"] - w["food"])
-    need_gold = max(0, cost["gold"] - w["gold"])
     if w["wood"] < 150:
         return "wood", f"wood at {w['wood']}, below the 150 floor needed to keep building"
     # Only fund an age-up the Vision actually wants. This branch read the NEXT age's
     # cost unconditionally, so a world that had already reached its target age kept
     # manufacturing a shortfall for an advance nobody asked for — the same defect as
     # banking surplus, one component over.
+    # Every resource the leap costs counts, and the shortfall is measured as a SHARE
+    # of its price: this branch predated wood in the leap and compared raw amounts,
+    # so it sent the fleet to food (the largest price) while wood, the scarcest, fell.
     sc = sc or V.scorecard(w, sim.structures(), _S["side_effects"], _vision())
-    if (need_food or need_gold) and sc["age_pct"] < 100:
-        r = "food" if need_food >= need_gold else "gold"
-        return r, f"Age-up shortfall drives it: food short {need_food}, gold short {need_gold}"
+    fill = {r: w.get(r, 0) / v for r, v in cost.items() if v}
+    if fill and min(fill.values()) < 1 and sc["age_pct"] < 100:
+        r = min(fill, key=fill.get)
+        return r, ("Age-up shortfall drives it: " + ", ".join(
+            f"{k} {min(100, round(100 * f))}%" for k, f in fill.items()) + f" of the leap — {r} is furthest behind")
     # Rebalance guard: "bank the best yield" is a feedback loop (the resource gathered
     # most gets the camps and the observations, so it stays "best" forever and wood/gold
     # starve). When the economy is lopsided, gather the poorest stock instead.
@@ -720,8 +723,15 @@ def _governor_report():
     spend_pct = round(100 * spent / G.TOKEN_CAP) if G.TOKEN_CAP else 100
 
     # VIII.5: the report BEGINS with the Vision delta — a report that omits it is void.
-    last = anchor.counter_get("last_report_progress")
-    delta = sc["progress"] - last
+    # the unrounded score: a treasury filling toward a leap moves it by fractions of a
+    # point per period, which rounding read as "no movement" and scored zero
+    exact = sc.get("progress_exact", sc["progress"])
+    try:
+        last = float(anchor.config_get("last_report_progress_x", "") or anchor.counter_get("last_report_progress"))
+    except (TypeError, ValueError):
+        last = float(exact)
+    delta = round(exact - last, 1)
+    anchor.config_set("last_report_progress_x", str(exact))
     anchor.config_set("last_report_progress", str(sc["progress"]))
     life_now = anchor.counter_get("lifetime_spend") + spent
     period_tokens = max(1, life_now - anchor.counter_get("last_report_burn"))
@@ -729,7 +739,7 @@ def _governor_report():
     spoiled = _S.pop("spoil_since_report", 0)
     failed = _S.pop("failed_since_report", 0)
     wasted = _S.pop("waste_since_report", 0)
-    facts = (f"VISION Δ {delta:+d}% this period · {period_tokens:,} compute spent · "
+    facts = (f"VISION Δ {delta:+.1f}% this period · {period_tokens:,} compute spent · "
              f"{spend_pct}% of cap in use · {spoiled:,} food spoiled · {failed} failed "
              f"turns · {wasted} turns spent on components already full · "
              f"{d['waste']} failed builds · stock food {w['food']:,}/"
@@ -1223,8 +1233,8 @@ def _one_turn():
         done, msg = sim.repair(wname)
         if done:
             did = anchor.reason_add(t, "director", f"repair {wname}",
-                                    f"condition {cnd}% degrades its effect; a quarter of the "
-                                    "build price restores full yield — maintenance beats rebuilding",
+                                    f"condition {cnd}% degrades its effect; mending the damage costs "
+                                    "its share of a quarter of the build price — maintenance beats rebuilding",
                                     authorized_by="policy")
             rev = anchor.record(t, "repair", msg)
             anchor.decision_close(did, rev, outcome=f"condition {cnd}% → 100%")
