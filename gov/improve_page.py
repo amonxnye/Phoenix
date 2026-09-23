@@ -51,7 +51,8 @@ dt{color:var(--dim)}dd{margin:0}
   <span style="margin-left:auto;color:var(--dim);font-size:11px" id=next></span></div>
   <div class=kpi id=kpi></div>
   <div class=note>Article XI: the mechanic proposes patches for Phoenix itself; each is applied to a scratch copy and the world's own suites are the oracle — no keys, no network. What survives is parked here. A human approves; only then is a branch pushed and a draft pull request opened. The live tree is never written by a cycle.</div></div>
-<div class=card><h2>At the gate <em>verified improvements waiting for a human — and UNVERIFIED ones the suites cannot judge</em></h2><div id=gate></div></div>
+<div class=card><h2>Ideas from outside <em>topic → source read → citation checked → development proposed → researched → the Board, then you</em></h2><div class=wrap><table id=ideas></table></div></div>
+<div class=card><h2>At the gate <em>verified code improvements waiting for a human — and UNVERIFIED ones the suites cannot judge</em></h2><div id=gate></div></div>
 <div class=card><h2>Cycles <em>newest first</em></h2><div class=wrap><table id=cycles></table></div></div>
 <div class=card><h2>Decided <em>proposed, approved, rejected, stale</em></h2><div id=decided></div></div>
 </main>
@@ -82,7 +83,10 @@ async function load(){
   $('next').textContent=s.last_cycle?'next scheduled in '+Math.round(s.next_due_in_s/60)+' min':'no cycle yet';
   const l=s.last_cycle||{};
   $('kpi').innerHTML=[['cycles',d.cycles.length],['parked at gate',s.parked],['last: candidates',l.candidates??'—'],['last: tried',l.tried??'—'],['last: verified',l.verified??'—'],['last: rejected',l.rejected??'—'],['empty streak',s.empty_streak],['proposed (PRs)',d.proposals.filter(p=>p.status==='proposed').length]].map(([a,b])=>`<div><b>${b}</b><span>${a}</span></div>`).join('');
-  $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'BROKEN'):'');
+  $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'BROKEN'):'')+' · mode '+esc(s.mode||'world');
+  const id=(s.ideas||{}).recent||[];
+  $('ideas').innerHTML='<tr><th>when</th><th>age</th><th>topic</th><th>source</th><th>cited</th><th>development</th><th>research</th><th>status</th></tr>'+
+    (id.length?id.map(i=>`<tr><td>${ts(i.ts)}</td><td>${esc(i.age)}</td><td style="white-space:normal">${esc(i.topic)}</td><td>${i.source?'<a href="'+esc(i.source)+'" target=_blank>'+esc(i.title||'source')+'</a>':'—'}</td><td class=${i.verified?'good':'bad'}>${i.verified?'verified':'no'}</td><td style="white-space:normal">${i.proposal?esc(i.proposal.name)+' — '+esc(i.proposal.kind)+' '+esc(i.proposal.value)+(i.proposal.resource?' '+esc(i.proposal.resource):'')+' (cost '+esc(JSON.stringify(i.proposal.cost))+')':'—'}</td><td>${i.research_id?'<a href="/research">R'+i.research_id+'</a>':'—'}</td><td class=${['queued','voting','adopted'].includes(i.status)?'good':'warn'} title="${esc(i.note)}">${esc(i.status)}</td></tr>`).join(''):'<tr><td colspan=8 class=empty>no idea considered yet — the next cycle reads about this age</td></tr>');
   const gate=d.proposals.filter(p=>p.status==='verified'||p.status==='unverified').map(p=>({...p,github:s.github,hours_waiting:((Date.now()/1000-p.ts)/3600).toFixed(1)}));
   $('gate').innerHTML=gate.length?gate.map(p=>prop(p,true)).join(''):'<div class=empty>nothing waiting — every verified improvement has been decided</div>';
   $('cycles').innerHTML='<tr><th>when</th><th>trigger</th><th>status</th><th>candidates</th><th>tried</th><th>verified</th><th>rejected</th><th>seconds</th><th>model</th><th>note</th></tr>'+

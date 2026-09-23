@@ -45,20 +45,41 @@ RESOURCES = ("food", "wood", "gold")
 BASE = {"food": 20, "wood": 15, "gold": 8}           # base yield per gather round
 CAMP_FOR = {"food": "mill", "wood": "lumber_camp", "gold": "mining_camp"}
 QUOTA = 3                                            # rounds before a villager parks
-ADVANCE_COST = {"food": 500, "gold": 300}            # Dark→Feudal base price
-ADVANCE_GROWTH = 100                                 # each later age costs 100x the one before
-AGE_ORDER = ("Dark Age", "Feudal Age", "Castle Age", "Imperial Age")
-NEXT_AGE = {"Dark Age": "Feudal Age", "Feudal Age": "Castle Age", "Castle Age": "Imperial Age"}
+from vision import AGES as _AGES, LEGACY_AGES               # the goal-setter owns the ladder
+ADVANCE_COST = {"food": 500, "wood": 300, "gold": 300}       # Stone→Tool base price
+# Difficulty: each leap costs DIFFICULTY-many times the one before — every requirement
+# of the previous hurdle, multiplied. easy 100 (the original ladder), medium 1,000,
+# hard 10,000 (the operator's choice for the study of how the agents behave under a
+# long climb). AGE_GROWTH overrides with an exact factor.
+DIFFICULTIES = {"easy": 100, "medium": 1000, "hard": 10000}
+DIFFICULTY = os.environ.get("WORLD_DIFFICULTY", "hard").strip().lower()
+ADVANCE_GROWTH = int(os.environ.get("AGE_GROWTH") or DIFFICULTIES.get(DIFFICULTY, 10000))
+AGE_ORDER = tuple(_AGES)
+NEXT_AGE = {a: b for a, b in zip(AGE_ORDER, AGE_ORDER[1:])}
+
+
+def canonical_age(age: str) -> str:
+    return LEGACY_AGES.get(age, age)
 
 
 def advance_cost(age: str | None = None) -> dict:
-    """Price of advancing OUT of `age` (current world age when None). Real growth is
-    exponential, not linear: every age costs 100-fold the one before, so each era is a
-    genuine accumulation project — Feudal 500 food, Castle 50,000, Imperial 5,000,000."""
+    """Price of advancing OUT of `age` (current world age when None). Exponential:
+    every age costs ADVANCE_GROWTH-fold the one before, in food, wood AND gold."""
     if age is None:
         age = world()["age"]
+    age = canonical_age(age)
     mult = ADVANCE_GROWTH ** AGE_ORDER.index(age) if age in AGE_ORDER else 1
     return {r: v * mult for r, v in ADVANCE_COST.items()}
+
+
+def age_ladder() -> list[dict]:
+    """Every leap and its price — the page shows it, the record can cite it."""
+    return [{"from": a, "to": NEXT_AGE.get(a), "cost": advance_cost(a)} for a in AGE_ORDER[:-1]]
+
+
+def difficulty() -> dict:
+    return {"name": DIFFICULTY if DIFFICULTY in DIFFICULTIES else "custom", "growth": ADVANCE_GROWTH,
+            "ages": len(AGE_ORDER), "levels": DIFFICULTIES}
 
 # What the settlement can develop. Buildings are reversible (you can demolish), so they
 # run free; only advancing the Age is gated. rank orders the tree (I = foundations).
@@ -134,6 +155,10 @@ def world() -> dict:
     try:
         row = c.execute(f"SELECT {', '.join(_COLUMNS)}, age FROM world WHERE id=1").fetchone()
         w = dict(zip(_COLUMNS + ("age",), row))
+        if w["age"] in LEGACY_AGES:                # a world from the four-age ladder keeps its place
+            w["age"] = LEGACY_AGES[w["age"]]
+            c.execute("UPDATE world SET age=? WHERE id=1", (w["age"],))
+            c.commit()
         pop_bonus = c.execute("SELECT COALESCE(SUM(value*built),0) FROM custom_devs "
                               "WHERE kind='pop_cap'").fetchone()[0]
         w["pop_cap"] = 3 + 2 * w["house"] + pop_bonus
@@ -641,16 +666,17 @@ def _world_advance() -> tuple[bool, str]:
     """Spend the age-up cost and bump the Age. Irreversible. Returns (ok, message)."""
     c = _conn()
     try:
-        food, gold, age = c.execute("SELECT food, gold, age FROM world WHERE id=1").fetchone()
+        food, wood, gold, age = c.execute("SELECT food, wood, gold, age FROM world WHERE id=1").fetchone()
+        age = canonical_age(age)
         nxt = NEXT_AGE.get(age)
         if nxt is None:
             return False, f"already at {age}"
         cost = advance_cost(age)
-        if food < cost["food"] or gold < cost["gold"]:
-            return False, (f"insufficient resources: have food {food}/gold {gold}, "
-                           f"need food {cost['food']}/gold {cost['gold']}")
-        c.execute("UPDATE world SET food=food-?, gold=gold-?, age=? WHERE id=1",
-                  (cost["food"], cost["gold"], nxt))
+        if food < cost["food"] or wood < cost.get("wood", 0) or gold < cost["gold"]:
+            return False, (f"insufficient resources: have food {food}/wood {wood}/gold {gold}, "
+                           f"need food {cost['food']}/wood {cost.get('wood', 0)}/gold {cost['gold']}")
+        c.execute("UPDATE world SET food=food-?, wood=wood-?, gold=gold-?, age=? WHERE id=1",
+                  (cost["food"], cost.get("wood", 0), cost["gold"], nxt))
         c.commit()
         return True, f"advanced to {nxt}"
     finally:

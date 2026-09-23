@@ -15,6 +15,7 @@ irreversible; the governor still gates every action that spends or can't be undo
 import hashlib as _hashlib
 import json
 import os
+import re
 import random as _rand
 import re as _re
 import sqlite3
@@ -1752,8 +1753,12 @@ def _resolve_source(source: str) -> str | None:
     Handles local files today (file paths under the repo/data dirs); a URL fetcher
     can be added behind the same interface without changing any caller."""
     src = (source or "").strip()
-    if not src or "://" in src:
-        return None                                # remote sources: not resolvable offline
+    if not src:
+        return None
+    if src.startswith(("http://", "https://")):
+        return _fetch_url(src)                     # a public page, read and stripped of markup
+    if "://" in src:
+        return None
     for base in (_DATA_DIR, os.path.dirname(os.path.abspath(__file__)),
                  os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
         p = os.path.realpath(os.path.join(base, src))
@@ -1764,6 +1769,32 @@ def _resolve_source(source: str) -> str | None:
             except OSError:
                 return None
     return None
+
+
+_URL_CACHE: dict = {}
+
+
+def _fetch_url(url: str) -> str | None:
+    """Read a public page under the project's retry policy; markup stripped so a quoted
+    sentence is found whether the source is HTML or a summary API. Cached per process."""
+    if url in _URL_CACHE:
+        return _URL_CACHE[url]
+    try:
+        import netretry
+        import urllib.request
+        from html import unescape
+        from urllib.parse import urlparse
+        req = urllib.request.Request(url, headers={"User-Agent": "PhoenixResearchBot/1.0 (https://github.com/amonxnye/Phoenix)"})
+        with netretry.urlopen(req, timeout=20, what="verify source", idempotent=True,
+                              key=urlparse(url).netloc) as r:
+            raw = r.read(2_000_000).decode("utf-8", "replace")
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
+        text = unescape(re.sub(r"<[^>]+>", " ", text))
+        _URL_CACHE[url] = text
+        return text
+    except Exception:                              # noqa: BLE001 — unreadable is unverified, by design
+        _URL_CACHE[url] = None
+        return None
 
 
 def _normalise(s: str) -> str:

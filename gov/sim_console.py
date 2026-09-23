@@ -288,13 +288,26 @@ _DEV_TEMPLATES = [
 ]
 
 
+def _ideas():
+    import ideas
+    return ideas
+
+
 def _propose_development():
     """The Governor proposes a new development — model + ingested knowledge when alive,
     a template otherwise. The Board pre-votes; only the human adopts."""
     existing = [d["name"] for d in sim.dev_catalog()]
-    # VI.2: only VERIFIED knowledge may steer an invention
-    prop = brain.propose_development(_situation(),
-                                     anchor.external(8, verified_only=True), existing)
+    # Article XI (world): a development already sourced from outside, cited, verified and
+    # researched by the hourly cycle goes to the Board first — before anything invented.
+    import ideas
+    prop = ideas.take()
+    if prop and prop.get("name") in existing:
+        ideas.mark(prop["idea_id"], "duplicate", "a development of that name already exists")
+        prop = None
+    if not prop:
+        # VI.2: only VERIFIED knowledge may steer an invention
+        prop = brain.propose_development(_situation(),
+                                         anchor.external(8, verified_only=True), existing)
     if not prop:
         prop = next((dict(t) for t in _DEV_TEMPLATES if t["name"] not in existing), None)
         if prop:
@@ -1216,10 +1229,11 @@ def _one_turn():
     w = sim.world()
     acost = sim.advance_cost(w["age"])
     aligned = V.AGES.index(w["age"]) < V.AGES.index(_vision().target_age)
-    affordable = w["food"] >= acost["food"] and w["gold"] >= acost["gold"]
+    affordable = (w["food"] >= acost["food"] and w["gold"] >= acost["gold"]
+                  and w["wood"] >= acost.get("wood", 0))
     if aligned and sim.NEXT_AGE.get(w["age"]) and affordable and not _pending_herald():
         nxt = sim.NEXT_AGE[w["age"]]
-        bv = board.vote(f"advance to {nxt} (spend food {acost['food']:,} + gold {acost['gold']:,})",
+        bv = board.vote(f"advance to {nxt} (spend food {acost['food']:,} + wood {acost.get('wood', 0):,} + gold {acost['gold']:,})",
                         _board_ctx(True))
         if not bv["approved"]:
             if f"advblock:{w['age']}" not in _S["notified"]:   # narrate the refusal once per age
@@ -1349,6 +1363,8 @@ def _one_turn():
         anchor.msg_send("chief", "Chief Governor",
                         f"Under Article IV.7 (you were silent {waited_m} min) we adopted the "
                         f"board-approved development '{prop['name']}'.")
+        if prop.get("idea_id"):
+            _ideas().mark(prop["idea_id"], "adopted" if ok2 else "failed", f"tacit consent after {waited_m} min")
         _S["dev_proposal"] = None
 
     # IV.7 for the next Vision after a goal is met: silence delegates the adoption
@@ -1806,6 +1822,8 @@ def _rules_data() -> dict:
         # exponential era pricing: each advance costs 100x the previous one
         "advance_cost": sim.ADVANCE_COST,
         "advance_costs": {age: sim.advance_cost(age) for age in sim.AGE_ORDER[:-1]},
+        "age_ladder": sim.age_ladder(),
+        "difficulty": sim.difficulty(),
         "advance_growth": sim.ADVANCE_GROWTH,
         "tiers": [{"name": x["name"], "budget": x["budget"], "promote_at": x["promote_at"],
                    "can": list(x["can"])} for x in economy.TIERS],
@@ -2497,12 +2515,16 @@ class Handler(BaseHTTPRequestHandler):
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev,
                                               outcome="human adopted" if ok else f"adopt failed: {msg}")
+                    if prop.get("idea_id"):
+                        _ideas().mark(prop["idea_id"], "adopted" if ok else "failed", "human adopted" if ok else msg)
                     _S["dev_proposal"] = None
                 elif action == "reject":
                     ok, msg = True, f"rejected {prop['name']}"
                     dev_ev = anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
                     if prop.get("did"):
                         anchor.decision_close(prop["did"], dev_ev, outcome="human rejected")
+                    if prop.get("idea_id"):
+                        _ideas().mark(prop["idea_id"], "rejected", "human rejected")
                     _S["dev_proposal"] = None
                 else:
                     return self._send(400, json.dumps({"error": "action must be adopt|reject"}))

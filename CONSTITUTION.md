@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.4
+Version: 1.5
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -318,6 +318,16 @@ Everything below is those two laws, applied.
 
 ## Article XI — The world improves itself, and every improvement stops at the gate
 
+0. **The world improves itself first with knowledge, then with code.** The improvement cycle
+   has two modes, chosen by the operator (`IMPROVE_MODE`). In its intended mode, *world*,
+   each cycle takes the settlement's age and its scarcest need, reads about topics a
+   settlement at that age would want to know from a public source, ingests each fact
+   with its citation and CHECKS it against the source (Article VI — an uncited fact is
+   kept and steers nothing), proposes a development from the verified fact in the
+   vocabulary the settlement can build, researches its advantage and risk into the
+   record of XI.6, and queues it for the Board's vote and the human's adoption under
+   Article IV.7. Nothing in that path adopts anything by itself (`ideas.py`,
+   `sim_console._propose_development`). The *code* mode is the one described below.
 1. **Improvement is a measured cycle, not an aspiration.** On a schedule the world runs
    its own mechanic on its own code, takes the patches that applied and parsed, applies
    each to a scratch copy of the repository, and runs every verification suite it ships

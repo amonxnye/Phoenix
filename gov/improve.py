@@ -66,6 +66,10 @@ AUTO_PR = os.environ.get("IMPROVE_AUTO_PR", "1").strip() != "0"          # verif
 # it. The operator chose that; the record keeps the undo: every commit names its
 # proposal and `revert` puts the file back with one click.
 PUSH_BRANCH = os.environ.get("IMPROVE_PUSH_BRANCH", "").strip()
+# What "improve" means. `world` (the operator's intent): knowledge from outside — cited,
+# verified, researched — becomes developments the Board votes on and the human adopts.
+# `code`: the mechanic's patches to Phoenix itself, verified by the suites. `both`.
+MODE = os.environ.get("IMPROVE_MODE", "world").strip().lower()
 MAX_TRIES = int(os.environ.get("IMPROVE_MAX_TRIES", "10"))  # candidates tried per cycle
 SUITE_TIMEOUT_S = int(os.environ.get("IMPROVE_SUITE_TIMEOUT_S", "600"))
 EMPTY_CYCLES_ESCALATE = 3
@@ -379,11 +383,76 @@ def _empty_streak() -> int:
 # ── one cycle ────────────────────────────────────────────────────────────────
 
 def cycle(trigger: str = "scheduled") -> dict:
-    """Measure, propose, try, park, record. Never raises; never writes the live tree."""
+    """One improvement cycle in the configured MODE. Never raises."""
     with _LOCK:
         if _STATE["running"]:
             return {"status": "busy", "note": _STATE["current"]}
         _STATE["running"] = True
+    if MODE in ("world", "both"):
+        r = _world_cycle(trigger)
+        if MODE == "world":
+            _STATE.update(running=False, current="")
+            return r
+    return _code_cycle(trigger)
+
+
+def _world_cycle(trigger: str) -> dict:
+    """Ideas from outside: topics for this age → source read → citation checked →
+    development proposed → researched → queued for the Board and the human."""
+    import ideas
+    t0 = time.time()
+    c = _conn()
+    try:
+        ch = anchor.charter() if hasattr(anchor, "charter") else {}
+        stamp = ch.get("stamp", "") if isinstance(ch, dict) else ""
+        cur = c.execute("INSERT INTO improve_cycles(ts, trigger, status, candidates, tried, verified, "
+                        "rejected, note, seconds, baseline, signals, model, charter) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (t0, trigger, "running", 0, 0, 0, 0, "mode: world", 0, "{}", "{}",
+                         brain.brain_name(), stamp))
+        cid = cur.lastrowid
+        c.commit()
+    finally:
+        c.close()
+    counts = {"candidates": 0, "tried": 0, "verified": 0, "rejected": 0, "queued": 0}
+    note, status = "", "complete"
+    try:
+        import sim
+        w = sim.world()
+        _STATE["current"] = f"choosing topics for the {w.get('age')}"
+        # a topic read once is not read again; one that could NOT be read is tried again later
+        already = {r["topic"] for r in ideas.rows(limit=1000) if r["status"] != "unread"}
+        tops = ideas.topics(w, already, MAX_TRIES)
+        counts["candidates"] = len(tops)
+        situation = (f"The settlement is in the {w.get('age')} with food {w.get('food')}, wood {w.get('wood')}, "
+                     f"gold {w.get('gold')}; the next leap costs {sim.advance_cost(w.get('age'))}.")
+        for topic in tops:
+            counts["tried"] += 1
+            _STATE["current"] = f"reading about {topic!r} and checking the citation"
+            r = ideas.consider(cid, topic, w, situation)
+            if r["status"] == "queued":
+                counts["verified"] += 1; counts["queued"] += 1
+            elif r["status"] in ("unverified", "unread"):
+                counts["rejected"] += 1
+        note = (f"mode: world — {counts['tried']} topics read, {counts['queued']} sourced and researched "
+                f"developments queued for the Board, {counts['rejected']} unread or uncited"
+                if tops else "mode: world — every topic for this age has been read; nothing new to consider")
+    except Exception as e:                        # noqa: BLE001 — closed, not abandoned
+        status, note = "halted", f"{type(e).__name__}: {str(e)[:200]}"
+    c = _conn()
+    try:
+        c.execute("UPDATE improve_cycles SET status=?, candidates=?, tried=?, verified=?, rejected=?, "
+                  "note=?, seconds=? WHERE id=?",
+                  (status, counts["candidates"], counts["tried"], counts["verified"], counts["rejected"],
+                   note, round(time.time() - t0, 1), cid))
+        c.commit()
+    finally:
+        c.close()
+    return {"cycle_id": cid, "status": status, "note": note, "seconds": round(time.time() - t0, 1), **counts}
+
+
+def _code_cycle(trigger: str = "scheduled") -> dict:
+    """Measure, propose, try, park, record. Never raises; never writes the live tree."""
     t0 = time.time()
     c = _conn()
     try:
@@ -777,6 +846,11 @@ def start() -> bool:
     return True
 
 
+def _ideas_summary() -> dict:
+    import ideas
+    return ideas.summary()
+
+
 def status() -> dict:
     last = cycles(limit=1)
     parked = proposals(status="verified") + proposals(status="unverified")
@@ -787,6 +861,7 @@ def status() -> dict:
             "next_due_in_s": max(0, int(INTERVAL_S - (time.time() - last[0]["ts"]))) if last else 0,
             "parked": len(parked), "empty_streak": _empty_streak(),
             "push_branch": PUSH_BRANCH, "auto_pr": AUTO_PR, "research": research.verify_chain(),
+            "mode": MODE, "ideas": _ideas_summary(),
             "isolation": workspace.sandbox_mode(), "github": bool(os.environ.get("GITHUB_TOKEN", "").strip()),
             "waiting_cost": [{"id": p["id"], "title": p["title"],
                               "hours_waiting": round((time.time() - p["ts"]) / 3600, 1)} for p in parked]}

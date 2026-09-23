@@ -15,7 +15,11 @@ winning?" The director drives toward 100%; the governor keeps the side-effects i
 
 from dataclasses import dataclass
 
-AGES = ["Dark Age", "Feudal Age", "Castle Age", "Imperial Age"]
+# Ten leaps. The legacy four (Dark/Feudal/Castle/Imperial) keep their names where
+# they fit so a running world keeps its place; "Dark Age" reads as "Stone Age".
+AGES = ["Stone Age", "Tool Age", "Bronze Age", "Iron Age", "Classical Age",
+        "Feudal Age", "Castle Age", "Imperial Age", "Industrial Age", "Tech Age"]
+LEGACY_AGES = {"Dark Age": "Stone Age"}
 
 
 @dataclass(frozen=True)
@@ -33,8 +37,8 @@ class Vision:
 
 # The default organizational goal. Swap this object to re-point the whole fleet.
 GOAL = Vision(
-    name="Prosper into the Feudal Age",
-    target_age="Feudal Age",
+    name="Prosper into the Tool Age",
+    target_age="Tool Age",
     target_buildings=5,
     target_resources=1200,
     max_side_effects=5,
@@ -44,13 +48,20 @@ GOAL = Vision(
 # re-briefs every agent downstream — to push harder (a bolder goal) or ease off
 # (consolidate). Only the human adopts; the Board only proposes (Constitution I).
 VISIONS = {
-    "consolidate": Vision("Consolidate — stabilise and bank", "Dark Age", 5, 800, 3),
-    "feudal":      GOAL,
+    "consolidate": Vision("Consolidate — stabilise and bank", "Stone Age", 5, 800, 3),
+    "tool":        GOAL,
+    "bronze":      Vision("Cast bronze — reach the Bronze Age", "Bronze Age", 5, 1000, 4),
+    "iron":        Vision("Forge iron — reach the Iron Age", "Iron Age", 5, 1100, 5),
+    "classical":   Vision("Build the classical city", "Classical Age", 5, 1200, 5),
+    "feudal":      Vision("Prosper into the Feudal Age", "Feudal Age", 5, 1200, 5),
     "castle":      Vision("Ascend to the Castle Age", "Castle Age", 6, 2000, 6),
     "imperial":    Vision("Empire — reach the Imperial Age", "Imperial Age", 7, 3000, 8),
+    "industrial":  Vision("Industrialise — reach the Industrial Age", "Industrial Age", 8, 4000, 9),
+    "tech":        Vision("The Tech Age", "Tech Age", 9, 5000, 10),
 }
-DEFAULT_VISION = "feudal"
-MORE_AMBITIOUS = {"consolidate": "feudal", "feudal": "castle", "castle": "imperial"}
+DEFAULT_VISION = "tool"
+_LADDER = ["consolidate", "tool", "bronze", "iron", "classical", "feudal", "castle", "imperial", "industrial", "tech"]
+MORE_AMBITIOUS = {a: b for a, b in zip(_LADDER, _LADDER[1:])}
 
 
 def get(key: str) -> Vision:
@@ -63,7 +74,8 @@ def _clamp01(x: float) -> float:
 
 def scorecard(world: dict, structures: dict, side_effects: int, goal: Vision = GOAL) -> dict:
     """The single readout: how close are we to 100% of the vision, and at what cost?"""
-    age_idx = AGES.index(world["age"]) if world["age"] in AGES else 0
+    age = LEGACY_AGES.get(world["age"], world["age"])
+    age_idx = AGES.index(age) if age in AGES else 0
     target_idx = AGES.index(goal.target_age)
     age_pct = _clamp01(age_idx / target_idx) if target_idx else 1.0
 

@@ -102,6 +102,7 @@ check("all idle villagers surface together", len(G.idle(G.units(graph, cp))) == 
 print("\n4. Gate — advancing the Age is irreversible, so it stops at a human")
 # Stock the treasury so the advance is affordable, then send the herald.
 S._world_add("food", S.ADVANCE_COST["food"])
+S._world_add("wood", S.ADVANCE_COST["wood"])
 S._world_add("gold", S.ADVANCE_COST["gold"])
 before = S.world()
 S.spawn(graph, "herald-01", "herald")
@@ -113,7 +114,8 @@ check("gate marks the action irreversible", herald.pending and herald.pending["r
 S.resume(graph, "herald-01", "approve")
 after = S.world()
 check("approve advances the Age and spends resources",
-      after["age"] == "Feudal Age" and after["food"] == before["food"] - S.ADVANCE_COST["food"],
+      after["age"] == S.AGE_ORDER[1] and after["food"] == before["food"] - S.ADVANCE_COST["food"]
+      and after["wood"] == before["wood"] - S.ADVANCE_COST["wood"],
       S.render_world())
 
 done = {u.unit_id: u for u in G.units(graph, cp)}["herald-01"]
@@ -125,7 +127,7 @@ probe = subprocess.run(
      f"import sys; sys.path.insert(0,{HERE!r});"
      "import sim as S; print(S.world()['age'])"],
     capture_output=True, text=True)
-check("Age-up persists across restart", "Feudal Age" in probe.stdout,
+check("Age-up persists across restart", S.AGE_ORDER[1] in probe.stdout,
       probe.stdout.strip() or probe.stderr.strip()[:80])
 
 # ── 5. skill memory: retrospectives distill strategy, decisions read it ──────
@@ -977,8 +979,10 @@ def _researcher(prompt):
             '"risk": "a caller that expected 1 would see 2", "blast_radius": "callers of hello()", '
             '"detection": "the settlement suite", "undo": "revert the commit", "alternatives": "leave it", "confidence": "high — trivial diff"}')
 _saved_seams = (IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file)
+_mode0 = IMP.MODE
 _envt = os.environ.pop("GITHUB_TOKEN", None)          # the suite must never reach GitHub
 IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK = _green, (lambda: [_cand]), False, "", _researcher
+IMP.MODE = "code"                                     # this section exercises the code mode; world mode is checked below
 try:
     _r = IMP.cycle("test")
     check("a cycle takes the mechanic's patches, tries each on a COPY against the suites, and parks what survived",
@@ -1122,9 +1126,85 @@ try:
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
     check("the constitution names the article and its enforcing code, and bumped its version",
           "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
-          and re.search(r"^Version: 1\.4", A.charter_text(), re.M) is not None)
+          and re.search(r"^Version: 1\.5", A.charter_text(), re.M) is not None)
+    # ── the ten ages, 10,000× per leap, food + wood + gold; a legacy world keeps its place ──
+    check("ten ages, each leap 10,000× the one before in food, wood and gold, the ladder readable",
+          len(S.AGE_ORDER) == 10 and S.AGE_ORDER[0] == "Stone Age" and S.AGE_ORDER[-1] == "Tech Age"
+          and S.advance_cost("Tool Age") == {r: v * S.ADVANCE_GROWTH for r, v in S.ADVANCE_COST.items()}
+          and S.advance_cost("Industrial Age")["food"] == S.ADVANCE_COST["food"] * S.ADVANCE_GROWTH ** 8
+          and len(S.age_ladder()) == 9 and S.age_ladder()[-1]["to"] == "Tech Age" and "wood" in S.advance_cost(),
+          f"growth {S.ADVANCE_GROWTH}, Tech Age costs {S.advance_cost('Industrial Age')['food']:,} food")
+    check("difficulty is a setting — easy 100×, medium 1,000×, hard 10,000× per leap — and the world names the one in force",
+          S.DIFFICULTIES == {"easy": 100, "medium": 1000, "hard": 10000} and S.difficulty()["growth"] == S.ADVANCE_GROWTH
+          and S.difficulty()["ages"] == 10, str(S.difficulty()))
+    check("a world from the four-age ladder reads as Stone Age and the vision ladder climbs ten rungs",
+          S.canonical_age("Dark Age") == "Stone Age" and _V.AGES == list(S.AGE_ORDER)
+          and _V.MORE_AMBITIOUS["imperial"] == "industrial" and _V.MORE_AMBITIOUS["industrial"] == "tech"
+          and _V.VISIONS[_V.DEFAULT_VISION].target_age == "Tool Age")
+    # ── ideas from outside: read, cite, check, propose, research, queue — never adopt ──
+    import ideas as ID
+    _saved_ideas = (ID.FETCH, ID.PROPOSE, RS.ASK, N._OPEN)
+    _page_text = "<html><body><p>Crop rotation is the practice of growing a series of different types of crops in the same area across a sequence of growing seasons.</p><script>x()</script></body></html>"
+    class _Resp:
+        def __init__(self, b): self._b = b
+        def read(self, n=-1): return self._b
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    N._OPEN = lambda req, timeout=None, context=None: _Resp(_page_text.encode())
+    ID.FETCH = lambda topic: {"title": "Crop rotation", "url": "https://en.wikipedia.org/wiki/Crop_rotation",
+                              "extract": "Crop rotation is the practice of growing a series of different types of crops in the same area across a sequence of growing seasons. It reduces reliance on one set of nutrients."} if "rotation" in topic or "productivity" in topic else None
+    ID.PROPOSE = lambda situation, facts, existing: {"name": "field_rotation_" + _tag.strip("[]"), "cost": {"food": 60, "wood": 40, "gold": 0},
+                                                     "kind": "yield_pct", "value": 15, "resource": "food", "rank": 2,
+                                                     "why": "rotating fields keeps soil fertile"} if facts else None
+    RS.ASK = _researcher
+    try:
+        A._URL_CACHE.clear()
+        check("a public URL now resolves for the citation check, markup stripped, and a quoted sentence is found in it",
+              A.verify_claim("https://en.wikipedia.org/wiki/Crop_rotation", "Crop rotation is the practice of growing a series")[0]
+              and not A.verify_claim("https://en.wikipedia.org/wiki/Crop_rotation", "crop rotation doubles the yield")[0]
+              and "x()" not in (A._resolve_source("https://en.wikipedia.org/wiki/Crop_rotation") or "x()"))
+        _w = S.world()
+        _ic = ID.consider(0, "agricultural productivity", _w, "a test settlement")
+        _row = ID.rows(limit=1)[0]
+        check("an idea is read from its source, ingested with a checked citation, proposed as a buildable development, researched, and QUEUED — not adopted",
+              _ic["status"] == "queued" and _row["verified"] == 1 and _row["source"].startswith("https://")
+              and _row["proposal"]["kind"] == "yield_pct" and _row["research_id"] and RS.for_proposal(_row["id"]) is not None
+              and RS.entries(limit=100000)[-1]["evidence"]["kind"] == "world"
+              and _row["proposal"]["name"] not in [d["name"] for d in S.dev_catalog()], str(_ic))
+        _tk = ID.take()
+        check("the console takes the oldest queued idea for the Board with its source and research cited; the idea reads 'voting'",
+              _tk and _tk["idea_id"] == _row["id"] and "research R" in _tk["why"] and "wikipedia" in _tk["why"]
+              and ID.rows(limit=1)[0]["status"] == "voting")
+        ID.mark(_tk["idea_id"], "adopted", "human adopted")
+        _page_text = "<html><body><p>Something else entirely.</p></body></html>"
+        A._URL_CACHE.clear()
+        _ic2 = ID.consider(0, "crop rotation", _w, "a test settlement")
+        check("a fact whose citation does not check out is kept as UNVERIFIED and never becomes a proposal (VI.2)",
+              _ic2["status"] == "unverified" and ID.rows(limit=1)[0]["proposal"] is None
+              and any(k["topic"] == "crop rotation" and not k["verified"] for k in A.external(5)))
+        _ic3 = ID.consider(0, "the wheel", _w, "a test settlement")
+        check("a topic with no readable source is recorded as unread, not invented",
+              _ic3["status"] == "unread" and ID.rows(limit=1)[0]["status"] == "unread")
+        _tops = ID.topics({"age": "Iron Age", "food": 1, "wood": 10**9, "gold": 10**9}, set(), 3)
+        check("topics follow the age and the scarcest resource first",
+              _tops[0] == "agricultural productivity" and _tops[1] in ID.TOPICS["Iron Age"] and len(_tops) == 3, str(_tops))
+        _m0 = IMP.MODE; IMP.MODE = "world"
+        ID.FETCH = lambda topic: None
+        _topics0 = ID.topics
+        ID.topics = lambda w, already, limit: ["a fresh topic " + _tag]     # the record persists across runs
+        try:
+            _wc = IMP.cycle("test")
+        finally:
+            ID.topics = _topics0
+        check("in world mode a cycle reads topics for this age and records what it found — no code is touched",
+              _wc["status"] == "complete" and _wc["candidates"] >= 1 and "mode: world" in _wc["note"]
+              and IMP.cycles(limit=1)[0]["note"].startswith("mode: world"), str(_wc))
+        IMP.MODE = _m0
+    finally:
+        ID.FETCH, ID.PROPOSE, RS.ASK, N._OPEN = _saved_ideas
 finally:
     IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file = _saved_seams
+    IMP.MODE = _mode0
     os.environ.pop("GITHUB_TOKEN", None)
     if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
     os.remove(_fixture_abs)
