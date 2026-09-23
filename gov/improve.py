@@ -862,6 +862,7 @@ def status() -> dict:
             "parked": len(parked), "empty_streak": _empty_streak(),
             "push_branch": PUSH_BRANCH, "auto_pr": AUTO_PR, "research": research.verify_chain(),
             "mode": MODE, "ideas": _ideas_summary(),
+            "token_required": bool(os.environ.get("CONSOLE_TOKEN", "").strip()),
             "isolation": workspace.sandbox_mode(), "github": bool(os.environ.get("GITHUB_TOKEN", "").strip()),
             "waiting_cost": [{"id": p["id"], "title": p["title"],
                               "hours_waiting": round((time.time() - p["ts"]) / 3600, 1)} for p in parked]}

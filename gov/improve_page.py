@@ -43,7 +43,7 @@ dt{color:var(--dim)}dd{margin:0}
 </style>
 <header><h1>SELF-IMPROVEMENT</h1><a href="/">&larr; Console</a><a href="/research">Research</a><a href="/models">Models</a><a href="/mechanic">Mechanic</a><a href="/rules">Rules</a>
 <span class=meta id=meta>loading…</span>
-<span class=meta style="margin-left:0"><input id=tok type=password placeholder="console token" style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 8px;font:inherit;width:160px" title="CONSOLE_TOKEN — needed to approve, reject or run a cycle; kept only in this browser"> <button class=ghost id=savetok>save</button></span></header>
+<span class=meta id=tokbox style="margin-left:0"><input id=tok type=password placeholder="console token" style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 8px;font:inherit;width:160px" title="CONSOLE_TOKEN — needed to approve, reject or run a cycle; kept only in this browser"> <button class=ghost id=savetok>save</button></span></header>
 <main>
 <div class=card><div class=filters>
   <button class=go id=run>run a cycle now</button>
@@ -83,6 +83,7 @@ async function load(){
   $('next').textContent=s.last_cycle?'next scheduled in '+Math.round(s.next_due_in_s/60)+' min':'no cycle yet';
   const l=s.last_cycle||{};
   $('kpi').innerHTML=[['cycles',d.cycles.length],['parked at gate',s.parked],['last: candidates',l.candidates??'—'],['last: tried',l.tried??'—'],['last: verified',l.verified??'—'],['last: rejected',l.rejected??'—'],['empty streak',s.empty_streak],['proposed (PRs)',d.proposals.filter(p=>p.status==='proposed').length]].map(([a,b])=>`<div><b>${b}</b><span>${a}</span></div>`).join('');
+  $('tokbox').hidden=!s.token_required;       // no CONSOLE_TOKEN set: every action is open
   $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'BROKEN'):'')+' · mode '+esc(s.mode||'world');
   const id=(s.ideas||{}).recent||[];
   $('ideas').innerHTML='<tr><th>when</th><th>age</th><th>topic</th><th>source</th><th>cited</th><th>development</th><th>research</th><th>status</th></tr>'+

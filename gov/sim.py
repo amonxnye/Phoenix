@@ -47,15 +47,35 @@ CAMP_FOR = {"food": "mill", "wood": "lumber_camp", "gold": "mining_camp"}
 QUOTA = 3                                            # rounds before a villager parks
 from vision import AGES as _AGES, LEGACY_AGES               # the goal-setter owns the ladder
 ADVANCE_COST = {"food": 500, "wood": 300, "gold": 300}       # Stone→Tool base price
-# Difficulty: each leap costs DIFFICULTY-many times the one before — every requirement
-# of the previous hurdle, multiplied. easy 100 (the original ladder), medium 1,000,
-# hard 10,000 (the operator's choice for the study of how the agents behave under a
-# long climb). AGE_GROWTH overrides with an exact factor.
-DIFFICULTIES = {"easy": 100, "medium": 1000, "hard": 10000}
-DIFFICULTY = os.environ.get("WORLD_DIFFICULTY", "hard").strip().lower()
-ADVANCE_GROWTH = int(os.environ.get("AGE_GROWTH") or DIFFICULTIES.get(DIFFICULTY, 10000))
+# Difficulty is the TOTAL price of maturity: everything spent climbing from the Stone
+# Age to the Tech Age, in food + wood + gold. The per-leap growth is solved from it, so
+# every leap costs the previous leap's whole requirement times the same factor and the
+# climb stays achievable. easy 100 million, medium 1 billion (the operator's target, the
+# default), hard 10 billion. WORLD_MATURITY sets any total; AGE_GROWTH an exact factor.
+DIFFICULTIES = {"easy": 100_000_000, "medium": 1_000_000_000, "hard": 10_000_000_000}
+DIFFICULTY = os.environ.get("WORLD_DIFFICULTY", "medium").strip().lower()
+MATURITY = int(float(os.environ.get("WORLD_MATURITY") or DIFFICULTIES.get(DIFFICULTY, 1_000_000_000)))
 AGE_ORDER = tuple(_AGES)
 NEXT_AGE = {a: b for a, b in zip(AGE_ORDER, AGE_ORDER[1:])}
+
+
+def _solve_growth(total: float, base: float, leaps: int) -> float:
+    """The factor r with base·(1 + r + … + r^(leaps-1)) = total, by bisection."""
+    lo, hi = 1.000001, 1000.0
+    for _ in range(200):
+        r = (lo + hi) / 2
+        s = base * (r ** leaps - 1) / (r - 1)
+        lo, hi = (r, hi) if s < total else (lo, r)
+    return round((lo + hi) / 2, 4)
+
+
+ADVANCE_GROWTH = (float(os.environ["AGE_GROWTH"]) if os.environ.get("AGE_GROWTH")
+                  else _solve_growth(MATURITY, sum(ADVANCE_COST.values()), len(AGE_ORDER) - 1))
+
+
+def _round2(x: float) -> int:
+    """Two significant figures — prices a person can read and remember."""
+    return int(float(f"{x:.2g}")) if x >= 100 else int(round(x))
 
 
 def canonical_age(age: str) -> str:
@@ -69,7 +89,7 @@ def advance_cost(age: str | None = None) -> dict:
         age = world()["age"]
     age = canonical_age(age)
     mult = ADVANCE_GROWTH ** AGE_ORDER.index(age) if age in AGE_ORDER else 1
-    return {r: v * mult for r, v in ADVANCE_COST.items()}
+    return {r: _round2(v * mult) for r, v in ADVANCE_COST.items()}
 
 
 def age_ladder() -> list[dict]:
@@ -78,8 +98,10 @@ def age_ladder() -> list[dict]:
 
 
 def difficulty() -> dict:
+    total = sum(sum(step["cost"].values()) for step in age_ladder())
     return {"name": DIFFICULTY if DIFFICULTY in DIFFICULTIES else "custom", "growth": ADVANCE_GROWTH,
-            "ages": len(AGE_ORDER), "levels": DIFFICULTIES}
+            "maturity_target": MATURITY, "maturity_total": total, "ages": len(AGE_ORDER),
+            "levels": DIFFICULTIES}
 
 # What the settlement can develop. Buildings are reversible (you can demolish), so they
 # run free; only advancing the Age is gated. rank orders the tree (I = foundations).

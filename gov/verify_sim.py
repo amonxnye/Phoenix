@@ -1128,15 +1128,21 @@ try:
           "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
           and re.search(r"^Version: 1\.5", A.charter_text(), re.M) is not None)
     # ── the ten ages, 10,000× per leap, food + wood + gold; a legacy world keeps its place ──
-    check("ten ages, each leap 10,000× the one before in food, wood and gold, the ladder readable",
+    check("ten ages, each leap the previous one times one growth factor, in food, wood and gold, the ladder readable",
           len(S.AGE_ORDER) == 10 and S.AGE_ORDER[0] == "Stone Age" and S.AGE_ORDER[-1] == "Tech Age"
-          and S.advance_cost("Tool Age") == {r: v * S.ADVANCE_GROWTH for r, v in S.ADVANCE_COST.items()}
-          and S.advance_cost("Industrial Age")["food"] == S.ADVANCE_COST["food"] * S.ADVANCE_GROWTH ** 8
+          and S.advance_cost("Stone Age") == S.ADVANCE_COST
+          and S.advance_cost("Tool Age")["food"] == S._round2(S.ADVANCE_COST["food"] * S.ADVANCE_GROWTH)
+          and S.advance_cost("Industrial Age")["food"] == S._round2(S.ADVANCE_COST["food"] * S.ADVANCE_GROWTH ** 8)
           and len(S.age_ladder()) == 9 and S.age_ladder()[-1]["to"] == "Tech Age" and "wood" in S.advance_cost(),
           f"growth {S.ADVANCE_GROWTH}, Tech Age costs {S.advance_cost('Industrial Age')['food']:,} food")
-    check("difficulty is a setting — easy 100×, medium 1,000×, hard 10,000× per leap — and the world names the one in force",
-          S.DIFFICULTIES == {"easy": 100, "medium": 1000, "hard": 10000} and S.difficulty()["growth"] == S.ADVANCE_GROWTH
-          and S.difficulty()["ages"] == 10, str(S.difficulty()))
+    check("difficulty is a setting — the total price of maturity: easy 100M, medium 1B, hard 10B — and the world names it",
+          S.DIFFICULTIES == {"easy": 100_000_000, "medium": 1_000_000_000, "hard": 10_000_000_000}
+          and S.difficulty()["growth"] == S.ADVANCE_GROWTH and S.difficulty()["ages"] == 10, str(S.difficulty()))
+    _d = S.difficulty()
+    check("the whole climb from Stone to Tech costs what the difficulty says (default: about one billion), within 3%",
+          abs(_d["maturity_total"] - _d["maturity_target"]) <= 0.03 * _d["maturity_target"]
+          and all(S._solve_growth(t, 1100, 9) > 1 for t in S.DIFFICULTIES.values()),
+          f"{_d['name']}: total {_d['maturity_total']:,} vs target {_d['maturity_target']:,}, growth {_d['growth']}× per leap")
     check("a world from the four-age ladder reads as Stone Age and the vision ladder climbs ten rungs",
           S.canonical_age("Dark Age") == "Stone Age" and _V.AGES == list(S.AGE_ORDER)
           and _V.MORE_AMBITIOUS["imperial"] == "industrial" and _V.MORE_AMBITIOUS["industrial"] == "tech"
