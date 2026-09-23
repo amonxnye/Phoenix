@@ -96,7 +96,7 @@ def vote(proposal: str, ctx: dict) -> dict:
     elif ctx.get("understaffed"):
         growth, g_why = True, "progress flat but the fleet is under strength — staffing is the blocker"
     else:
-        growth, g_why = False, f"vision flat ({delta:+d}%) with a full fleet — more of the same won't move it"
+        growth, g_why = False, f"vision flat ({delta:+.1f}%) with a full fleet — more of the same won't move it"
 
     # Ledger: cash. Can we afford this one action, right now? The rationale always
     # carries the live numbers — a reason that never varies is a label, not a reason.

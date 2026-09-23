@@ -751,6 +751,32 @@ _cres, _cwhy = SC._choose_gather({**_cw, **_short}, _ccs)
 check("saving for a leap gathers the resource furthest behind as a share of its price — wood included",
       _cres == "wood" and "wood 36%" in _cwhy and "shortfall" in _cwhy, _cwhy)
 
+# the leap comes first: while saving, developments are paid from surplus only, and no
+# new one is proposed while an adopted one waits
+_vk0 = SC._S["vision_key"]
+try:
+    SC._S["vision_key"] = "feudal"
+    _sv = SC._saving_for_leap(_cw)
+    _sv_full = SC._saving_for_leap({**_cl, "age": "Classical Age"})
+    _sv_at = SC._saving_for_leap({"food": 0, "wood": 0, "gold": 0, "age": "Feudal Age"})
+finally:
+    SC._S["vision_key"] = _vk0
+check("the world knows when it is saving for a leap its Vision wants — and when it is not",
+      _sv == _cl and _sv_full is None and _sv_at is None)
+_csrc4 = open(os.path.join(HERE, "sim_console.py")).read()
+check("while saving, an adopted development is built from the surplus above the leap's price, and the hold is said once",
+      "leap and any(w2[r] - amt < leap.get(r, 0)" in _csrc4 and "is adopted but held" in _csrc4)
+check("no new development is proposed while an adopted one is still unbuilt",
+      "waiting = [d[\"name\"] for d in sim.custom_devs() if d[\"built\"] == 0]".replace('\\"', '"') in _csrc4
+      or 'waiting = [d["name"] for d in sim.custom_devs() if d["built"] == 0]' in _csrc4)
+import board as _BD
+_bv = _BD.vote("probe the float delta", {"affordable": True, "spent": 1, "cap": 100, "burn_per_turn": 1,
+                                         "within_budget": True, "progress_delta": -0.4, "understaffed": False})
+check("the Board reads an unrounded vision delta without failing (it raised on every report)",
+      "vision flat (-0.4%)" in _json_mod.dumps(_bv), _bv.get("tally"))
+check("idle budget is a penalty only when the fleet could have grown with it",
+      "score -= 2 if spend_pct < 30 and could_grow else 0" in _csrc4 and not re.search(r"delta:\+?d\}", _csrc4))
+
 _done = {**_short, "granary": 1}
 _sc_done = _V.scorecard({**_live_w, **_done}, _done, 0, _V.get("castle"))
 SC._S["recent_gathers"] = []

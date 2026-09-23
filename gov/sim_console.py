@@ -297,9 +297,30 @@ def _ideas():
     return ideas
 
 
+def _saving_for_leap(w: dict) -> dict | None:
+    """The next leap's price while the world is saving for it — the Vision wants the next
+    age and the treasury cannot pay yet. None otherwise."""
+    age = sim.canonical_age(w["age"])
+    if not sim.NEXT_AGE.get(age) or V.AGES.index(age) >= V.AGES.index(_vision().target_age):
+        return None
+    cost = sim.advance_cost(age)
+    if all(w.get(r, 0) >= v for r, v in cost.items()):
+        return None
+    return cost
+
+
 def _propose_development():
     """The Governor proposes a new development — model + ingested knowledge when alive,
     a template otherwise. The Board pre-votes; only the human adopts."""
+    # One adopted-but-unbuilt development at a time: proposing more while one waits for
+    # the treasury only queues spending against the leap (and model time for nothing).
+    waiting = [d["name"] for d in sim.custom_devs() if d["built"] == 0]
+    if waiting:
+        if f"queue:{waiting[0]}" not in _S["notified"]:
+            _S["notified"].add(f"queue:{waiting[0]}")
+            anchor.record(_S["turn"], "governor", f"no new development proposed while '{waiting[0]}' "
+                                                  "is adopted and not yet built")
+        return
     existing = [d["name"] for d in sim.dev_catalog()]
     # Article XI (world): a development already sourced from outside, cited, verified and
     # researched by the hourly cycle goes to the Board first — before anything invented.
@@ -759,7 +780,10 @@ def _governor_report():
     # capacity authorised. Zero movement caps the score at 3 (the load-bearing rule).
     vppm = delta / (period_tokens / 1_000_000)               # vision points per M tokens
     score = round(min(10, max(0, vppm * 2)))
-    score -= 2 if spend_pct < 30 else 0                      # idle budget is a penalty
+    # idle budget is a penalty only when it could have bought something: a fleet held at
+    # its housing or its target by design is not the Governor's to grow
+    could_grow = len(_S["villagers"]) < min(_target_villagers(), w["pop_cap"])
+    score -= 2 if spend_pct < 30 and could_grow else 0
     score -= min(3, spoiled // 5_000)                        # rot is waste (I.2)
     score -= min(3, failed // 5)                             # dead turns are waste
     # Busy-on-the-wrong-thing is waste too, and the costliest kind: it looks like
@@ -803,7 +827,7 @@ def _governor_report():
                     intent="response", reply_to=_S.get("report_msg"))
     anchor.record(t, "board", f"governor report scored: {verdict}")
     anchor.reason_add(t, "board", "score governor report",
-                      f"Δvision {delta:+d}% / {period_tokens:,} tokens = {vppm:.1f} pts/M; "
+                      f"Δvision {delta:+.1f}% / {period_tokens:,} tokens = {vppm:.1f} pts/M; "
                       f"spoiled {spoiled:,}, failed turns {failed}, spend {spend_pct}% → {verdict}",
                       authorized_by="policy:VIII.5")
 
@@ -1210,9 +1234,21 @@ def _one_turn():
         if not done:
             _S["side_effects"] += 1
     else:
-        # base tree done — develop adopted custom developments (cheapest affordable first)
+        # base tree done — develop adopted custom developments (cheapest affordable first).
+        # While the world saves for a leap its Vision wants, a development is paid from
+        # SURPLUS only — what stays above the leap's price. Building every adopted work
+        # the moment it was affordable spent ~6% of the leap each, one every few minutes,
+        # and the treasury for the age fell while the fleet gathered.
         w2 = sim.world()
+        leap = _saving_for_leap(w2)
         for d in sorted(sim.custom_devs(), key=lambda x: sum(x["cost"].values())):
+            if d["built"] == 0 and leap and any(w2[r] - amt < leap.get(r, 0) for r, amt in d["cost"].items()):
+                if f"hold:{d['name']}" not in _S["notified"]:
+                    _S["notified"].add(f"hold:{d['name']}")
+                    anchor.record(t, "governor", f"'{d['name']}' is adopted but held: the treasury is saving "
+                                                 f"for the {sim.NEXT_AGE.get(sim.canonical_age(w2['age']))} leap, "
+                                                 "and it will be built from the surplus above that price")
+                continue
             if d["built"] == 0 and all(w2[r] >= amt for r, amt in d["cost"].items()):
                 done, msg = sim.build_development(d["name"])
                 if done:
