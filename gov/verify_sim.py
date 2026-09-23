@@ -1321,6 +1321,72 @@ finally:
 check("a citation is found word for word through a page's markup and footnotes — a changed word still fails, "
       "and a short span proves nothing", _v1[0] and not _v2[0] and not _v3[0], f"{_v1} {_v2} {_v3}")
 
+# ── a slow model can make a turn duller, never make the world restart ──
+import netretry as _NR
+import threading as _th
+from http.server import BaseHTTPRequestHandler as _BH, ThreadingHTTPServer as _TS
+
+class _Slow(_BH):
+    def do_POST(self):
+        time.sleep(20)                            # a thinking model on a busy GPU
+        try:
+            self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+        except Exception:
+            pass
+    def log_message(self, *a):
+        pass
+
+_srv = _TS(("127.0.0.1", 0), _Slow)
+_th.Thread(target=_srv.serve_forever, daemon=True).start()
+_slowp = {"kind": "openai", "model": "slow-model", "key": "k",
+          "base_url": f"http://127.0.0.1:{_srv.server_address[1]}/v1"}
+_t0 = time.time(); _err = None
+try:
+    with B.time_budget(8):
+        B._chat([{"role": "user", "content": "hi"}], 10, 0.1, "suite-budget", provider_override=_slowp)
+except Exception as e:                            # noqa: BLE001
+    _err = e
+_took = time.time() - _t0
+check("a model call inside a turn's time budget gives up when the budget does — retries included",
+      _err is not None and not isinstance(_err, B.BudgetSpent) and 5 < _took < 12,
+      f"{type(_err).__name__} after {_took:.1f}s against a 20 s reply, budget 8 s")
+_t0 = time.time(); _err2 = None
+try:
+    with B.time_budget(30):
+        with B.time_budget(0.5):
+            time.sleep(0.6)
+            B._chat([{"role": "user", "content": "hi"}], 10, 0.1, "suite-budget", provider_override=_slowp)
+except B.BudgetSpent as e:
+    _err2 = e
+check("a spent budget makes no call at all, and an inner budget never outlives the outer one",
+      _err2 is not None and time.time() - _t0 < 2 and B._deadline() is None)
+_srv.shutdown()
+_sleeps = []
+_saved_sleep = _NR._SLEEP
+try:
+    _NR._SLEEP = lambda d: _sleeps.append(d)
+    def _flaky():
+        raise ConnectionError("reset")
+    try:
+        _NR.call(_flaky, "suite deadline", retries=5, idempotent=True, deadline=time.time() + 0.5)
+    except ConnectionError:
+        pass
+finally:
+    _NR._SLEEP = _saved_sleep
+check("the retry policy starts no retry past the caller's deadline", len(_sleeps) <= 1, f"{len(_sleeps)} backoffs")
+_csrc3 = open(os.path.join(HERE, "sim_console.py")).read()
+_drv = _csrc3.split("def _drive():")[1].split("except Exception as e:")[0]
+check("every model call in the director's turn runs under the turn budget, inside the watchdog's patience",
+      "with brain.time_budget(DRIVER_MODEL_BUDGET_S):" in _drv
+      and _drv.index("time_budget(DRIVER_MODEL_BUDGET_S)") < min(_drv.index(f) for f in (
+          "_fleet_speaks()", "_internal_voices()", "_peer_chatter()", "_governor_report()",
+          "_propose_development()", "_run_retrospective("))
+      and "max(20 * TICK, 300) - 60" in _csrc3)
+import anchor as _A2
+_A2.init()
+_jm = sqlite3.connect(_A2.DB).execute("PRAGMA journal_mode").fetchone()[0]
+check("the record runs in write-ahead mode, so a long read never locks the writer out", _jm.lower() == "wal", _jm)
+
 # ── the admin view: systems, compute, actors, the innovation journal, export and reset ──
 import admin as AD
 import tempfile as _tf

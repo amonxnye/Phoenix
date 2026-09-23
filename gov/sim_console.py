@@ -37,6 +37,10 @@ import vision as V
 # - idle threshold 2×TICK: "idle" now means genuinely stale, not "since last tick".
 G.TOKEN_CAP = 1_000_000
 TICK = float(os.environ.get("WORLD_TICK", "3"))
+# The most model time one director turn may spend, retries included — always well
+# inside the watchdog's patience (max(20 × TICK, 300) s), so a slow model can make a
+# turn duller but can never make the world restart.
+DRIVER_MODEL_BUDGET_S = min(float(os.environ.get("DRIVER_MODEL_BUDGET_S", "180")), max(20 * TICK, 300) - 60)
 # Article IV.7 — tacit consent: a decision queued for the human this long goes back
 # to the Board for a final vote; quorum yes proceeds AS IF approved, loudly logged.
 TACIT_CONSENT_S = int(os.environ.get("TACIT_CONSENT_S", "3600"))
@@ -1590,21 +1594,35 @@ def _drive():
             # Stewardship mode (IV.5): a met vision queues the DECISION with the
             # human — it does not stop the settlement, and chatter goes quiet to
             # save tokens while we hold.
-            _fleet_speaks()
-            if not _S["goal_met"]:
-                _internal_voices()
-            if _S["turn"] % 5 == 0 and not _S["goal_met"]:
-                _peer_chatter()                   # agents coordinating with each other
-            if _S["turn"] > 0 and _S["turn"] % 25 == 0:
-                _governor_report()                # accountability upward: board scores it
-            if _S["turn"] % 6 == 0 and not _S["dev_proposal"] and not _S["goal_met"]:
-                _propose_development()
-            # Skill memory: distill lessons when a vision completes, and
-            # periodically during long runs — future generations read them.
-            if _S["goal_met"] and not was_met:
-                _run_retrospective("vision-met")
-            elif _S["turn"] > 0 and _S["turn"] % 30 == 0:
-                _run_retrospective("periodic")
+            # Every model call below shares ONE time budget, and each part has its
+            # own share of it: a slow model (a thinking build, a GPU shared with the
+            # improvement cycle) costs the turn at most DRIVER_MODEL_BUDGET_S, then the
+            # rule-based fallbacks decide. Without it one long reply outlived the
+            # watchdog and the whole world restarted, hour after hour. The rarer,
+            # weightier calls go first so chatter can never starve them.
+            with brain.time_budget(DRIVER_MODEL_BUDGET_S):
+                if _S["turn"] > 0 and _S["turn"] % 25 == 0:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.4):
+                        _governor_report()        # accountability upward: board scores it
+                if _S["turn"] % 6 == 0 and not _S["dev_proposal"] and not _S["goal_met"]:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.5):
+                        _propose_development()
+                # Skill memory: distill lessons when a vision completes, and
+                # periodically during long runs — future generations read them.
+                if _S["goal_met"] and not was_met:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.5):
+                        _run_retrospective("vision-met")
+                elif _S["turn"] > 0 and _S["turn"] % 30 == 0:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.5):
+                        _run_retrospective("periodic")
+                with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.4):
+                    _fleet_speaks()
+                if not _S["goal_met"]:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.3):
+                        _internal_voices()
+                if _S["turn"] % 5 == 0 and not _S["goal_met"]:
+                    with brain.time_budget(DRIVER_MODEL_BUDGET_S * 0.3):
+                        _peer_chatter()           # agents coordinating with each other
         except Exception as e:                    # never let the loop die silently
             import traceback
             traceback.print_exc()

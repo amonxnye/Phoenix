@@ -23,6 +23,42 @@ import os
 import time as _time
 
 import netretry                                # the project's one retry policy
+import threading as _threading
+from contextlib import contextmanager as _contextmanager
+
+# A time budget for model calls, per thread. The director's turn runs under one: a
+# slow model (a thinking build, a shared GPU busy with the improvement cycle's
+# research) must cost the turn at most this long, retries included — then the
+# caller's rule-based fallback decides. Without it one 17-minute reply held the
+# turn past the watchdog, and the watchdog restarted the whole world. Background
+# work (the improvement cycle, research, the mechanic) runs without a budget.
+_BUDGET = _threading.local()
+
+
+class BudgetSpent(TimeoutError):
+    """The calling thread's model-time budget is spent; use the fallback."""
+
+
+@_contextmanager
+def time_budget(seconds: float):
+    """Every model call made inside this block, on this thread, shares `seconds`."""
+    prev = getattr(_BUDGET, "until", None)
+    until = _time.time() + float(seconds)
+    _BUDGET.until = until if prev is None else min(prev, until)
+    try:
+        yield
+    finally:
+        _BUDGET.until = prev
+
+
+def _deadline() -> float | None:
+    return getattr(_BUDGET, "until", None)
+
+
+def _attempt_timeout() -> float:
+    base = float(os.environ.get("BRAIN_TIMEOUT_S", "300"))
+    d = _deadline()
+    return base if d is None else max(1.0, min(base, d - _time.time()))
 
 RESOURCES = ("food", "wood", "gold")
 DEFAULT_BASE_URL = "https://api.ripaplatform.com/v1"    # the platform's own gateway
@@ -270,7 +306,7 @@ def _ollama_chat(p: dict, messages: list, max_tokens: int, temperature: float,
                  "User-Agent": USER_AGENT})
     with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                           what=f"{p['model']} {purpose} native", idempotent=True,  # a read with a cost
-                          key=_host(p)) as r:
+                          key=_host(p), deadline=_deadline()) as r:
         d = _json_mod.loads(r.read())
     msg = d.get("message") or {}
     out, inline = _split_think((msg.get("content") or "").strip())
@@ -338,6 +374,9 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
     if not p:
         raise RuntimeError("no model configured")
     t0 = _time.time()
+    d = _deadline()
+    if d is not None and d - t0 < 5:                # no call is made, so none is logged
+        raise BudgetSpent("the turn's model-time budget is spent")
     try:
         native = (os.environ.get("BRAIN_NATIVE", "").strip() == "1" and p["kind"] == "openai"
                   and ":" in p["model"] and NATIVE["ok"] is not False)
@@ -374,9 +413,9 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             if extras:
                 kw["extra_body"] = extras
             # A completion is a read with a cost, not an action: safe to repeat.
-            resp = netretry.call(lambda: client.chat.completions.create(**kw),
+            resp = netretry.call(lambda: client.with_options(timeout=_attempt_timeout()).chat.completions.create(**kw),
                                  what=f"{p['model']} {purpose}", idempotent=True,
-                                 key=_host(p))
+                                 key=_host(p), deadline=_deadline())
             msg = resp.choices[0].message
             out, usage = (msg.content or "").strip(), resp.usage
             # The service API routes a service NAME to a model and says which one served;
@@ -447,7 +486,7 @@ def _anthropic_chat(p: dict, messages: list, max_tokens: int,
                  "anthropic-version": "2023-06-01", "User-Agent": USER_AGENT})
     with netretry.urlopen(req, timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                           what=f"{p['model']} anthropic", idempotent=True,   # a read with a cost
-                          key=_host(p)) as r:
+                          key=_host(p), deadline=_deadline()) as r:
         d = _json_mod.loads(r.read())
     text = "".join(b.get("text", "") for b in d.get("content", [])).strip()
     return text, d.get("usage", {})

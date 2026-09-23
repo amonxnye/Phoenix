@@ -226,11 +226,12 @@ def _report(key: str, exhausted: bool, ok: bool) -> None:
 
 
 def call(fn, what: str = "request", retries: int | None = None, on_attempt=None,
-         idempotent: bool = False, key: str = ""):
+         idempotent: bool = False, key: str = "", deadline: float | None = None):
     """Run fn() under the policy. Returns its result; raises the last exception (with
     .attempts set) once the policy is exhausted or the failure is one retrying cannot
     fix. A request not declared idempotent is made ONCE. `key` names the host for
-    the circuit breaker."""
+    the circuit breaker. `deadline` (an absolute time): no retry is started, and no
+    backoff waited, past it — the caller's time budget outranks the retry count."""
     limit = (RETRIES if retries is None else int(retries)) if idempotent else 0
     _admit(key)
     attempts, waited, errors = 0, 0.0, []
@@ -254,8 +255,12 @@ def call(fn, what: str = "request", retries: int | None = None, on_attempt=None,
             errors.append(f"attempt {attempts}: {why}: {str(e)[:100]}")
             if on_attempt:
                 on_attempt(attempts, e)
-            if not ok or attempts > limit:
+            delay = retry_after(e) or min(BACKOFF_CAP_S, BACKOFF_S * 2 ** (attempts - 1))
+            delay *= random.uniform(0.75, 1.25)
+            out_of_time = deadline is not None and _NOW() + delay >= deadline - 1
+            if not ok or attempts > limit or out_of_time:
                 gave = ("not retryable" if not ok else
+                        "the caller's time budget is spent" if out_of_time and attempts <= limit else
                         "not idempotent: one attempt only" if limit == 0 and RETRIES
                         else f"after {attempts} attempts")
                 last().update(what=what, attempts=attempts, waited_s=round(waited, 1),
@@ -270,22 +275,22 @@ def call(fn, what: str = "request", retries: int | None = None, on_attempt=None,
                 except Exception:                    # noqa: BLE001 — some exceptions forbid attributes
                     pass
                 raise
-            delay = retry_after(e) or min(BACKOFF_CAP_S, BACKOFF_S * 2 ** (attempts - 1))
-            delay *= random.uniform(0.75, 1.25)
             waited += delay
             _SLEEP(delay)
 
 
 def urlopen(req, timeout: float, context=None, what: str = "request", retries=None,
-            idempotent: bool | None = None, key: str = ""):
+            idempotent: bool | None = None, key: str = "", deadline: float | None = None):
     """urllib.request.urlopen under the policy. A GET/HEAD is idempotent by the
     protocol; anything else must be declared so by its caller or it is made once.
     The response is returned open; a failure while READING it is the caller's."""
     method = req.get_method() if hasattr(req, "get_method") else "GET"
     if idempotent is None:
         idempotent = method in SAFE_METHODS
-    return call(lambda: _OPEN(req, timeout=timeout, context=context), what, retries,
-                idempotent=idempotent, key=key)
+    def _once():
+        t = timeout if deadline is None else max(1.0, min(timeout, deadline - _NOW()))
+        return _OPEN(req, timeout=t, context=context)
+    return call(_once, what, retries, idempotent=idempotent, key=key, deadline=deadline)
 
 
 def describe(exc) -> str:

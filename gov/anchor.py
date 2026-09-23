@@ -64,6 +64,14 @@ _PROV_COLS = False       # ... and `decisions` the provenance columns? Set separ
 def init() -> None:
     c = _conn()
     try:
+        # Write-ahead logging: readers never block the writer, nor the writer them.
+        # In the default rollback journal a long read (a log export, the models page,
+        # the admin view) held the whole record past the 5 s busy timeout, and the
+        # improvement cycle halted on "database is locked". The mode is persistent.
+        try:
+            c.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass                                  # a volume that cannot: the old mode stands
         c.execute("CREATE TABLE IF NOT EXISTS knowledge("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT, turn INT, kind TEXT, note TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS observed_yield("
