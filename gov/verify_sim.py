@@ -1391,9 +1391,20 @@ check("admin: a full reset exports first, then deletes every database and the lo
       and any(n.startswith("archive-") for n in os.listdir(os.path.join(_xd, "exports"))), str(_fr))
 _csrc2 = open(os.path.join(HERE, "sim_console.py")).read()
 _fsec = _csrc2.split('if what == "full-reset":')[1].split("return self._send(200")[0]
-check("admin: the full reset needs ADMIN_TOKEN (disabled without one) and the typed confirmation",
-      'os.environ.get("ADMIN_TOKEN"' in _fsec and "403" in _fsec and "_admin_token_ok()" in _fsec
-      and "RESET EVERYTHING" in _fsec and _fsec.index("_admin_token_ok()") < _fsec.index("admin.full_reset()"))
+_rsec = _csrc2.split("def _reset_secret_ok(")[1].split("def ")[0]
+check("admin: the full reset needs ADMIN_TOKEN (or CONSOLE_TOKEN when none is set; disabled with neither) "
+      "and the typed confirmation",
+      "403" in _fsec and "_reset_secret_ok()" in _fsec and "RESET EVERYTHING" in _fsec
+      and _fsec.index("_reset_secret_ok()") < _fsec.index("admin.full_reset()")
+      and 'os.environ.get("ADMIN_TOKEN", "").strip() or os.environ.get("CONSOLE_TOKEN", "").strip()' in _rsec
+      and '"disabled"' in _rsec and "compare_digest" in _rsec)
+_post = _csrc2.split("def do_POST(self):")[1].split('if self.path.startswith("/api/admin/")')[0]
+check("the console token is compared trimmed, and the admin token opens what the console token does",
+      "tok.strip()" in _post and "self._admin_token_ok()" in _post)
+_apg = open(os.path.join(HERE, "admin_page.py")).read()
+check("every page keeps the console token under one key, and the admin page asks for it instead of failing",
+      "ls('ctok')" in _apg and "prompt('Console token required" in _apg and "prompt('Admin token required" in _apg
+      and "localStorage.setItem('ctok'" in open(os.path.join(HERE, "improve_page.py")).read())
 check("admin: the page and its API are routed, and the console links to it",
       'self.path == "/admin"' in _csrc2 and '"/api/admin/"' in _csrc2 and 'href="/admin"' in _csrc2
       and "ADMIN_PAGE" in _csrc2)

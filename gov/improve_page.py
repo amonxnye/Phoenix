@@ -60,9 +60,9 @@ dt{color:var(--dim)}dd{margin:0}
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ts=t=>t?new Date(t*1000).toLocaleString():'—';
-let TOKEN='';try{TOKEN=localStorage.getItem('console_token')||''}catch(e){}
+let TOKEN='';try{TOKEN=localStorage.getItem('ctok')||localStorage.getItem('console_token')||''}catch(e){}
 document.addEventListener('DOMContentLoaded',()=>{try{$('tok').value=TOKEN}catch(e){}});
-$('savetok').onclick=()=>{TOKEN=$('tok').value.trim();try{localStorage.setItem('console_token',TOKEN)}catch(e){}alert(TOKEN?'token saved in this browser':'token cleared')};
+$('savetok').onclick=()=>{TOKEN=$('tok').value.trim();try{localStorage.setItem('ctok',TOKEN);localStorage.setItem('console_token',TOKEN)}catch(e){}alert(TOKEN?'token saved in this browser':'token cleared')};
 function diff(p){return '<pre class=diff>'+p.split('\\n').map(l=>l.startsWith('+')?'<span class=a>'+esc(l)+'</span>':l.startsWith('-')?'<span class=d>'+esc(l)+'</span>':l.startsWith('@@')?'<span class=h>'+esc(l)+'</span>':esc(l)).join('\\n')+'</pre>'}
 function suites(j){const s=(j&&j.suites)||{};return Object.entries(s).map(([n,v])=>`<span class=${v.ok?'good':'bad'}>${n} ${v.passed}/${v.total}</span>`).join(' · ')||'—'}
 function prop(p,gate){
@@ -71,7 +71,7 @@ function prop(p,gate){
   <div style="font-size:11px">before: ${suites(p.before_json)}<br>after: &nbsp;${suites(p.after_json)}</div>
   <details><summary style="cursor:pointer;color:var(--gold);font-size:11px">diff</summary>${diff(p.patch||'')}</details>
   ${gate?`<div class=row><button class=go onclick="approve(${p.id})">approve → ${p.github?'open draft PR':'hand me the patch'}</button><input id="r${p.id}" placeholder="reason to reject"><button class=ghost onclick="reject(${p.id})">reject</button> <span style="color:var(--dim);font-size:11px">waiting ${p.hours_waiting} h</span></div>`:''}</div>`}
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':TOKEN},body:JSON.stringify(body||{})});if(r.status===401){alert('console token required — paste CONSOLE_TOKEN in the box at the top right and save');return {ok:false,error:'console token required'}}return r.json()}
+async function post(path,body,retried){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':TOKEN},body:JSON.stringify(body||{})});if(r.status===401){const t=retried?'':prompt('Console token required (CONSOLE_TOKEN on the server):');if(t){TOKEN=t.trim();try{localStorage.setItem('ctok',TOKEN);localStorage.setItem('console_token',TOKEN)}catch(e){}return post(path,body,true)}return {ok:false,error:'console token required'}}return r.json()}
 async function approve(id){const r=await post('/api/improve/approve',{id});alert(r.ok?(r.pr_url?'draft PR opened: '+r.pr_url:r.note||'approved'):('failed: '+r.error));load()}
 async function revert(id){if(!confirm('Put the file back to what it was before #'+id+'? This is one more commit on the deploy branch.'))return;const r=await post('/api/improve/revert',{id});alert(r.ok?'reverted':'failed: '+r.error);load()}
 async function reject(id){const r=await post('/api/improve/reject',{id,reason:$('r'+id).value});alert(r.ok?'rejected':'failed: '+r.error);load()}

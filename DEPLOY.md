@@ -92,7 +92,7 @@ Dockerfile poll it.
 | `BRAIN_TIMEOUT_S` | Per-attempt timeout for model calls (default 300) |
 | `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, GitHub archive, OSV.dev) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried; a request not declared idempotent is made once |
 | `NET_BREAK_AFTER` / `NET_COOL_S` | Circuit breaker per host: after `NET_BREAK_AFTER` calls (default 2) have exhausted their retries against one host, calls to it fail at once for `NET_COOL_S` seconds (default 60), then one probe is let through |
-| `ADMIN_TOKEN` | Guards the two admin actions that must never be public, even when `CONSOLE_TOKEN` is unset: the **full reset** (export, then delete every database and the event log, then restart — disabled entirely without this variable) and the **whole-world JSON export** (open when unset). Paste it into the box at the top of `/admin`; it is kept in that browser only |
+| `ADMIN_TOKEN` | The stronger key: it opens everything `CONSOLE_TOKEN` does, and it alone opens the **full reset** (export, then delete every database and the event log, then restart) and the **whole-world JSON export**. Unset, the full reset takes `CONSOLE_TOKEN` instead, and is disabled only when neither is set; the export is open. Paste it into the box at the top of `/admin` (or answer the prompt); it is kept in that browser only |
 | `EFFICIENCY_TOKENS_PER_DAY` | Model tokens per day the efficiency review may spend (default 50000). The review runs after every improvement cycle and on demand at `/admin`; over budget it still writes the rule-based reading to the innovation journal. `IMPROVE_EFFICIENCY_REVIEW=0` stops the automatic one |
 | `UTOPIA_TOKENS_PER_DAY` / `UTOPIA_PRICE_SHARE` | The architect's daily model-token budget for designing civic works (default 200000; over it the pattern book designs), and the share of the current age-up a 10-point work costs (default 0.04) |
 | `MECHANIC_PROVIDER_DOWN_AFTER` | The mechanic halts a run after this many consecutive failed model calls (default 5) instead of asking every unit |
@@ -109,7 +109,7 @@ free choices, efficiency reviews, operator notes — downloadable as Markdown to
 papers from). Every log and the whole world as one JSON file download from there.
 
 The danger zone has a world reset (the game world and economy; memory, research and
-logs stay) and a full reset (needs `ADMIN_TOKEN` and the words `RESET EVERYTHING`):
+logs stay) and a full reset (needs `ADMIN_TOKEN` — or `CONSOLE_TOKEN` when no admin token is set — and the words `RESET EVERYTHING`):
 the whole world is exported to `<data>/exports/world-<time>.json` first, the nightly
 archives are moved beside it, then every database and the event log are deleted and
 the process restarts from nothing.

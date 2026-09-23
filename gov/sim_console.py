@@ -1955,6 +1955,17 @@ class Handler(BaseHTTPRequestHandler):
         want = os.environ.get("ADMIN_TOKEN", "").strip()
         return bool(want) and hmac.compare_digest(self.headers.get("X-Admin-Token", "").strip(), want)
 
+    def _reset_secret_ok(self) -> tuple[bool, str]:
+        """The full reset is never open to the public. It needs ADMIN_TOKEN when that is
+        set, otherwise CONSOLE_TOKEN; with neither set it is disabled. Either header may
+        carry it. Returns (allowed, reason)."""
+        import hmac
+        secret = (os.environ.get("ADMIN_TOKEN", "").strip() or os.environ.get("CONSOLE_TOKEN", "").strip())
+        if not secret:
+            return False, "disabled"
+        got = [self.headers.get(h, "").strip() for h in ("X-Admin-Token", "X-Console-Token")]
+        return any(g and hmac.compare_digest(g, secret) for g in got), "token"
+
     def _send_file(self, path: str, ctype: str, download: str):
         """Stream a file in chunks — a whole-world export never has to fit in memory."""
         try:
@@ -2026,10 +2037,12 @@ class Handler(BaseHTTPRequestHandler):
             anchor.record(_S["turn"], "operator", f"journal note J{jid}: {text[:120]}")
             return self._send(200, json.dumps({"ok": True, "journal_id": jid}))
         if what == "full-reset":
-            if not os.environ.get("ADMIN_TOKEN", "").strip():
-                return self._send(403, json.dumps({"error": "full reset is disabled: set ADMIN_TOKEN on the server"}))
-            if not self._admin_token_ok():
-                return self._send(401, json.dumps({"error": "admin token required"}))
+            ok, why = self._reset_secret_ok()
+            if why == "disabled":
+                return self._send(403, json.dumps({"error": "full reset is disabled: set ADMIN_TOKEN (or CONSOLE_TOKEN) on the server"}))
+            if not ok:
+                return self._send(401, json.dumps({"error": "admin token required",
+                                                   "needs": "admin" if os.environ.get("ADMIN_TOKEN", "").strip() else "console"}))
             if str(body.get("confirm", "")).strip() != "RESET EVERYTHING":
                 return self._send(400, json.dumps({"error": "confirm with the words RESET EVERYTHING"}))
             anchor.record(_S["turn"], "operator", "FULL RESET ordered — exporting the whole world, then "
@@ -2475,7 +2488,8 @@ class Handler(BaseHTTPRequestHandler):
         # visitors may try to talk the fleet into breaking its constitution; the
         # refusals are the show, and every message lands in the permanent log.
         tok = os.environ.get("CONSOLE_TOKEN", "")
-        if tok and self.headers.get("X-Console-Token", "") != tok:
+        if tok and self.headers.get("X-Console-Token", "").strip() != tok.strip() and not self._admin_token_ok():
+            # (the admin token is the stronger key: it opens everything the console token does)
             if self.path == "/api/chat" and os.environ.get("PUBLIC_CHAT", "") == "1":
                 h = self._visitor()
                 now = time.time()
@@ -2485,7 +2499,7 @@ class Handler(BaseHTTPRequestHandler):
                 Handler._CHAT_LAST[h] = now
                 anchor.metric_bump("public_chats")
             else:
-                return self._send(401, json.dumps({"error": "console token required"}))
+                return self._send(401, json.dumps({"error": "console token required", "needs": "console"}))
         if self.path.startswith("/api/admin/"):         # POWER; full reset also needs ADMIN_TOKEN
             return self._admin_post()
         if self.path.startswith("/api/mechanic/"):      # POWER: gated by the token above

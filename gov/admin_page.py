@@ -94,7 +94,7 @@ pre{margin:0;padding:10px 14px;font-size:11px;white-space:pre-wrap;color:var(--d
 
 <div class="card danger" id=danger><h2>Danger zone</h2>
 <div class=row><button class=no id=wreset>World reset</button><span class=dim>Wipes the game world and economy and restarts. Memory, research, the journal and the event log are kept.</span></div>
-<div class=row><input id=confirm placeholder="type RESET EVERYTHING" style="width:220px"><button class=no id=freset>Full reset</button><span class=dim>Exports the whole world to the data folder first, then deletes every database and the event log and restarts from nothing. Needs ADMIN_TOKEN; disabled when it is not set.</span></div>
+<div class=row><input id=confirm placeholder="type RESET EVERYTHING" style="width:220px"><button class=no id=freset>Full reset</button><span class=dim>Exports the whole world to the data folder first, then deletes every database and the event log and restarts from nothing. Needs ADMIN_TOKEN (or CONSOLE_TOKEN when no admin token is set); disabled when neither is set.</span></div>
 <pre id=dout></pre></div>
 </main>
 <script>
@@ -103,11 +103,19 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const n=v=>(v==null?'—':typeof v==='number'?v.toLocaleString():esc(v));
 const when=ts=>ts?new Date(ts*1000).toISOString().replace('T',' ').slice(0,16):'—';
 const bytes=b=>b>1e9?(b/1e9).toFixed(2)+' GB':b>1e6?(b/1e6).toFixed(1)+' MB':b>1e3?(b/1e3).toFixed(0)+' kB':(b||0)+' B';
-let CT='',AT='';try{CT=localStorage.getItem('console_token')||'';AT=localStorage.getItem('admin_token')||''}catch(e){}
+// one console token for every page (the key the main console uses), plus the admin token
+const ls=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k)||'';localStorage.setItem(k,v)}catch(e){return ''}};
+let CT=ls('ctok')||ls('console_token'),AT=ls('admin_token');
 $('atok').value=AT;
-$('saveatok').onclick=()=>{AT=$('atok').value.trim();try{localStorage.setItem('admin_token',AT)}catch(e){}alert(AT?'admin token saved in this browser':'admin token cleared')};
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':CT,'X-Admin-Token':AT},body:JSON.stringify(body||{})});
-  let d={};try{d=await r.json()}catch(e){}if(!r.ok&&!d.error)d.error='HTTP '+r.status;return d}
+$('saveatok').onclick=()=>{AT=$('atok').value.trim();ls('admin_token',AT);alert(AT?'admin token saved in this browser':'admin token cleared')};
+async function post(path,body,retried){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':CT,'X-Admin-Token':AT},body:JSON.stringify(body||{})});
+  let d={};try{d=await r.json()}catch(e){}
+  if(r.status===401&&!retried){
+    if(d.needs==='admin'){const t=prompt('Admin token required (ADMIN_TOKEN on the server):');if(t){AT=t.trim();ls('admin_token',AT);$('atok').value=AT;return post(path,body,true)}}
+    else{const t=prompt('Console token required (CONSOLE_TOKEN on the server):');if(t){CT=t.trim();ls('ctok',CT);ls('console_token',CT);return post(path,body,true)}}
+  }
+  if(!r.ok&&!d.error)d.error='HTTP '+r.status;return d}
 const kv=(pairs)=>pairs.map(([k,v,c])=>`<div class="${c||''}"><b>${v}</b><span>${k}</span></div>`).join('');
 
 async function systems(){
@@ -194,10 +202,10 @@ $('exportall').onclick=async()=>{$('exportnote').textContent='exporting… a lar
   a.download='phoenix-world-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.json';document.body.appendChild(a);a.click();a.remove();
   $('exportnote').textContent='exported '+bytes(b.size)};
 $('wreset').onclick=async()=>{if(!confirm('Reset the game world? The economy and buildings are wiped; memory, research and logs stay.'))return;
-  const d=await post('/api/reset',{});$('dout').textContent=JSON.stringify(d,null,1)};
+  const d=await post('/api/reset',{});$('dout').textContent=d.error?('refused: '+d.error):'world reset — restarting; reload in a few seconds'};
 $('freset').onclick=async()=>{if($('confirm').value.trim()!=='RESET EVERYTHING')return alert('type RESET EVERYTHING to confirm');
   if(!confirm('Delete EVERY database and the event log? An export is written to the data folder first.'))return;
-  const d=await post('/api/admin/full-reset',{confirm:$('confirm').value.trim()});$('dout').textContent=JSON.stringify(d,null,1)};
+  const d=await post('/api/admin/full-reset',{confirm:$('confirm').value.trim()});$('dout').textContent=d.error?('refused: '+d.error):JSON.stringify(d,null,1)+'\\nrestarting — reload in a few seconds'};
 
 systems();compute();actors();journal();
 setInterval(systems,15000);setInterval(compute,60000);setInterval(actors,60000);

@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.7
+Version: 1.8
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -230,7 +230,8 @@ Everything below is those two laws, applied.
    journal; the journal is append-only and exports as a paper-ready document.
    Enforcement is not built in: if the world needs watchmen, its agents may propose
    them, and they go to the Board and the human like any other idea. The full reset
-   exports first and needs `ADMIN_TOKEN` — it is never open to the public
+   exports first and needs `ADMIN_TOKEN` (or `CONSOLE_TOKEN` when no admin token is
+   set) — with neither it is disabled, never open to the public
    (`admin.py`, `improve._reflect`).
 > Enforced by `governor.py`, `anchor.py`, `sim_console.py`, `admin.py`; tracing via `LANGCHAIN_*` env vars.
 
