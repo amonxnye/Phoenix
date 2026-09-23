@@ -409,11 +409,13 @@ function buildTown(map){
       blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));
   beacon.position.set(0,4.4,0); beacon.visible=false; g.add(beacon);
   beaconLight=new THREE.PointLight(0xe0b23a, 0, 10, 2); beaconLight.position.set(0,2.5,0); g.add(beaconLight);
-  world.add(g);
+  world.add(g); keepGroup=g;
 }
 
 /* ── buildings from placements (registry-driven) ─────────────────────── */
 const built = new Map();          // id → {group, mills:[{blades,speed}], cond}
+const CIVIC = new Set(['plaza','garden','fountain','tower','temple','monument','lamp','grove','aqueduct','library','wall','road']);
+let keepGroup = null;
 const buildingsRoot = new THREE.Group(); world.add(buildingsRoot);
 const mills = [];
 function makeBuilding(p, reg){
@@ -488,6 +490,61 @@ function makeBuilding(p, reg){
       {emissive:0xb09a72,emissiveIntensity:0.9,metalness:0.5,roughness:0.3}),
       [0.14,0.2,0.14],[0,0.66,0]);
     g.userData.float = badge;
+  }
+  else if (CIVIC.has(spec.shape)){              // Article XII: a civic work, drawn as designed
+    const k = spec.scale||1, col = base, stone = weather(new THREE.Color(0xb8ab92),cond);
+    const glowM = (hex,i=1.4)=>mat(new THREE.Color(hex),{emissive:new THREE.Color(hex),emissiveIntensity:i,flatShading:false});
+    const sc = (a)=>a.map(v=>v*k);
+    if (spec.shape==='plaza'){
+      add(G.cyl, mat(stone), sc([1.6,0.06,1.6]),[0,0.03,0]);
+      add(G.cyl, mat(weather(col.clone(),cond)), sc([1.1,0.07,1.1]),[0,0.05,0]);
+      for (let i=0;i<4;i++){const a=i*Math.PI/2; add(G.cyl, mat(stone), sc([0.08,0.35,0.08]),[Math.cos(a)*0.7*k,0.18*k,Math.sin(a)*0.7*k]);}
+    } else if (spec.shape==='garden'){
+      add(G.box, mat(weather(new THREE.Color(0x3e7a35),cond)), sc([1.3,0.05,1.3]),[0,0.03,0]);
+      for (let i=0;i<9;i++){ add(G.ico, mat(weather(col.clone().offsetHSL((rnd()-0.5)*0.1,0,(rnd()-0.5)*0.2),cond)),
+        sc([0.16,0.14,0.16]),[(rnd()-0.5)*1.0*k,0.1*k,(rnd()-0.5)*1.0*k]); }
+      add(G.cone8, mat(weather(new THREE.Color(0x2f6a2a),cond)), sc([0.3,0.7,0.3]),[0.45*k,0.4*k,-0.45*k]);
+    } else if (spec.shape==='fountain'){
+      add(G.cyl, mat(stone), sc([1.0,0.18,1.0]),[0,0.09*k,0]);
+      add(G.cyl, glowM(0x5aa8d8,0.5), sc([0.85,0.05,0.85]),[0,0.18*k,0]);
+      add(G.cyl, mat(stone), sc([0.14,0.6,0.14]),[0,0.45*k,0]);
+      const jet=add(G.sph, glowM(col.getHex(),1.2), sc([0.22,0.22,0.22]),[0,0.8*k,0]); g.userData.float=jet;
+    } else if (spec.shape==='tower'){
+      add(G.cyl, mat(weather(col.clone(),cond)), sc([0.45,1.8,0.45]),[0,0.9*k,0]);
+      add(G.cone8, mat(weather(new THREE.Color(0x7a2f22),cond)), sc([0.55,0.5,0.55]),[0,2.05*k,0]);
+      add(G.box, glowM(0xffcf7a,1.8), sc([0.1,0.14,0.02]),[0,1.4*k,0.23*k]);
+    } else if (spec.shape==='temple'){
+      add(G.box, mat(stone), sc([1.3,0.15,0.95]),[0,0.075*k,0]);
+      for (const x of [-0.5,-0.17,0.17,0.5]) for (const z of [-0.35,0.35])
+        add(G.cyl, mat(weather(col.clone(),cond)), sc([0.1,0.7,0.1]),[x*k,0.5*k,z*k]);
+      add(G.box, mat(weather(col.clone(),cond)), sc([1.35,0.1,1.0]),[0,0.9*k,0]);
+      add(G.cone4, mat(weather(col.clone().multiplyScalar(0.85),cond)), sc([1.0,0.35,0.75]),[0,1.12*k,0],[0,Math.PI/4,0]);
+    } else if (spec.shape==='monument'){
+      add(G.box, mat(stone), sc([0.6,0.2,0.6]),[0,0.1*k,0]);
+      add(G.box, mat(weather(col.clone(),cond)), sc([0.22,1.5,0.22]),[0,0.95*k,0]);
+      const tip=add(G.oct, glowM(col.getHex(),1.0), sc([0.2,0.3,0.2]),[0,1.85*k,0]); g.userData.float=tip;
+    } else if (spec.shape==='lamp'){
+      for (const x of [-0.4,0,0.4]){ add(G.cyl, mat(0x3a2c18), sc([0.04,0.8,0.04]),[x*k,0.4*k,0]);
+        add(G.sph, glowM(col.getHex(),2.2), sc([0.14,0.14,0.14]),[x*k,0.85*k,0]); }
+    } else if (spec.shape==='grove'){
+      for (let i=0;i<5;i++){ const x=(rnd()-0.5)*1.0*k, z=(rnd()-0.5)*1.0*k, h=0.6+rnd()*0.5;
+        add(G.cyl, mat(0x4a3218), sc([0.06,h*0.5,0.06]),[x,h*0.25*k,z]);
+        add(G.cone8, mat(weather(col.clone().offsetHSL(0,0,(rnd()-0.5)*0.15),cond)), sc([0.36,h,0.36]),[x,(h*0.5+h*0.35)*k,z]); }
+    } else if (spec.shape==='aqueduct'){
+      for (const x of [-0.6,-0.2,0.2,0.6]) add(G.box, mat(weather(col.clone(),cond)), sc([0.12,0.8,0.18]),[x*k,0.4*k,0]);
+      add(G.box, mat(weather(col.clone(),cond)), sc([1.45,0.14,0.26]),[0,0.87*k,0]);
+      add(G.box, glowM(0x5aa8d8,0.6), sc([1.4,0.04,0.12]),[0,0.95*k,0]);
+    } else if (spec.shape==='library'){
+      add(G.box, mat(weather(col.clone(),cond)), sc([1.1,0.6,0.8]),[0,0.3*k,0]);
+      add(G.sph, mat(weather(new THREE.Color(0x6a8aa0),cond)), sc([0.6,0.5,0.6]),[0,0.62*k,0]);
+      add(G.box, glowM(0xffcf7a,1.5), sc([0.5,0.14,0.02]),[0,0.32*k,0.41*k]);
+    } else if (spec.shape==='wall'){
+      add(G.box, mat(weather(col.clone(),cond)), sc([1.8,0.55,0.25]),[0,0.275*k,0]);
+      for (let i=-3;i<=3;i+=2) add(G.box, mat(weather(col.clone(),cond)), sc([0.18,0.16,0.27]),[i*0.25*k,0.63*k,0]);
+    } else {                                     // road
+      add(G.box, mat(weather(col.clone(),cond)), sc([1.9,0.04,0.55]),[0,0.02,0]);
+      for (let i=-3;i<=3;i++) add(G.box, mat(stone), sc([0.2,0.045,0.1]),[i*0.26*k,0.03,0]);
+    }
   }
   else {                                        // unknown/custom → floating faceted gem
     add(G.box, mat(0x4a3a28), [0.3,0.1,0.3],[0,0.05,0]);
@@ -651,6 +708,9 @@ async function poll(){
   const m=d.map; if (!m) return;
   MW=m.w; MH=m.h; lastReg=m.registry||{}; window.__prox=m.proximity||{pct:15};
   document.getElementById('age').textContent=(d.world.age||'—')+' · turn '+(d.turn??'—');
+  if (!document.getElementById('utopia')){ const el=document.createElement('div'); el.id='utopia';
+    el.style.cssText='position:fixed;right:14px;bottom:14px;color:#e0b23a;font:12px ui-monospace,monospace;background:rgba(18,13,8,.7);padding:4px 10px;border-radius:12px;z-index:5';
+    document.body.appendChild(el); }
   for (const r of ['food','wood','gold'])
     document.getElementById('v'+r).textContent=(d.world[r]??0).toLocaleString();
   if (!inited){
@@ -660,6 +720,9 @@ async function poll(){
     buildScatter(m.terrain||[], m.placements||[], m.town);
   }
   rebuildVeg(m.terrain||[]);
+  // the town centre grows grander with each age; a better city glows warmer
+  if (keepGroup){ const s=1+0.09*(m.age_index||0); keepGroup.scale.setScalar(s); }
+  if (m.utopia){ const u=document.getElementById('utopia'); if(u) u.textContent='utopia '+m.utopia.index+' · '+m.utopia.works+' civic works'; }
   buildRings(m);
   // diff placements by id
   const ids=new Set();

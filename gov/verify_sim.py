@@ -1126,7 +1126,7 @@ try:
           and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
     check("the constitution names the article and its enforcing code, and bumped its version",
           "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
-          and re.search(r"^Version: 1\.5", A.charter_text(), re.M) is not None)
+          and re.search(r"^Version: 1\.6", A.charter_text(), re.M) is not None)
     # ── the ten ages, 10,000× per leap, food + wood + gold; a legacy world keeps its place ──
     check("ten ages, each leap the previous one times one growth factor, in food, wood and gold, the ladder readable",
           len(S.AGE_ORDER) == 10 and S.AGE_ORDER[0] == "Stone Age" and S.AGE_ORDER[-1] == "Tech Age"
@@ -1214,6 +1214,97 @@ finally:
     os.environ.pop("GITHUB_TOKEN", None)
     if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
     os.remove(_fixture_abs)
+# ── Article XII: utopia — five qualities with effects, civic works designed by the world ──
+import utopia as UT
+import lives as LV
+import economy as EC
+_u0 = S.utopia_state()
+_y0 = S.effective_yield("food")
+_p0 = S.world()["pop_cap"]
+_ut_names = []
+try:
+    _nm = "test_rose_garden_" + _tag.strip("[]")
+    ok_, _ = S.dev_add(_nm, {"wood": 10}, "utopia", 40, "beauty", 3, "suite",
+                       {"shape": "garden", "color": "#e07a9a", "scale": 1.3, "district": "nature", "evil": "<script>"})
+    _ut_names.append(_nm)
+    S._world_add("wood", 10)
+    S.build_development(_nm)
+    _u1 = S.utopia_state()
+    check("a built civic work raises its quality with diminishing returns, and the index discounts imbalance",
+          ok_ and _u1["qualities"]["beauty"] > _u0["qualities"]["beauty"] and _u1["qualities"]["beauty"] < 100
+          and _u1["index"] < _u1["qualities"]["beauty"] and _u1["works"] >= 1, str(_u1["qualities"]))
+    check("beauty lifts every yield — the civic work is a working asset",
+          S.effective_yield("food") > _y0 and _u1["effects"]["all_yield_pct"] > _u0["effects"]["all_yield_pct"])
+    _nm2 = "test_healing_well_" + _tag.strip("[]")
+    S.dev_add(_nm2, {"wood": 10}, "utopia", 90, "health", 3, "suite", {"shape": "fountain", "district": "residential"})
+    _ut_names.append(_nm2); S._world_add("wood", 10); S.build_development(_nm2)
+    check("health houses more settlers", S.world()["pop_cap"] > _p0, f"{_p0} → {S.world()['pop_cap']}")
+    _reg = S.render_registry()[_nm]
+    _pl = [q for q in S.map_state()["placements"] if q["name"] == _nm]
+    check("the design reaches the 3D worlds as drawn: known shape, colour, scale, district — junk stripped; placed in its district",
+          _reg["shape"] == "garden" and _reg["color"] == "#e07a9a" and _reg["scale"] == 1.3 and "evil" not in _reg
+          and _pl and max(abs(_pl[0]["x"] - S.DISTRICT_ANCHOR["nature"][0]), abs(_pl[0]["y"] - S.DISTRICT_ANCHOR["nature"][1])) <= 3
+          and "utopia" in S.map_state() and "age_index" in S.map_state())
+    check("a design outside the vocabulary is replaced, never trusted",
+          S.clean_visual({"shape": "rocket", "color": "red", "scale": 99, "district": "moon"})
+          == {"shape": "monument", "color": "#c9b98f", "scale": 2.0, "district": "centre"})
+    check("a civic work must name one of the five qualities", not S.dev_add("x_" + _tag.strip("[]"), {}, "utopia", 5, "wealth")[0])
+    # the architect: the world's own ideas, a managed token budget, the price set by the world
+    _ask0, _tpd0 = UT.ASK, UT.TOKENS_PER_DAY
+    UT.ASK = lambda prompt: ('{"name": "hall_of_voices_%s", "quality": "harmony", "value": 20, "shape": "temple", '
+                             '"color": "#e8dcc0", "scale": 1.4, "district": "centre", "why": "harmony is the weakest"}' % _tag.strip("[]"))
+    try:
+        _d = UT.design("a test settlement")
+        check("the architect designs from the world's measured need; the price is the world's, not the model's",
+              _d and _d["kind"] == "utopia" and _d["resource"] == "harmony" and _d["visual"]["shape"] == "temple"
+              and _d["cost"] == UT._price(S.canonical_age(S.world()["age"]), 20) and "architect (model)" in _d["source"], str(_d)[:200])
+        UT.ASK = lambda prompt: '{"name": "moon_base", "quality": "harmony", "value": 20, "shape": "rocket"}'
+        _d2 = UT.design("")
+        check("a design that does not fit the vocabulary falls back to the pattern book, and says so",
+              _d2 and _d2["visual"]["shape"] in S.UTOPIA_SHAPES and "pattern book" in _d2["source"], str(_d2)[:160])
+        UT.TOKENS_PER_DAY = 0
+        _d3 = UT.design("")
+        check("over its daily token budget the architect uses its pattern book — design is managed, and recorded",
+              _d3 and "budget spent" in _d3["source"]
+              and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='civic-budget'").fetchone()[0] >= 1)
+    finally:
+        UT.ASK, UT.TOKENS_PER_DAY = _ask0, _tpd0
+    # Article II as amended: agents live on, with free will inside the rules
+    check("five ranks: villager → foreman → delegate → steward → leader; leaders may start projects",
+          [t["name"] for t in EC.TIERS] == ["villager", "foreman", "delegate", "steward", "leader"]
+          and "start_project" in EC.TIERS[-1]["can"] and "mentor" in EC.TIERS[3]["can"])
+    _t = LV.temperament("vil-07")
+    check("a temperament is fixed at birth from the name — the same person after a restart",
+          _t == LV.temperament("vil-07") and _t["favourite"] in S.RESOURCES and 0.08 <= _t["curiosity"] <= 0.3)
+    _frees = [LV.free_choice("vil-07", "wood" if _t["favourite"] != "wood" else "gold", "no shortages — bank the surplus", n) for n in range(200)]
+    _bound = [LV.free_choice("vil-07", "gold", "Age-up shortfall drives it", n) for n in range(200)]
+    check("free will: sometimes the agent follows its own inclination when nothing binds — never against a shortfall",
+          any(f[2] for f in _frees) and not all(f[2] for f in _frees) and not any(b[2] for b in _bound)
+          and all(f[0] == _t["favourite"] for f in _frees if f[2]))
+    EC.enlist("vil-mentee-" + _tag.strip("[]"))
+    EC.enlist("vil-elder-" + _tag.strip("[]"), tier=3)
+    _before = {r["agent"]: r["contribution"] for r in EC.roster()}
+    _nu = LV.nurture("vil-mentee-" + _tag.strip("[]"), 100, 1)
+    _after = {r["agent"]: r["contribution"] for r in EC.roster()}
+    check("a newcomer working while a steward lives is mentored — both earn from it",
+          _nu and _after["vil-mentee-" + _tag.strip("[]")] > _before["vil-mentee-" + _tag.strip("[]")]
+          and _after[_nu["mentor"]] > _before[_nu["mentor"]], str(_nu))
+    _csrc = open(os.path.join(HERE, "sim_console.py")).read()
+    check("the system never retires an agent: a spent season and an ended thread are RENEWED on the same identity",
+          "def _renew(" in _csrc and "economy.retire" not in _csrc.split("def _op_terminate")[0].split("def _renew(")[0][-4000:]
+          and _csrc.count("economy.retire(") == 1 and "honourable discharge" not in _csrc)
+    EC.retire("vil-mentee-" + _tag.strip("[]")); EC.retire("vil-elder-" + _tag.strip("[]"))
+    _pg3 = open(os.path.join(HERE, "pages", "map3d.html")).read(); _pgb = open(os.path.join(HERE, "pages", "babylon.html")).read()
+    check("both 3D worlds draw every civic shape, and grow the town centre with each age",
+          all(f"'{sh}'" in _pg3 and f"'{sh}'" in _pgb for sh in S.UTOPIA_SHAPES)
+          and "age_index" in _pg3 and "age_index" in _pgb)
+finally:
+    _cx = S._conn()
+    for _n in _ut_names:
+        for _tbl in ("custom_devs", "placements", "conditions"):
+            _cx.execute(f"DELETE FROM {_tbl} WHERE name=?", (_n,))
+    _cx.commit(); _cx.close()
+
 # the pull request is made of reads retried and writes made once, as a draft
 import ghpr as GH
 _calls = []

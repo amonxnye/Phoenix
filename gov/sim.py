@@ -15,6 +15,8 @@ food/wood/gold are the economy.
 
 import json
 import os
+import re
+import math
 import sqlite3
 import time
 from typing import Annotated, TypedDict
@@ -115,7 +117,22 @@ STRUCTURES = {
 
 # Effect vocabulary for governor-proposed developments — machine-usable by design so a
 # proposal can actually change the world: yield_pct (one resource), all_yield_pct, pop_cap.
-CUSTOM_KINDS = ("yield_pct", "all_yield_pct", "pop_cap")
+CUSTOM_KINDS = ("yield_pct", "all_yield_pct", "pop_cap", "utopia")
+
+# ── the utopia layer — the city's qualities, measured, with real effects ─────────
+# A civic work adds points to one QUALITY. Each quality's score is 0–100 with
+# diminishing returns, so pouring everything into one quality stops paying: a utopia
+# is a balance. The index is the mean of the five, discounted by imbalance.
+#   beauty + harmony → morale: every yield up to +25%
+#   knowledge        → better methods: every yield up to +10%
+#   health           → population: up to +5 settlers
+#   order            → upkeep: assets decay up to 50% slower
+UTOPIA_QUALITIES = ("beauty", "order", "health", "knowledge", "harmony")
+UTOPIA_SCALE = 60                     # points for a quality to reach ~63
+# The shapes the 3D worlds know how to draw; a work's design must name one of them.
+UTOPIA_SHAPES = ("plaza", "garden", "fountain", "tower", "temple", "monument", "lamp",
+                 "grove", "aqueduct", "library", "wall", "road")
+UTOPIA_DISTRICTS = ("centre", "residential", "nature", "industry", "edge")
 _COLUMNS = ("food", "wood", "gold", "house", "mill", "lumber_camp", "mining_camp", "wheelbarrow")
 
 
@@ -154,6 +171,11 @@ def _world_init(c: sqlite3.Connection) -> None:
               "name TEXT PRIMARY KEY, food INT DEFAULT 0, wood INT DEFAULT 0, gold INT DEFAULT 0, "
               "kind TEXT, value INT, resource TEXT DEFAULT '', rank INT DEFAULT 2, "
               "source TEXT DEFAULT '', built INT DEFAULT 0)")
+    try:                                   # the design of a civic work: shape, colour, scale, district
+        if "visual" not in {r[1] for r in c.execute("PRAGMA table_info(custom_devs)")}:
+            c.execute("ALTER TABLE custom_devs ADD COLUMN visual TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass                               # a migration that cannot run costs the design, not the world
     # Assets need upkeep: every built development has a condition (100 → 0) that decays
     # and scales its effect. Lives with the world — a new world starts fresh.
     c.execute("CREATE TABLE IF NOT EXISTS conditions("
@@ -183,7 +205,7 @@ def world() -> dict:
             c.commit()
         pop_bonus = c.execute("SELECT COALESCE(SUM(value*built),0) FROM custom_devs "
                               "WHERE kind='pop_cap'").fetchone()[0]
-        w["pop_cap"] = 3 + 2 * w["house"] + pop_bonus
+        w["pop_cap"] = 3 + 2 * w["house"] + pop_bonus + utopia_state(c)["effects"]["pop_cap"]
         return w
     finally:
         c.close()
@@ -211,6 +233,10 @@ def effective_yield(resource: str, w: dict | None = None) -> int:
             y *= 1 + (d["value"] / 100) * eff
         elif d["kind"] == "all_yield_pct":
             y *= 1 + (d["value"] / 100) * eff
+    # A city that is beautiful, harmonious and learned works better (the utopia layer).
+    ue = utopia_state()["effects"]["all_yield_pct"]
+    if ue:
+        y *= 1 + ue / 100
     # Location pays: each camp placed on the ring around its resource ground works
     # the ground directly. The ring is finite, so the bonus is a portfolio decision.
     near = proximity_camps(resource)
@@ -245,6 +271,7 @@ def decay_tick(turn: int) -> list[tuple[str, int]]:
     if turn % DECAY_EVERY:
         return []
     out = []
+    slow = utopia_state()["effects"]["decay_slowdown_pct"] / 100     # order keeps things kept
     c = _conn()
     try:
         for d in dev_catalog():
@@ -253,7 +280,7 @@ def decay_tick(turn: int) -> list[tuple[str, int]]:
             c.execute("INSERT OR IGNORE INTO conditions(name, condition) VALUES(?, 100)",
                       (d["name"],))
             c.execute("UPDATE conditions SET condition=MAX(0, condition-?) WHERE name=?",
-                      (d["rank"], d["name"]))
+                      (max(1, math.ceil(d["rank"] * (1 - slow))), d["name"]))
             out.append((d["name"],
                         c.execute("SELECT condition FROM conditions WHERE name=?",
                                   (d["name"],)).fetchone()[0]))
@@ -334,17 +361,75 @@ def spoil_tick() -> tuple[int, int]:
 def custom_devs() -> list[dict]:
     c = _conn()
     try:
-        rows = c.execute("SELECT name, food, wood, gold, kind, value, resource, rank, source, "
-                         "built FROM custom_devs ORDER BY rank, name").fetchall()
-        return [{"name": n, "cost": {r: v for r, v in (("food", f), ("wood", wd), ("gold", g)) if v},
-                 "kind": k, "value": val, "resource": res, "rank": rk, "source": src, "built": b}
-                for n, f, wd, g, k, val, res, rk, src, b in rows]
+        has_visual = "visual" in {r[1] for r in c.execute("PRAGMA table_info(custom_devs)")}
+        rows = c.execute("SELECT name, food, wood, gold, kind, value, resource, rank, source, built, "
+                         + ("visual" if has_visual else "''") +
+                         " FROM custom_devs ORDER BY rank, name").fetchall()
+        out = []
+        for n, f, wd, g, k, val, res, rk, src, b, vis in rows:
+            try:
+                vis = json.loads(vis) if vis else {}
+            except ValueError:
+                vis = {}
+            out.append({"name": n, "cost": {r: v for r, v in (("food", f), ("wood", wd), ("gold", g)) if v},
+                        "kind": k, "value": val, "resource": res, "rank": rk, "source": src, "built": b,
+                        "visual": vis})
+        return out
     finally:
         c.close()
 
 
+def utopia_state(c: sqlite3.Connection | None = None) -> dict:
+    """The five qualities (0–100), the index, and the effects they have on the world.
+    Reads the built civic works and their CONDITION: a neglected garden adds less."""
+    own = c is None
+    c = c or _conn()
+    try:
+        try:
+            rows = c.execute("SELECT d.resource, d.value, d.built, COALESCE(k.condition, 100) "
+                             "FROM custom_devs d LEFT JOIN conditions k ON k.name=d.name "
+                             "WHERE d.kind='utopia' AND d.built>0").fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    finally:
+        if own:
+            c.close()
+    pts = {q: 0.0 for q in UTOPIA_QUALITIES}
+    for q, val, built, cond in rows:
+        if q in pts:
+            pts[q] += val * built * cond / 100
+    score = {q: round(100 * (1 - math.exp(-p / UTOPIA_SCALE)), 1) for q, p in pts.items()}
+    vals = list(score.values())
+    mean = sum(vals) / len(vals)
+    balance = (min(vals) / max(vals)) if max(vals) > 0 else 1.0
+    index = round(mean * (0.5 + 0.5 * balance), 1)
+    effects = {"all_yield_pct": round(25 * (score["beauty"] + score["harmony"]) / 200
+                                      + 10 * score["knowledge"] / 100, 1),
+               "pop_cap": int(score["health"] // 20),
+               "decay_slowdown_pct": round(50 * score["order"] / 100, 1)}
+    weakest = min(UTOPIA_QUALITIES, key=lambda q: score[q])
+    return {"qualities": score, "points": {q: round(p, 1) for q, p in pts.items()}, "index": index,
+            "balance": round(balance, 2), "weakest": weakest, "effects": effects,
+            "works": int(sum(b for _, _, b, _ in rows))}
+
+
+def clean_visual(v) -> dict:
+    """A design the renderers can draw: a known shape, a hex colour, a sane scale, a
+    known district. Anything else is replaced, never trusted."""
+    v = v if isinstance(v, dict) else {}
+    shape = v.get("shape") if v.get("shape") in UTOPIA_SHAPES else "monument"
+    color = str(v.get("color") or "")
+    color = color if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else "#c9b98f"
+    try:
+        scale = max(0.6, min(2.0, float(v.get("scale", 1.0))))
+    except (TypeError, ValueError):
+        scale = 1.0
+    district = v.get("district") if v.get("district") in UTOPIA_DISTRICTS else "centre"
+    return {"shape": shape, "color": color, "scale": round(scale, 2), "district": district}
+
+
 def dev_add(name: str, cost: dict, kind: str, value: int, resource: str = "",
-            rank: int = 2, source: str = "") -> tuple[bool, str]:
+            rank: int = 2, source: str = "", visual: dict | None = None) -> tuple[bool, str]:
     """Adopt a governor-proposed development into the buildable catalog."""
     name = name.strip().lower().replace(" ", "_")[:32]
     if not name or kind not in CUSTOM_KINDS:
@@ -353,13 +438,18 @@ def dev_add(name: str, cost: dict, kind: str, value: int, resource: str = "",
         return False, "yield_pct needs a valid resource"
     if name in STRUCTURES:
         return False, f"{name} already exists as a base structure"
+    if kind == "utopia":
+        if resource not in UTOPIA_QUALITIES:
+            return False, f"a civic work must add to one of {UTOPIA_QUALITIES}"
+        visual = clean_visual(visual)
     value = max(1, min(100, int(value)))
     c = _conn()
     try:
         c.execute("INSERT OR IGNORE INTO custom_devs(name, food, wood, gold, kind, value, "
-                  "resource, rank, source) VALUES(?,?,?,?,?,?,?,?,?)",
+                  "resource, rank, source, visual) VALUES(?,?,?,?,?,?,?,?,?,?)",
                   (name, int(cost.get("food", 0)), int(cost.get("wood", 0)),
-                   int(cost.get("gold", 0)), kind, value, resource, int(rank), source))
+                   int(cost.get("gold", 0)), kind, value, resource, int(rank), source,
+                   json.dumps(visual) if visual else ""))
         c.commit()
         return True, f"adopted development {name}"
     finally:
@@ -371,6 +461,8 @@ def _custom_effect_text(d: dict) -> str:
         return f"+{d['value']}% {d['resource']} yield"
     if d["kind"] == "all_yield_pct":
         return f"+{d['value']}% all yields"
+    if d["kind"] == "utopia":
+        return f"+{d['value']} {d['resource']} (civic work)"
     return f"+{d['value']} population cap"
 
 
@@ -482,6 +574,10 @@ RENDER = {
     "wheelbarrow": {"shape": "tech",  "color": "#c9b98f", "layer": 2},
 }
 RES_COLOR = {"food": "#e05a5a", "wood": "#b5793a", "gold": "#e0b23a"}
+# Where each district grows from: the plaza at the heart, homes beside it, parks by the
+# pond, workshops toward the gold seam, walls and towers at the rim.
+DISTRICT_ANCHOR = {"centre": (MAP_W // 2, MAP_H // 2), "residential": (MAP_W // 2 - 3, MAP_H // 2 - 2),
+                   "nature": (7, 11), "industry": (17, 11), "edge": (MAP_W // 2, 1)}
 
 
 def render_registry() -> dict:
@@ -498,6 +594,12 @@ def render_registry() -> dict:
         reg[name] = e
     for d in custom_devs():
         if d["name"] in reg:
+            continue
+        if d["kind"] == "utopia":
+            v = clean_visual(d.get("visual"))
+            reg[d["name"]] = {"shape": v["shape"], "color": v["color"], "scale": v["scale"],
+                              "district": v["district"], "quality": d["resource"], "layer": 2,
+                              "rank": d["rank"], "effect": _custom_effect_text(d)}
             continue
         reg[d["name"]] = {
             "shape": "diamond", "layer": 2,
@@ -590,6 +692,8 @@ def _ground_for(name: str) -> tuple[int, int] | None:
     d = next((x for x in custom_devs() if x["name"] == name), None)
     if d and d["kind"] == "yield_pct":
         return GROUNDS.get(d["resource"])
+    if d and d["kind"] == "utopia":         # a civic work goes where its design says
+        return DISTRICT_ANCHOR.get((d.get("visual") or {}).get("district", "centre"))
     return None
 
 
@@ -679,6 +783,8 @@ def map_state() -> dict:
                 "terrain_bonus": {"pct": TERRAIN_PCT, "stock": TERRAIN_STOCK,
                                   "tiles": {r: terrain_bonus_tiles(r) for r in RESOURCES}},
                 "registry": render_registry(),
+                "utopia": utopia_state(),
+                "age_index": AGE_ORDER.index(canonical_age(world()["age"])) if canonical_age(world()["age"]) in AGE_ORDER else 0,
                 "placements": out}
     finally:
         c.close()

@@ -25,6 +25,7 @@ import board
 import brain
 import director as D
 import economy
+import lives
 import governor as G
 import sim
 import vision as V
@@ -160,15 +161,11 @@ else:
         if _u and _u.status != "done":
             _S["villagers"].append(_r["agent"])
         else:
-            economy.retire(_r["agent"])
-            anchor.record(_S["turn"], "reap",
-                          f"{_r['agent']} struck off at boot — thread "
-                          f"{'complete' if _u else 'missing'}, unresumable (zombie guard)")
-            anchor.career_add(_r["agent"], _S["turn"], "retired",
-                              "struck off at boot — thread could never work again")
-            if _u:
-                anchor.counter_add("lifetime_spend", _u.tokens)
-            _forget_thread(_r["agent"])
+            # Article II as amended: agents live on. A thread that ended is not a death;
+            # the agent is renewed on the same identity, career and rank.
+            _renew(_r["agent"], _u, f"its working thread had "
+                                    f"{'ended' if _u else 'gone missing'} across the restart",
+                   event="revived")
     if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
         G.TOKEN_CAP = anchor.counter_get("token_cap")
     for _c in anchor.careers(200):                # rebuild birth turns for burn math
@@ -304,16 +301,29 @@ def _propose_development():
     if prop and prop.get("name") in existing:
         ideas.mark(prop["idea_id"], "duplicate", "a development of that name already exists")
         prop = None
+    # Article XII: every other proposal is a civic work the world designs from its OWN
+    # ideas — its measured qualities, its lessons, what it has built — toward utopia.
+    _S["proposals_n"] = _S.get("proposals_n", 0) + 1
+    leader = lives.project_leader(_S["turn"])
+    if not prop and (_S["proposals_n"] % 2 == 0 or leader):
+        import utopia
+        prop = utopia.design(_situation())
+        if prop and leader:                       # a leader starts the project, and is credited
+            prop["source"] += f"; project started by {leader}"
+            prop["leader"] = leader
+            economy.credit(leader, 100)
+            anchor.career_add(leader, _S["turn"], "project",
+                              f"started the project '{prop['name']}' (+{prop['value']} {prop['resource']})")
     if not prop:
         # VI.2: only VERIFIED knowledge may steer an invention
         prop = brain.propose_development(_situation(),
                                          anchor.external(8, verified_only=True), existing)
+        if prop:
+            prop["source"] = f"{brain.brain_name()}+knowledge"
     if not prop:
         prop = next((dict(t) for t in _DEV_TEMPLATES if t["name"] not in existing), None)
         if prop:
             prop["source"] = "template"
-    else:
-        prop["source"] = f"{brain.brain_name()}+knowledge"
     if not prop or prop.get("name") in existing:
         return
     bv = board.vote(f"development: {prop['name']}", _board_ctx(True))
@@ -345,6 +355,34 @@ def _forget_thread(uid: str) -> None:
             _CP.delete_thread(uid)
     except Exception:
         pass
+
+
+def _renew(uid: str, u, why: str, event: str = "renewed") -> int | None:
+    """Article II as amended: an agent is never struck off by the system. Its season is
+    closed (the old thread stood down and forgotten, its compute added to the lifetime
+    burn) and it returns at once on the SAME identity — the ledger keeps its rank and
+    contribution, the anchor keeps its career. Returns the event id."""
+    try:
+        if u is not None and u.pending:
+            sim.resume(_GRAPH, uid, "dismiss")
+    except Exception:                              # noqa: BLE001 — a thread that cannot close still renews
+        pass
+    if u is not None:
+        anchor.counter_add("lifetime_spend", u.tokens)
+    _forget_thread(uid)
+    res = (_S.get("orders") or {}).get(uid) or (_S.get("last_res") or {}).get(uid) \
+        or lives.temperament(uid)["favourite"]
+    try:
+        sim.spawn(_GRAPH, uid, "villager", resource=res)
+    except Exception as e:                         # noqa: BLE001 — recorded, the agent stays enlisted
+        anchor.record(_S["turn"], "error", f"{uid} could not be renewed: {type(e).__name__}: {str(e)[:120]}")
+    economy.enlist(uid)                            # no-op for the living: rank and contribution kept
+    if uid not in _S["villagers"]:
+        _S["villagers"].append(uid)
+    _S["born"][uid] = _S["turn"]                   # the season's start, for burn math
+    ev = anchor.record(_S["turn"], "renew", f"{uid} {event} — {why}; same career, same rank")
+    anchor.career_add(uid, _S["turn"], event, why)
+    return ev
 
 
 def _live_ids() -> list:
@@ -1043,47 +1081,20 @@ def _one_turn():
     roster_by = {r["agent"]: r for r in economy.roster()}
     for uid in list(_S["villagers"]):
         u, r = status.get(uid), roster_by.get(uid)
-        if u is None or u.status == "done":       # zombie guard
-            economy.retire(uid)
-            _S["villagers"].remove(uid)
-            _S["orders"].pop(uid, None)
-            _S["born"].pop(uid, None)
-            anchor.record(t, "reap", f"{uid} struck off — thread complete/unresumable "
-                                     "(zombie guard, Article IX)")
-            anchor.career_add(uid, t, "retired", "struck off the roster — thread was "
-                                                 "complete and could never work again")
-            if u:
-                anchor.counter_add("lifetime_spend", u.tokens)
-            _forget_thread(uid)
+        if u is None or u.status == "done":       # an ended thread is not a death
+            _renew(uid, u, "its working thread had ended", event="revived")
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
-            if len(_S["villagers"]) <= 2 and (_S["goal_met"] or not G.may_spawn(views)[0]):
-                if _breaker(f"floor|{G.TOKEN_CAP}",
-                            "the fleet is at its floor and replacements are blocked "
-                            "by the cap — reaping suspended (Article II.5); raise the "
-                            "cap to resume the lifecycle."):
-                    continue
-                continue                          # II.5: may run understaffed, never empty
-            sim.resume(_GRAPH, uid, "dismiss")
-            economy.retire(uid)
-            _S["villagers"].remove(uid)
-            _S["orders"].pop(uid, None)
-            _S["born"].pop(uid, None)
-            did = anchor.reason_add(t, "director", f"retire {uid}",
-                                    f"Article II lifecycle: compute {u.tokens:,} + one more "
-                                    f"turn would exceed budget {r['budget']:,} — the check "
-                                    "precedes the commit (III.3)",
+            # Article II as amended: a working season's budget is spent — the agent rests
+            # and returns on the same identity, career and rank. The check still precedes
+            # the commit (III.3): the season ends BEFORE it would overshoot.
+            did = anchor.reason_add(t, "director", f"renew {uid}",
+                                    f"season budget {u.tokens:,} + one more turn would exceed "
+                                    f"{r['budget']:,} — renewed, not retired (Article II)",
                                     authorized_by="policy:Article II")
-            reap_ev = anchor.record(t, "reap", f"{uid} retired with honours — budget "
-                                               f"({u.tokens:,}/{r['budget']:,}), contribution {r['contribution']:,}")
-            anchor.decision_close(did, reap_ev,
-                                  outcome=f"lifetime contribution {r['contribution']:,} "
-                                          f"for {u.tokens:,} compute")
-            anchor.career_add(uid, t, "retired",
-                              f"Article II: budget {u.tokens:,}/{r['budget']:,} — retired "
-                              f"BEFORE overshoot; rank {r['role']}, contribution {r['contribution']:,}")
-            anchor.counter_add("lifetime_spend", u.tokens)   # burned forever, tracked forever
-            _forget_thread(uid)
+            ev = _renew(uid, u, f"season complete ({u.tokens:,}/{r['budget']:,} compute, "
+                                f"rank {r['role']}, contribution {r['contribution']:,})")
+            anchor.decision_close(did, ev, outcome=f"renewed as {r['role']}")
 
     status = _by_uid()
     for uid in _S["villagers"]:
@@ -1096,6 +1107,10 @@ def _one_turn():
                 res, why = _S["orders"][uid], "operator standing order"
             else:
                 res, why = _choose_gather(sim.world())
+                res, why, free = lives.free_choice(uid, res, why, t)   # free will, within the rules
+                if free:
+                    anchor.record(t, "free-will", why)
+                    anchor.career_add(uid, t, "free-will", why)
                 _note_gather(res)
             did = None
             if _S.setdefault("last_res", {}).get(uid) != res:  # a CHANGE is a decision;
@@ -1126,6 +1141,7 @@ def _one_turn():
             sim.resume(_GRAPH, uid, f"gather:{res}")
             got = sim.QUOTA * sim.effective_yield(res)
             economy.credit(uid, got)                                     # measured contribution
+            lives.nurture(uid, got, t)                                   # newcomers are mentored
             anchor.observe_yield(res, sim.effective_yield(res))
             gev = anchor.record(t, "gather",
                                 f"{uid} gathered {got} {res} (now {res} {sim.world()[res]})")
@@ -1134,7 +1150,8 @@ def _one_turn():
             _S["_acted"] = True
             promo = economy.evaluate(uid)                                # status earned by results
             if promo:
-                anchor.record(t, "promote", f"{uid} promoted -> {promo}")
+                anchor.record(t, "promote", f"{uid} promoted -> {promo}"
+                              + (" — now a LEADER, and may start projects" if promo == "leader" else ""))
                 anchor.career_add(uid, t, "promote", f"earned promotion to {promo} by contribution")
 
     # Responsibility escalation: a REVERSIBLE request parked >5 minutes on a silent
@@ -1351,7 +1368,7 @@ def _one_turn():
         waited_m = int((now_ts - prop["born_ts"]) / 60)
         ok2, msg2 = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
                                 prop.get("value", 0), prop.get("resource", ""),
-                                prop.get("rank", 2), prop.get("source", ""))
+                                prop.get("rank", 2), prop.get("source", ""), prop.get("visual"))
         dev_ev = anchor.record(t, "development",
                                f"'{prop['name']}' ADOPTED BY TACIT CONSENT — human silent "
                                f"{waited_m} min, board had approved {prop.get('board', '')} "
@@ -1402,18 +1419,9 @@ def _one_turn():
 
     if sc["goal_met"] and not _S["goal_met"]:     # the TRANSITION, once
         status = _by_uid()
-        for uid in list(_S["villagers"]):
-            if len(_S["villagers"]) <= 2:
-                break                             # stewardship keeps a floor crew
-            u = status.get(uid)
-            if u and u.status in ("awaiting_approval", "idle"):
-                sim.resume(_GRAPH, uid, "dismiss")
-                economy.retire(uid)
-                _S["villagers"].remove(uid)
-                anchor.record(t, "reap", f"{uid} retired — vision met")
-                anchor.career_add(uid, t, "retired", "vision met — honourable discharge")
-                anchor.counter_add("lifetime_spend", u.tokens)
-                _forget_thread(uid)
+        for uid in list(_S["villagers"]):          # agents live on: a met vision is a
+            anchor.career_add(uid, t, "vision", "the vision was met — "   # milestone in each
+                              "stays on to steward the world")           # life, not a discharge
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
         _S["goal_met"] = True
         _S["goal_met_ts"] = time.time()           # IV.7: tacit consent clocks from here
@@ -1993,6 +2001,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/improve":
             self._count_view()
             return self._send(200, IMPROVE_PAGE, "text/html; charset=utf-8")
+        if self.path == "/utopia":
+            self._count_view()
+            return self._send(200, UTOPIA_PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/utopia":
+            import utopia
+            works = [dict(d, effect=sim._custom_effect_text(d), condition=sim.conditions().get(d["name"], 100))
+                     for d in sim.custom_devs() if d["kind"] == "utopia"]
+            w = sim.world()
+            return self._send(200, json.dumps({
+                "state": sim.utopia_state(), "works": works, "budget": utopia.budget(),
+                "age": sim.canonical_age(w["age"]), "pending": _S.get("dev_proposal"),
+                "shapes": list(sim.UTOPIA_SHAPES), "qualities": list(sim.UTOPIA_QUALITIES)}, default=str))
         if self.path == "/research":
             self._count_view()
             return self._send(200, RESEARCH_PAGE, "text/html; charset=utf-8")
@@ -2509,7 +2529,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "adopt":
                     ok, msg = sim.dev_add(prop["name"], prop.get("cost", {}), prop.get("kind", ""),
                                           prop.get("value", 0), prop.get("resource", ""),
-                                          prop.get("rank", 2), prop.get("source", ""))
+                                          prop.get("rank", 2), prop.get("source", ""), prop.get("visual"))
                     dev_ev = anchor.record(_S["turn"], "development",
                                            f"human adopted '{prop['name']}'" if ok else f"adopt failed: {msg}")
                     if prop.get("did"):
@@ -2699,6 +2719,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <a class=navlink href="/models">Models &rarr;</a>
     <a class=navlink href="/improve">Self-Improvement &rarr;</a>
     <a class=navlink href="/research">Research &rarr;</a>
+    <a class=navlink href="/utopia">Utopia &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -3700,6 +3721,8 @@ tick(); setInterval(tick,4000);
 import models_page as _models_page                     # noqa: E402
 import improve_page as _improve_page                   # noqa: E402
 import research_page as _research_page                 # noqa: E402
+import utopia_page as _utopia_page                     # noqa: E402
+UTOPIA_PAGE = _page(_utopia_page.PAGE)
 RESEARCH_PAGE = _page(_research_page.PAGE)
 MODELS_PAGE = _page(_models_page.PAGE)
 IMPROVE_PAGE = _page(_improve_page.PAGE)

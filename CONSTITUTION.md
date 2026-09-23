@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.5
+Version: 1.6
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -55,27 +55,33 @@ Everything below is those two laws, applied.
 > Enforced by `vision.py`; proposed by `board.propose_vision`; adopted via the console
 > (`/api/vision`), which cascades a re-brief to every agent.
 
-## Article II — Agents are born when needed, promoted on merit, retired when not
+## Article II — Agents are born when needed, promoted on merit, and live on
 
 1. An agent (a unit) is spawned only when the Vision needs the work and the world
    limits allow it (Article III), and only with the **Board's** approval (Article VIII).
 2. **Status is earned by measured contribution.** An agent that produces value climbs a
-   capability tier (villager → foreman → delegate), earning a bigger budget and more
-   capabilities. Promotion grants *reach*, never *escape* — the cap and the gate bind
-   every tier.
-3. An agent that has served its purpose is **reaped**, not left parked burning budget.
-   Idle-past-usefulness is retired; idle-still-useful is re-tasked.
-4. No immortal agents. Every unit has a birth condition and an end condition — and no
-   zombies: a thread that can no longer work is struck off the roster the moment it is
-   seen (`sim_console` zombie guard).
+   capability tier (villager → foreman → delegate → steward → leader), earning a bigger
+   budget and more capabilities. Stewards mentor newcomers — both earn from it; leaders
+   start projects of their own, which go to the Board and the human like any proposal.
+   Promotion grants *reach*, never *escape* — the cap and the gate bind every tier.
+3. **Agents live on.** The system never retires an agent. When a working season's
+   budget is spent, the season closes before it would overshoot (III.3) and the agent is
+   **renewed** on the same identity, rank and career; a thread that ended is **revived**
+   the moment it is seen, never left as a zombie. A met vision is a milestone in each
+   life, not a discharge. Only a human may retire an agent, at the gate (`sim_console._renew`).
+4. **Free will, within the framework.** Each agent has a temperament fixed at birth — a
+   favourite resource, a curiosity, an ambition. It may follow its own inclination when
+   nothing binds; never against an operator's order, an age-up shortfall, a floor or a
+   lopsided economy. Every free choice is recorded as one (`lives.free_choice`).
 5. **The fleet has a floor.** Below minimum staffing with replacement blocked, reaping
    is suspended and the shortage escalates to the human (Article IX). A world may run
    understaffed; it may not run empty.
 6. When the Vision needs the work and a limit forbids it, **that conflict is itself the
    finding**: the blocking limit and its value are escalated once (Article VIII.4),
    never silently retried.
-> Enforced by `economy.py` (tiers, ledger, promotion) and `director.py` (staffing,
-> re-task, reap); surfaced by `governor.idle`.
+> Enforced by `economy.py` (tiers, ledger, promotion), `lives.py` (temperament, free
+> will, mentoring, leaders), `sim_console.py` (renewal) and `director.py` (staffing,
+> re-task); surfaced by `governor.idle`.
 
 ## Article III — World limits are known and applied
 
@@ -374,6 +380,32 @@ Everything below is those two laws, applied.
    `improve._commit_to_branch`, `/research`).
 > Enforced by `improve.py` (`cycle`, `run_suites`, `verdict`, `approve`, `reject`),
 > `research.py`, `ghpr.py` and `sim_console.py` (`/improve`, `/research`, `/api/improve/*`).
+
+## Article XII — The world grows toward utopia on its own ideas
+
+1. **Five qualities, measured.** Beauty, order, health, knowledge and harmony are each
+   scored 0–100 from the civic works standing in the world and their condition, with
+   diminishing returns; the utopia index is their mean discounted by imbalance, so a
+   utopia is a balance, not a monument (`sim.utopia_state`).
+2. **Every quality does something.** Beauty and harmony lift every yield (up to +25%),
+   knowledge lifts every yield (up to +10%), health houses more settlers (up to +5),
+   order slows decay (up to half). A civic work is a working asset, and a neglected one
+   gives less.
+3. **The ideas are the world's own.** The architect designs each civic work from what the
+   settlement measures about itself — its weakest quality first — and from the lessons
+   its agents have learned; a leader may start one as a project. The design is bounded
+   to what the world can draw: a known shape, a colour, a scale, a district
+   (`utopia.design`, `sim.clean_visual`).
+4. **The price is the world's, not the designer's.** A work costs a share of the current
+   leap, so works stay meaningful as the world grows; designing costs model tokens,
+   charged to a daily budget, and over budget the architect uses its own pattern book —
+   the record says which.
+5. **Voted, adopted, built, drawn.** A civic work goes to the Board, then the human
+   (silence consents under IV.7); the director builds it when the treasury pays; the 3D
+   worlds draw it where its district is, as it was designed, and the town centre grows
+   grander with every age (`/utopia`, `/map3d`, `/babylon`).
+> Enforced by `sim.py` (`utopia_state`, `clean_visual`, `effective_yield`, `decay_tick`),
+> `utopia.py`, `sim_console.py` (`_propose_development`, `/utopia`) and the two 3D pages.
 
 ## Amending this constitution
 

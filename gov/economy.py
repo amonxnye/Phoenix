@@ -37,8 +37,15 @@ TIERS = [
      "can": ("gather",)},
     {"name": "foreman",  "budget": 300_000, "promote_at": 2_500,
      "can": ("gather", "propose_build")},
-    {"name": "delegate", "budget": 600_000, "promote_at": None,          # top tier
+    {"name": "delegate", "budget": 600_000, "promote_at": 10_000,
      "can": ("gather", "propose_build", "propose_spawn", "propose_advance")},
+    # Article II as amended: agents live on and keep climbing. Stewards mentor the
+    # newcomers; leaders start projects of their own (lives.py).
+    {"name": "steward",  "budget": 1_200_000, "promote_at": 40_000,
+     "can": ("gather", "propose_build", "propose_spawn", "propose_advance", "mentor")},
+    {"name": "leader",   "budget": 2_400_000, "promote_at": None,          # top tier
+     "can": ("gather", "propose_build", "propose_spawn", "propose_advance", "mentor",
+             "start_project")},
 ]
 MAX_TIER = len(TIERS) - 1
 

@@ -411,6 +411,42 @@ function makeGem(root,r,cond,hex){
   spinners.push((t,dt)=>{gem.rotation.y+=dt*0.6;gem.position.y=0.5+Math.sin(t*1.3)*0.05;});
   return root;}
 
+const CIVIC=new Set(['plaza','garden','fountain','tower','temple','monument','lamp','grove','aqueduct','library','wall','road']);
+function makeCivic(root,r,cond,reg){                      // Article XII: a civic work, drawn as designed
+  const k=reg.scale||1, hex=reg.color||PAL.gold, id='cv'+Math.floor(r()*1e9);
+  const M=(h)=>{const m=mat(id+h+Math.floor(r()*1e6),'#000');m.diffuseColor=weather(h,cond);return m;};
+  const stone=()=>M('#b8ab92');
+  const put=(mesh,x,y,z,m)=>{mesh.position.set(x*k,y*k,z*k);mesh.scaling.scaleInPlace(k);mesh.parent=root;mesh.material=m;castShadow(mesh);return mesh;};
+  const box=(w,h,d,x,y,z,m)=>put(BABYLON.MeshBuilder.CreateBox(id,{width:w,height:h,depth:d},scene),x,y,z,m);
+  const cyl=(dt,db,h,x,y,z,m,t=10)=>put(BABYLON.MeshBuilder.CreateCylinder(id,{diameterTop:dt,diameterBottom:db,height:h,tessellation:t},scene),x,y,z,m);
+  const sph=(d,x,y,z,m)=>put(BABYLON.MeshBuilder.CreateSphere(id,{diameter:d,segments:6},scene),x,y,z,m);
+  const s=reg.shape;
+  if(s==='plaza'){cyl(1.6,1.6,0.06,0,0.03,0,stone(),20);cyl(1.1,1.1,0.07,0,0.05,0,M(hex),20);
+    for(let i=0;i<4;i++){const a=i*Math.PI/2;cyl(0.08,0.08,0.35,Math.cos(a)*0.7,0.18,Math.sin(a)*0.7,stone());}}
+  else if(s==='garden'){box(1.3,0.05,1.3,0,0.03,0,M('#3e7a35'));
+    for(let i=0;i<9;i++)sph(0.16,(r()-0.5)*1.0,0.1,(r()-0.5)*1.0,glowMat(id+'f'+i,hex,0.35));
+    cyl(0,0.3,0.7,0.45,0.4,-0.45,M('#2f6a2a'),8);}
+  else if(s==='fountain'){cyl(1,1,0.18,0,0.09,0,stone(),16);cyl(0.85,0.85,0.05,0,0.18,0,glowMat(id+'w','#5aa8d8',0.45),16);
+    cyl(0.14,0.14,0.6,0,0.45,0,stone());const j=sph(0.22,0,0.8,0,glowMat(id+'j',hex,0.9));
+    spinners.push((t)=>{j.position.y=(0.8+Math.sin(t*2.2)*0.04)*k;});}
+  else if(s==='tower'){cyl(0.45,0.45,1.8,0,0.9,0,M(hex));cyl(0,0.62,0.5,0,2.05,0,M('#7a2f22'),8);
+    box(0.1,0.14,0.02,0,1.4,0.23,windowMat);}
+  else if(s==='temple'){box(1.3,0.15,0.95,0,0.075,0,stone());
+    for(const x of[-0.5,-0.17,0.17,0.5])for(const z of[-0.35,0.35])cyl(0.1,0.1,0.7,x,0.5,z,M(hex));
+    box(1.35,0.1,1.0,0,0.9,0,M(hex));cyl(0,1.05,0.35,0,1.12,0,M(hex),4);}
+  else if(s==='monument'){box(0.6,0.2,0.6,0,0.1,0,stone());box(0.22,1.5,0.22,0,0.95,0,M(hex));
+    const tip=put(BABYLON.MeshBuilder.CreatePolyhedron(id,{type:1,size:0.12},scene),0,1.85,0,glowMat(id+'t',hex,0.8));
+    spinners.push((t,dt)=>{tip.rotation.y+=dt*0.7;});}
+  else if(s==='lamp'){for(const x of[-0.4,0,0.4]){cyl(0.04,0.04,0.8,x,0.4,0,M('#3a2c18'),6);sph(0.14,x,0.85,0,glowMat(id+'l'+x,hex,1.2));}}
+  else if(s==='grove'){for(let i=0;i<5;i++){const x=(r()-0.5)*1.0,z=(r()-0.5)*1.0,h=0.6+r()*0.5;
+    cyl(0.06,0.06,h*0.5,x,h*0.25,z,M('#4a3218'),6);cyl(0,0.36,h,x,h*0.85,z,M(hex),8);}}
+  else if(s==='aqueduct'){for(const x of[-0.6,-0.2,0.2,0.6])box(0.12,0.8,0.18,x,0.4,0,M(hex));
+    box(1.45,0.14,0.26,0,0.87,0,M(hex));box(1.4,0.04,0.12,0,0.95,0,glowMat(id+'a','#5aa8d8',0.5));}
+  else if(s==='library'){box(1.1,0.6,0.8,0,0.3,0,M(hex));sph(0.6,0,0.62,0,M('#6a8aa0'));box(0.5,0.14,0.02,0,0.32,0.41,windowMat);}
+  else if(s==='wall'){box(1.8,0.55,0.25,0,0.275,0,M(hex));for(let i=-3;i<=3;i+=2)box(0.18,0.16,0.27,i*0.25,0.63,0,M(hex));}
+  else{box(1.9,0.04,0.55,0,0.02,0,M(hex));for(let i=-3;i<=3;i++)box(0.2,0.045,0.1,i*0.26,0.03,0,stone());}
+  return root;}
+
 function buildPlacement(p,reg){
   const root=new BABYLON.TransformNode('pl'+p.id,scene);
   root.position.set(wx(p.x),0,wz(p.y));
@@ -419,6 +455,7 @@ function buildPlacement(p,reg){
   else if(shape==='mill')makeMill(root,r,p.condition);
   else if(shape==='camp')makeCamp(root,r,p.condition,(reg&&reg.accent)||PAL.gold);
   else if(shape==='tech')makeTech(root,r,p.condition);
+  else if(CIVIC.has(shape))makeCivic(root,r,p.condition,reg);
   else makeGem(root,r,p.condition,reg&&reg.color);
   if(p.condition<50)root.rotation.z=0.07;
   if(p.near&&stateCache&&stateCache.map&&stateCache.map.proximity){
@@ -429,9 +466,9 @@ function buildPlacement(p,reg){
   return root;}
 
 /* ---------------- town centre keep ---------------- */
-let beacon=null, beaconMat=null;
+let beacon=null, beaconMat=null, keepRoot=null;
 (function keep(){
-  const root=new BABYLON.TransformNode('keep',scene);
+  const root=new BABYLON.TransformNode('keep',scene); keepRoot=root;
   root.position.set(wx(12),0,wz(8));
   const base=BABYLON.MeshBuilder.CreateBox('kb',{width:1.15,depth:1.15,height:0.5},scene);
   base.position.y=0.25;base.parent=root;base.material=mat('kbm','#6b6257');
@@ -614,7 +651,9 @@ function syncState(d){
   document.getElementById('rf').textContent=(w.food??0).toLocaleString();
   document.getElementById('rw').textContent=(w.wood??0).toLocaleString();
   document.getElementById('rg').textContent=(w.gold??0).toLocaleString();
-  document.getElementById('ageln').textContent=(w.age||'?')+' · turn '+(d.turn??'?');
+  document.getElementById('ageln').textContent=(w.age||'?')+' · turn '+(d.turn??'?')
+    +(m.utopia?' · utopia '+m.utopia.index+' ('+m.utopia.works+' civic works)':'');
+  if(keepRoot){const s=1+0.09*(m.age_index||0);keepRoot.scaling.set(s,s,s);}   // the heart grows with each age
   document.getElementById('pend').style.display=anyPending?'block':'none';
 }
 async function poll(){try{const r=await fetch('/api/state');if(r.ok)syncState(await r.json());}
