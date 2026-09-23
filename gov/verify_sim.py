@@ -1191,6 +1191,29 @@ try:
         _ic3 = ID.consider(0, "the wheel", _w, "a test settlement")
         check("a topic with no readable source is recorded as unread, not invented",
               _ic3["status"] == "unread" and ID.rows(limit=1)[0]["status"] == "unread")
+        _page_text = ("<html><body><p>Crop rotation is the practice of growing a series of different types of crops "
+                      "in the same area across a sequence of growing seasons.</p></body></html>")
+        A._URL_CACHE.clear()
+        _prop0, _pd0 = ID.PROPOSE, B.propose_development
+        ID.PROPOSE = None
+        B.propose_development = lambda s_, f_, e_: (B.LAST_PROPOSAL.update(
+            ok=False, why="the reply held no usable development (it was empty)"), None)[1]
+        try:
+            _ic4 = ID.consider(0, "crop rotation", _w, "a test settlement")
+        finally:
+            ID.PROPOSE, B.propose_development = _prop0, _pd0
+        _r4 = ID.rows(limit=1)[0]
+        check("a model that answers nothing is recorded as SILENT, with why — and its topic is read again, "
+              "never filed as 'nothing new'",
+              _ic4["status"] == "model-silent" and "did not answer" in _r4["note"] and "empty" in _r4["note"]
+              and "model-silent" in ID.RETRY_STATUSES, _r4["note"])
+        _sid = ID._add(cycle_id=0, ts=time.time() - 7200, age="Stone Age", topic="stale " + _tag, title="t",
+                       source="s", fact="f", verified=1, knowledge_id=0, proposal="null", research_id=0,
+                       status="researching", note="", decided_ts=0)
+        ID.reap_stale()
+        check("an idea a restart left 'researching' is marked interrupted and its topic read again",
+              next(r for r in ID.rows(limit=50) if r["id"] == _sid)["status"] == "interrupted"
+              and "interrupted" in ID.RETRY_STATUSES)
         _tops = ID.topics({"age": "Iron Age", "food": 1, "wood": 10**9, "gold": 10**9}, set(), 3)
         check("topics follow the age and the scarcest resource first",
               _tops[0] == "agricultural productivity" and _tops[1] in ID.TOPICS["Iron Age"] and len(_tops) == 3, str(_tops))
@@ -1374,6 +1397,42 @@ try:
 finally:
     _NR._SLEEP = _saved_sleep
 check("the retry policy starts no retry past the caller's deadline", len(_sleeps) <= 1, f"{len(_sleeps)} backoffs")
+# a thinking model: its reasoning gets an allowance, and a turn that cannot afford a thought does not ask
+_seen = []
+
+class _Thinker(_BH):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        _seen.append(_json_mod.loads(self.rfile.read(n) or b"{}"))
+        body = _json_mod.dumps({"id": "x", "object": "chat.completion", "created": 0, "model": "thinker",
+                                "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                                    "role": "assistant", "content": '{"ok": 1}',
+                                    "reasoning_content": "hmm " * 400}}],
+                                "usage": {"prompt_tokens": 5, "completion_tokens": 900, "total_tokens": 905}}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+
+_srv2 = _TS(("127.0.0.1", 0), _Thinker)
+_th.Thread(target=_srv2.serve_forever, daemon=True).start()
+_tp = {"kind": "openai", "model": "thinker-" + str(int(time.time())), "key": "k",
+       "base_url": f"http://127.0.0.1:{_srv2.server_address[1]}/v1"}
+B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-think", provider_override=_tp)   # learns
+B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-think", provider_override=_tp)
+check("a model observed to think gets a reasoning allowance on top of what the caller asked for",
+      B.thinks(_tp) and _seen[0]["max_tokens"] == 100 and _seen[1]["max_tokens"] == 100 + B.THINK_TOKENS,
+      f"{_seen[0]['max_tokens']} → {_seen[1]['max_tokens']}")
+_n0 = len(_seen); _sk0 = B.SKIPPED.get("suite-think", 0)
+try:
+    with B.time_budget(30):
+        B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-think", provider_override=_tp)
+    _skipped = False
+except B.BudgetSpent:
+    _skipped = True
+check("inside a turn too short for a thought, a thinking model is not asked at all — the rules answer, the GPU is spared",
+      _skipped and len(_seen) == _n0 and B.SKIPPED.get("suite-think", 0) == _sk0 + 1)
+_srv2.shutdown()
 _csrc3 = open(os.path.join(HERE, "sim_console.py")).read()
 _drv = _csrc3.split("def _drive():")[1].split("except Exception as e:")[0]
 check("every model call in the director's turn runs under the turn budget, inside the watchdog's patience",

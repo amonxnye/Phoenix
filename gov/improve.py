@@ -433,8 +433,12 @@ def _world_cycle(trigger: str) -> dict:
         import sim
         w = sim.world()
         _STATE["current"] = f"choosing topics for the {w.get('age')}"
-        # a topic read once is not read again; one that could NOT be read is tried again later
-        already = {r["topic"] for r in ideas.rows(limit=1000) if r["status"] != "unread"}
+        # a topic read once is not read again; one that could NOT be read, whose model went
+        # silent, or whose research a restart cut short is tried again later
+        ideas.reap_stale()
+        rows_ = ideas.rows(limit=1000)
+        settled = {r["topic"] for r in rows_ if r["status"] not in ideas.RETRY_STATUSES}
+        already = settled
         tops = ideas.topics(w, already, MAX_TRIES)
         counts["candidates"] = len(tops)
         situation = (f"The settlement is in the {w.get('age')} with food {w.get('food')}, wood {w.get('wood')}, "
@@ -445,7 +449,7 @@ def _world_cycle(trigger: str) -> dict:
             r = ideas.consider(cid, topic, w, situation)
             if r["status"] == "queued":
                 counts["verified"] += 1; counts["queued"] += 1
-            elif r["status"] in ("unverified", "unread"):
+            elif r["status"] in ("unverified", "unread", "model-silent"):
                 counts["rejected"] += 1
         note = (f"mode: world — {counts['tried']} topics read, {counts['queued']} sourced and researched "
                 f"developments queued for the Board, {counts['rejected']} unread or uncited"

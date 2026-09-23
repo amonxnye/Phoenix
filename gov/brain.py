@@ -19,6 +19,7 @@ capped and gated, never executed blindly.
 """
 
 import json as _json_mod
+import re
 import os
 import time as _time
 
@@ -51,12 +52,57 @@ def time_budget(seconds: float):
         _BUDGET.until = prev
 
 
+# ── thinking models ──────────────────────────────────────────────────────────
+# A thinking-only build (the gateway's qwen3:30b) reasons on every call whatever the
+# request says, and its reasoning counts against max_tokens: production measured the
+# proposal calls at 792 of 800 tokens, 99.6% of them reasoning — an empty answer
+# every time. So a model OBSERVED to think gets a reasoning allowance on top of what
+# the caller asked for, and a call that cannot afford one — inside a turn whose
+# time budget is shorter than a thought — is not made at all: the caller's rules
+# answer at once instead of the GPU spending a minute on a reply with nothing in it.
+THINK_TOKENS = int(os.environ.get("BRAIN_THINK_TOKENS", "2500"))     # 0: no allowance, no skipping
+THINK_TOK_PER_S = float(os.environ.get("BRAIN_THINK_TOK_PER_S", "8"))
+_THINKING: dict = {}                              # (base_url, model) → {"thinks": bool, "ts": float}
+SKIPPED: dict = {}                                # purpose → calls not made (a thinker, no time)
+
+
+def thinks(p: dict) -> bool:
+    """Is this provider's model a thinking model? Learned from the permanent call log
+    (reasoning outweighing the answer over its recent calls), then from every reply."""
+    k = (p.get("base_url", ""), p.get("model", ""))
+    e = _THINKING.get(k)
+    if e is None or _time.time() - e["ts"] > 600:
+        v = e["thinks"] if e else False
+        try:
+            import anchor
+            c = anchor._conn()
+            try:
+                r = c.execute("SELECT SUM(reasoning_chars), SUM(content_chars), COUNT(*) FROM "
+                              "(SELECT reasoning_chars, content_chars FROM model_calls WHERE provider=? "
+                              "AND ok=1 ORDER BY id DESC LIMIT 30)", (p.get("base_url", ""),)).fetchone()
+            finally:
+                c.close()
+            if r and r[2]:
+                v = (r[0] or 0) > 3 * (r[1] or 0)
+        except Exception:                          # noqa: BLE001 — no record: keep what we knew
+            pass
+        e = _THINKING[k] = {"thinks": v, "ts": _time.time()}
+    return e["thinks"]
+
+
+def _observe_thinking(p: dict, reasoning_chars: int, content_chars: int, finish: str) -> None:
+    if reasoning_chars > 3 * max(1, content_chars) or (not content_chars and finish == "length"):
+        _THINKING[(p.get("base_url", ""), p.get("model", ""))] = {"thinks": True, "ts": _time.time()}
+    elif content_chars and not reasoning_chars:
+        _THINKING[(p.get("base_url", ""), p.get("model", ""))] = {"thinks": False, "ts": _time.time()}
+
+
 def _deadline() -> float | None:
     return getattr(_BUDGET, "until", None)
 
 
-def _attempt_timeout() -> float:
-    base = float(os.environ.get("BRAIN_TIMEOUT_S", "300"))
+def _attempt_timeout(at_least: float = 0.0) -> float:
+    base = max(float(os.environ.get("BRAIN_TIMEOUT_S", "300")), at_least)
     d = _deadline()
     return base if d is None else max(1.0, min(base, d - _time.time()))
 
@@ -377,6 +423,15 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
     d = _deadline()
     if d is not None and d - t0 < 5:                # no call is made, so none is logged
         raise BudgetSpent("the turn's model-time budget is spent")
+    think_extra = 0
+    if THINK_TOKENS and p["kind"] == "openai" and thinks(p):
+        need_s = (THINK_TOKENS + max_tokens) / max(0.1, THINK_TOK_PER_S)
+        if d is not None and d - t0 < need_s:
+            SKIPPED[purpose] = SKIPPED.get(purpose, 0) + 1
+            raise BudgetSpent(f"a thinking model needs ~{need_s:.0f}s to answer; this turn has "
+                              f"{d - t0:.0f}s — the rules answer instead")
+        think_extra = THINK_TOKENS
+    think_wait = 1.3 * (think_extra + max_tokens) / max(0.1, THINK_TOK_PER_S) if think_extra else 0.0
     try:
         native = (os.environ.get("BRAIN_NATIVE", "").strip() == "1" and p["kind"] == "openai"
                   and ":" in p["model"] and NATIVE["ok"] is not False)
@@ -407,13 +462,13 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             client = OpenAI(api_key=p["key"], base_url=p["base_url"],
                             timeout=float(os.environ.get("BRAIN_TIMEOUT_S", "300")),
                             max_retries=0)
-            kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens,
+            kw = {"model": p["model"], "messages": messages, "max_tokens": max_tokens + think_extra,
                   "temperature": temperature}
             extras = dict(default_extras(p["model"]), **EXTRA_BODY, **(extra_body or {}))
             if extras:
                 kw["extra_body"] = extras
             # A completion is a read with a cost, not an action: safe to repeat.
-            resp = netretry.call(lambda: client.with_options(timeout=_attempt_timeout()).chat.completions.create(**kw),
+            resp = netretry.call(lambda: client.with_options(timeout=_attempt_timeout(think_wait)).chat.completions.create(**kw),
                                  what=f"{p['model']} {purpose}", idempotent=True,
                                  key=_host(p), deadline=_deadline())
             msg = resp.choices[0].message
@@ -427,6 +482,7 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
                   or "")
             out, inline = _split_think(out)
             rc = rc or inline
+            _observe_thinking(p, len(rc), len(out), getattr(resp.choices[0], "finish_reason", "") or "")
             LAST_RAW.update(finish_reason=getattr(resp.choices[0], "finish_reason", ""),
                             content_chars=len(out), reasoning_chars=len(rc),
                             reasoning_head=rc[:160],
@@ -581,12 +637,16 @@ def catalogue_digest(existing: list, cap: int = 24) -> tuple[str, str]:
     return sample, avoid
 
 
+LAST_PROPOSAL: dict = {"ok": None, "why": ""}      # why the last proposal came to nothing
+
+
 def propose_development(situation: str, knowledge: list, existing: list) -> dict | None:
     """The Governor invents a new development using ingested knowledge. Returns
     {name, cost:{food,wood,gold}, kind, value, resource, rank, why} constrained to the
     machine-usable effect vocabulary — or None (no model / bad output), so the caller
     can fall back to a template proposal."""
     if not _deepseek_available():
+        LAST_PROPOSAL.update(ok=False, why="no model configured")
         return None
     import json as _json
     facts = clip_join("facts", "fact",
@@ -608,13 +668,16 @@ def propose_development(situation: str, knowledge: list, existing: list) -> dict
     )
     try:
         out = _chat([{"role": "user", "content": prompt}], 800, 0.8, "dev-proposal")
-        if out.startswith("```"):
-            out = out.strip("`").lstrip("json").strip()
-        d = _json.loads(out)
+        m = re.search(r"\{.*\}", out or "", re.S)  # prose or a code fence around the object
+        d = _json.loads(m.group(0)) if m else {}
         if d.get("kind") not in ("yield_pct", "all_yield_pct", "pop_cap"):
+            LAST_PROPOSAL.update(ok=False, why="the reply held no usable development"
+                                 + ("" if out else " (it was empty)"))
             return None
+        LAST_PROPOSAL.update(ok=True, why="")
         return d
-    except Exception:
+    except Exception as e:                        # noqa: BLE001 — the caller falls back
+        LAST_PROPOSAL.update(ok=False, why=f"model call failed: {type(e).__name__}: {str(e)[:120]}")
         return None
 
 

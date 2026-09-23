@@ -195,11 +195,21 @@ def consider(cycle_id: int, topic: str, world: dict, situation: str) -> dict:
                                                           if r.get("proposal") and r["status"] in ("queued", "voting")]
     fact = {"topic": topic, "fact": f"{page['title']}: {page['extract'][:300]} (source: {page['url']})"}
     prop = _propose(situation, [fact], existing)
+    if not prop and PROPOSE is None and brain.LAST_PROPOSAL.get("ok") is False:
+        # the MODEL gave nothing — not the same as "nothing new": the topic is tried again
+        why = brain.LAST_PROPOSAL.get("why") or "no answer"
+        iid = _add(cycle_id=cycle_id, ts=time.time(), age=age, topic=topic, title=page["title"],
+                   source=page["url"], fact=page["extract"][:400], verified=1, knowledge_id=ing["id"],
+                   proposal="null", research_id=0, status="model-silent",
+                   note=f"the fact verified, but the model did not answer: {why} — tried again next cycle",
+                   decided_ts=0)
+        return {"status": "model-silent", "id": iid}
     if not prop or prop.get("name") in existing:
         iid = _add(cycle_id=cycle_id, ts=time.time(), age=age, topic=topic, title=page["title"],
                    source=page["url"], fact=page["extract"][:400], verified=1, knowledge_id=ing["id"],
                    proposal="null", research_id=0, status="no-proposal",
-                   note="the fact verified but no new development came of it", decided_ts=0)
+                   note=("the model proposed '" + str(prop.get("name")) + "', which already exists"
+                         if prop else "the fact verified but no new development came of it"), decided_ts=0)
         return {"status": "no-proposal", "id": iid}
     prop = {k: prop.get(k) for k in ("name", "cost", "kind", "value", "resource", "rank", "why")}
     prop["source"] = f"{brain.brain_name()}+{page['url']}"
@@ -224,6 +234,31 @@ def consider(cycle_id: int, topic: str, world: dict, situation: str) -> dict:
     finally:
         c.close()
     return {"status": "queued", "id": iid, "proposal": prop}
+
+
+RETRY_STATUSES = ("unread", "model-silent", "interrupted")   # a topic in these is read again
+
+
+def reap_stale(older_than_s: float = 1800) -> int:
+    """An idea left 'researching' by a process that died mid-cycle is marked
+    interrupted, so its topic is considered again rather than stuck forever."""
+    c = _conn()
+    try:
+        # once: ideas recorded as "no development came of it" before the model's silence
+        # was told apart were the model's silence (a thinking build out of tokens) — retry them
+        if not anchor.config_get("ideas_silent_migrated"):
+            c.execute("UPDATE ideas SET status='model-silent', note=note || ' (re-read: before 2026-09-24 a "
+                      "silent model was recorded as no proposal)' WHERE status='no-proposal' "
+                      "AND note='the fact verified but no new development came of it'")
+            c.commit()
+            anchor.config_set("ideas_silent_migrated", "1")
+        n = c.execute("UPDATE ideas SET status='interrupted', note='the process restarted while this was "
+                      "being researched — the topic is read again', decided_ts=? "
+                      "WHERE status='researching' AND ts < ?", (time.time(), time.time() - older_than_s)).rowcount
+        c.commit()
+        return n
+    finally:
+        c.close()
 
 
 def take() -> dict | None:
