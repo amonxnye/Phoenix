@@ -148,6 +148,14 @@ check("lessons persist in the skills store", set(lessons) <= top)
 n = A.skills_count()
 A.skill_add(9, lessons[0], source="test", trigger="test")     # exact duplicate
 check("duplicate lessons are not hoarded", A.skills_count() == n)
+import random as _rnd
+_ltag = "".join(_rnd.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(10))   # figures are blanked: letters only
+_ln = A.skills_count()
+_l1 = A.skill_add(1, f"Prioritise suite-{_ltag} early — it has paid best (avg 57.3/round)", source="suite")
+_l2 = A.skill_add(2, f"Prioritise suite-{_ltag} early — it has paid best (avg 57.1/round)", source="suite")
+check("the same lesson with fresher figures re-confirms the old one instead of piling up",
+      _l1 and _l2 is None and A.skills_count() == _ln + 1
+      and any("57.1/round" in x["lesson"] and _ltag in x["lesson"] for x in A.skills_top(50)))
 
 print("\n" + S.render_world())
 print(G.render(sorted(G.units(graph, cp), key=lambda u: u.unit_id)))
@@ -774,6 +782,14 @@ _bv = _BD.vote("probe the float delta", {"affordable": True, "spent": 1, "cap": 
                                          "within_budget": True, "progress_delta": -0.4, "understaffed": False})
 check("the Board reads an unrounded vision delta without failing (it raised on every report)",
       "vision flat (-0.4%)" in _json_mod.dumps(_bv), _bv.get("tally"))
+_cl2 = S.advance_cost("Castle Age")
+_ex1 = _V.scorecard({**{r: int(v * 0.37) for r, v in _cl2.items()}, "age": "Castle Age"}, _short, 0, _V.get("imperial"))
+_ex2 = _V.scorecard({**{r: int(v * 0.37) + 400 for r, v in _cl2.items()}, "age": "Castle Age"}, _short, 0, _V.get("imperial"))
+check("a few hundred more of each resource on a 28-million leap still registers as movement",
+      _ex2["progress_exact"] > _ex1["progress_exact"], f"{_ex1['progress_exact']} → {_ex2['progress_exact']}")
+check("an agent whose thread stopped mid-step is revived, not left 'running' forever",
+      'u.status == "running" and u.age_s > STUCK_AFTER_S' in _csrc4
+      and _csrc4.index("STUCK_AFTER_S") < _csrc4.index('if u and u.status in ("awaiting_approval", "idle")'))
 check("idle budget is a penalty only when the fleet could have grown with it",
       "score -= 2 if spend_pct < 30 and could_grow else 0" in _csrc4 and not re.search(r"delta:\+?d\}", _csrc4))
 

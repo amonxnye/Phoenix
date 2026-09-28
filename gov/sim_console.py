@@ -1124,12 +1124,21 @@ def _one_turn():
     #   3. fleet floor (II.5): below minimum staffing with replacement blocked,
     #      reaping is suspended and the shortage escalates instead.
     TURN_COST = 10_400                            # one work cycle's compute, observed
+    STUCK_AFTER_S = max(60.0, 20 * TICK)          # a step this old will never finish
     status = _by_uid()
     roster_by = {r["agent"]: r for r in economy.roster()}
     for uid in list(_S["villagers"]):
         u, r = status.get(uid), roster_by.get(uid)
         if u is None or u.status == "done":       # an ended thread is not a death
             _renew(uid, u, "its working thread had ended", event="revived")
+            continue
+        if u.status == "running" and u.age_s > STUCK_AFTER_S:
+            # A villager's step takes well under a second. A thread still "running" a
+            # minute later was cut off mid-step (a locked database, a restart) and no
+            # loop will ever move it again: seven of ten agents sat like this for a
+            # day while two did all the work. Revived on the same identity (Article II).
+            _renew(uid, u, f"its thread stopped mid-step ({u.age_s:.0f}s without progress)",
+                   event="revived")
             continue
         if r and r["budget"] and u.tokens + TURN_COST > r["budget"] and u.pending:
             # Article II as amended: a working season's budget is spent — the agent rests

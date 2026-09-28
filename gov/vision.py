@@ -118,7 +118,7 @@ def scorecard(world: dict, structures: dict, side_effects: int, goal: Vision = G
     return {
         "vision": goal.name,
         "progress": progress,                 # 0..100 — the number everyone drives to
-        "progress_exact": round(exact, 3),    # unrounded: a slow leap still shows movement
+        "progress_exact": round(exact, 6),   # fine enough to see a slow leap fill    # unrounded: a slow leap still shows movement
         "leap": leap or {},                   # the next leap's price, while below the target age
         "leap_pct": round(100 * fill),        # how full the treasury is for it
         "age_pct": round(100 * age_exact),

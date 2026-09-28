@@ -821,6 +821,11 @@ def lineage(decision_id: int) -> dict:
         c.close()
 
 
+def _lesson_shape(text: str) -> str:
+    """A lesson with its figures blanked — what makes two lessons the same lesson."""
+    return re.sub(r"\d+(?:[.,]\d+)*", "#", (text or "").lower()).strip()
+
+
 def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> int | None:
     """Store a lesson; returns its id (citable as 'skill:<id>' in decision lineage),
     or None if empty/duplicate."""
@@ -832,6 +837,17 @@ def skill_add(turn: int, lesson: str, source: str = "", trigger: str = "") -> in
         # de-dup: don't hoard a LIVE duplicate — but re-learning a STALE lesson is
         # re-confirmation (VI.4): it revives with a fresh timestamp, not a new row
         row = c.execute("SELECT id, stale FROM skills WHERE lesson=?", (lesson,)).fetchone()
+        if not row:
+            # the same lesson with fresher numbers ("avg 57.3/round" → "avg 57.2/round") is
+            # a re-confirmation, not a new lesson: the live row takes the new figures
+            shape = _lesson_shape(lesson)
+            for sid, text in c.execute("SELECT id, lesson FROM skills WHERE stale=0 "
+                                       "ORDER BY id DESC LIMIT 200").fetchall():
+                if _lesson_shape(text) == shape:
+                    c.execute("UPDATE skills SET lesson=?, turn=?, ts=? WHERE id=?",
+                              (lesson, turn, time.time(), sid))
+                    c.commit()
+                    return None
         if row:
             sid, stale = row
             if stale:
