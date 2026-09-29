@@ -116,6 +116,28 @@ the whole world is exported to `<data>/exports/world-<time>.json` first, the nig
 archives are moved beside it, then every database and the event log are deleted and
 the process restarts from nothing.
 
+## The 3D world (`/map3d`)
+
+Drawn live from the simulation's own record (`/api/state`: terrain stock, placements, registry, agents) with
+three.js r160 and its addons, all vendored under `gov/pages/vendor/` — nothing is fetched, so it works on an
+air-gapped host. The renderer is a set of ES modules under `gov/pages/gfx/`: `terrain` (a heightfield with hills,
+mountains and a lake, painted from the tile classes), `sky` (physically-based atmosphere, day/night cycle, moon,
+stars, clouds, image-based lighting from the sky itself), `nature` (wind-swayed forests, grass, flowers, rocks,
+reeds, berry bushes, ore), `buildings` and `civic` (every building and all twelve civic shapes), `agents`
+(articulated villagers with job-specific tools, and a grazing flock), `fx` (smoke, fire, spray, dust, fireflies,
+butterflies, birds) and `post` (HDR, MSAA, ambient occlusion, bloom, tone mapping, colour grade). Every texture is
+painted procedurally at start-up.
+
+Quality is **Auto** by default (starts at Medium and steps up or down from the measured frame rate) or Low / Medium /
+High from the panel; the choice is remembered in the browser. Low skips post-processing and water reflections and
+runs on integrated graphics. Keys: drag orbit · wheel zoom · WASD move · QE rise/sink · **C** cinematic orbit ·
+**H** hide the UI · **F2** save a screenshot.
+
+Review aids in the query string (`/map3d?…`): `q=low|medium|high`, `tod=0.0–1.0` (time of day: 0.25 dawn, 0.5 noon,
+0.75 dusk), `cam=x,y,z,tx,ty,tz` (camera and target), `still=N` (render N frames then stop — for headless captures),
+`demo=1` (adds one of every civic shape and a few homes in varying condition — nothing is written), `walk=1` (sends
+every agent walking). `PHOENIX_DEV=1` makes the console re-read page files on every request while editing them.
+
 ## State persistence
 
 Railway's container filesystem is ephemeral — without a Volume, the game resets on

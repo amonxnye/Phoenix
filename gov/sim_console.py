@@ -1977,7 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
         full = os.path.realpath(os.path.join(base, rel.lstrip("/")))
         if not full.startswith(os.path.realpath(base) + os.sep):
             return self._send(404, json.dumps({"error": "not found"}))
-        if full not in self._PAGE_CACHE:
+        if full not in self._PAGE_CACHE or os.environ.get("PHOENIX_DEV"):   # dev: always re-read
             try:
                 with open(full, "rb") as f:
                     self._PAGE_CACHE[full] = f.read()
@@ -2254,14 +2254,15 @@ class Handler(BaseHTTPRequestHandler):
         # The 3D worlds live as standalone files under gov/pages/ (each is a whole
         # scene — far too large to inline), with their engines VENDORED under
         # gov/pages/vendor/ so the deployed console needs no CDN and no network.
-        if self.path == "/map3d":
+        _route = self.path.split("?", 1)[0]       # a page takes options in its query (?q=low&tod=0.5)
+        if _route == "/map3d":
             self._count_view()
             return self._serve_page_file("map3d.html")
-        if self.path == "/babylon":
+        if _route == "/babylon":
             self._count_view()
             return self._serve_page_file("babylon.html")
-        if self.path.startswith("/pages/"):
-            return self._serve_page_file(self.path[len("/pages/"):])
+        if _route.startswith("/pages/"):
+            return self._serve_page_file(_route[len("/pages/"):])
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()

@@ -9,6 +9,7 @@ Proves the three core functions on real game work, reusing governor.py unchanged
 Run:  python3 gov/verify_sim.py
 """
 
+import glob as _glob
 import json as _json_mod
 import os
 import re
@@ -204,7 +205,8 @@ check("reasoning and careers survive the world wipe",
 # ── 8. lineage: decisions are first-class and traceable both ways ────────────
 print("\n8. Lineage — why() walks to the roots, credit() walks to the value")
 stamp = int(time.time())
-sid = A.skill_add(9, f"Test lesson {stamp}: rebalance early", source="test", trigger="lineage")
+_ltag8 = "".join(chr(97 + int(c)) for c in str(stamp))          # figures are blanked when lessons are compared: letters only
+sid = A.skill_add(9, f"Test lesson {_ltag8}: rebalance early", source="test", trigger="lineage")
 e1 = A.record(9, "board", "[3/3] approved test build")
 did = A.reason_add(9, "director", "build test_mill", "testing provenance",
                    derived_from=[f"skill:{sid}"], authorized_by="board:3/3")
@@ -216,7 +218,7 @@ check("decision carries authorization and measured outcome",
       lin["decision"]["authorized_by"] == "board:3/3"
       and "yield" in lin["decision"]["outcome"])
 check("why() walks back to the lesson it derived from",
-      any(f"Test lesson {stamp}" in x for x in lin["derived_from"]))
+      any(f"Test lesson {_ltag8}" in x for x in lin["derived_from"]))
 check("effect chain reaches the event that caused it",
       any("approved test build" in x for x in lin["effect_chain"]))
 check("credit() walks forward to the value produced",
@@ -252,7 +254,7 @@ check("surplus food is traded for gold before it rots",
 
 # VI.4: knowledge expires — only a bounded set of lessons steers decisions
 for i in range(35):
-    A.skill_add(9, f"filler lesson {stamp}-{i} for the expiry check", source="test")
+    A.skill_add(9, f"filler lesson {_ltag8}-{chr(97 + i % 26)}{chr(97 + i // 26)} for the expiry check", source="test")
 A.skill_prune(30)
 live = A.skills_top(100)
 check("stale lessons stop steering (bounded live set)", len(live) <= 30,
@@ -1384,7 +1386,8 @@ try:
           "def _renew(" in _csrc and "economy.retire" not in _csrc.split("def _op_terminate")[0].split("def _renew(")[0][-4000:]
           and _csrc.count("economy.retire(") == 1 and "honourable discharge" not in _csrc)
     EC.retire("vil-mentee-" + _tag.strip("[]")); EC.retire("vil-elder-" + _tag.strip("[]"))
-    _pg3 = open(os.path.join(HERE, "pages", "map3d.html")).read(); _pgb = open(os.path.join(HERE, "pages", "babylon.html")).read()
+    _pg3 = "".join(open(f).read() for f in [os.path.join(HERE, "pages", "map3d.html")] + sorted(_glob.glob(os.path.join(HERE, "pages", "gfx", "*.js"))))
+    _pgb = open(os.path.join(HERE, "pages", "babylon.html")).read()
     check("both 3D worlds draw every civic shape, and grow the town centre with each age",
           all(f"'{sh}'" in _pg3 and f"'{sh}'" in _pgb for sh in S.UTOPIA_SHAPES)
           and "age_index" in _pg3 and "age_index" in _pgb)
@@ -1955,7 +1958,8 @@ _p3, _pb = (os.path.join(_pages, f) for f in ("map3d.html", "babylon.html"))
 check("both 3D pages exist and are real scenes, not stubs",
       all(os.path.exists(p) and os.path.getsize(p) > 10_000 for p in (_p3, _pb)),
       " + ".join(f"{os.path.getsize(p) // 1024}KB" for p in (_p3, _pb) if os.path.exists(p)))
-_srcs = "".join(open(p).read() for p in (_p3, _pb) if os.path.exists(p))
+_gfx = sorted(_glob.glob(os.path.join(_pages, "gfx", "*.js")))
+_srcs = "".join(open(p).read() for p in [_p3, _pb] + _gfx if os.path.exists(p))
 check("the pages load nothing from the network — engines are vendored",
       "http://" not in _srcs and "https://" not in _srcs
       and "/pages/vendor/" in _srcs)
@@ -1963,6 +1967,30 @@ check("the vendored engines are present",
       all(os.path.getsize(os.path.join(_pages, "vendor", f)) > 100_000
           for f in ("three.module.js", "babylon.min.js"))
       and os.path.exists(os.path.join(_pages, "vendor", "addons", "controls", "OrbitControls.js")))
+_addons = os.path.join(_pages, "vendor", "addons")
+_want = ("postprocessing/EffectComposer.js", "postprocessing/UnrealBloomPass.js", "postprocessing/GTAOPass.js",
+         "postprocessing/OutputPass.js", "objects/Sky.js", "objects/Water.js", "utils/BufferGeometryUtils.js")
+check("the 3D world's renderer modules and the three.js addons they use are all vendored, and every import resolves offline",
+      len(_gfx) >= 9 and all(os.path.exists(os.path.join(_addons, f)) for f in _want)
+      and all(os.path.exists(os.path.normpath(os.path.join(_pages, "gfx", m))) for src in _gfx
+              for m in re.findall(r"from '(\./[\w./-]+)'", open(src).read()))
+      and all(os.path.exists(os.path.join(_addons, m)) for src in _gfx + [_p3]
+              for m in re.findall(r"from 'three/addons/([\w./-]+)'", open(src).read())),
+      f"{len(_gfx)} modules, {sum(os.path.getsize(f) for f in _gfx) // 1024} KB")
+import shutil as _sh, subprocess as _sp
+if _sh.which("node"):
+    _bad = []
+    for _f in _gfx:
+        _r = _sp.run(["node", "--input-type=module", "--check"], input=open(_f).read(), capture_output=True, text=True)
+        if _r.returncode: _bad.append(os.path.basename(_f) + ": " + _r.stderr.strip().splitlines()[-1][:80])
+    _html = open(_p3).read(); _m = re.search(r"<script type=\"module\">(.*?)</script>", _html, re.S)
+    _r = _sp.run(["node", "--input-type=module", "--check"], input=_m.group(1), capture_output=True, text=True)
+    if _r.returncode: _bad.append("map3d.html: " + _r.stderr.strip().splitlines()[-1][:80])
+    check("every renderer module and the page script parse as ES modules", not _bad, "; ".join(_bad) or f"{len(_gfx) + 1} scripts")
+_p3src = open(_p3).read()
+check("the 3D world draws the live record: state, placements, registry, agents, terrain stock — and offers three quality tiers",
+      all(k in _p3src for k in ("/api/state", "placements", "registry", "d.agents", "m.terrain", "age_index"))
+      and all(t in open(os.path.join(_pages, "gfx", "post.js")).read() for t in ("low:", "medium:", "high:")))
 _console_src2 = open(os.path.join(HERE, "sim_console.py")).read()
 check("the console routes them, path-safely, from one file-server",
       all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
