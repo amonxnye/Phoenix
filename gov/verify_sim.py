@@ -1987,6 +1987,11 @@ if _sh.which("node"):
     _r = _sp.run(["node", "--input-type=module", "--check"], input=_m.group(1), capture_output=True, text=True)
     if _r.returncode: _bad.append("map3d.html: " + _r.stderr.strip().splitlines()[-1][:80])
     check("every renderer module and the page script parse as ES modules", not _bad, "; ".join(_bad) or f"{len(_gfx) + 1} scripts")
+_ag = open(os.path.join(_pages, "gfx", "agents.js")).read()
+check("villagers commute whatever the record calls them between turns (the live world never reports 'running'); only an "
+      "un-tasked 'idle' one stands about, and the beacon is lit only by a herald's pending decision",
+      "const stuck = e.status === 'idle'" in _ag and "e.status === 'running'" not in _ag
+      and "any = any || (herald && !!a.pending)" in _ag)
 _p3src = open(_p3).read()
 check("the 3D world draws the live record: state, placements, registry, agents, terrain stock — and offers three quality tiers",
       all(k in _p3src for k in ("/api/state", "placements", "registry", "d.agents", "m.terrain", "age_index"))

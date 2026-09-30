@@ -80,8 +80,9 @@ export class Agents {
   sync(agents) {
     const seen = new Set(); let any = false;
     for (const a of agents) {
-      seen.add(a.uid); any = any || !!a.pending;
+      seen.add(a.uid);
       const res = (a.task || '').startsWith('gather') ? ((a.task.split(' ')[1]) || 'food') : null, herald = a.role === 'herald' || a.uid.startsWith('herald');
+      any = any || (herald && !!a.pending);                       // the beacon is for a decision only a human can make
       let e = this.ents.get(a.uid);
       if (!e || e.res !== res || e.herald !== herald) {
         if (e) this.root.remove(e.g);
@@ -106,11 +107,19 @@ export class Agents {
         u.q.visible = !!e.pending; if (e.pending) u.q.position.y = 0.95 + Math.sin(t * 2.4) * 0.05; continue;
       }
       const curve = this.curves[e.res]; if (!curve) { g.visible = false; continue; } g.visible = true;
-      if (e.status === 'running') {                               // walk the road out, carry the haul back
-        const ph = (t * e.speed + e.off) % 2, out = ph < 1, k = out ? ph : 2 - ph;
-        const p = curve.getPoint(k), tan = curve.getTangent(k), lat = e.lat * (out ? 1 : -1);
-        const x = p.x + -tan.z * lat, z = p.z + tan.x * lat, gait = t * 7.5 + e.off * 9, sw = Math.sin(gait);
-        g.position.set(x, F.heightAt(x, z) + Math.abs(Math.sin(gait)) * 0.012, z);
+      // A villager's gather step is instant, so the record shows it "awaiting orders" between turns even
+      // while it is hard at work. Only a villager left un-tasked for long ('idle') is drawn standing about;
+      // everyone else commutes: out to the ground, work it, and carry the haul home.
+      const stuck = e.status === 'idle';
+      const end = curve.getPoint(1), ang = e.spot * 6.28, rr = 0.5 + e.spot * 0.45;
+      const off = { x: Math.cos(ang) * rr, z: Math.sin(ang) * rr };
+      const CYC = 30, ph = stuck ? 0.5 : ((t / CYC) + e.off * 0.5) % 1;
+      const w = t * 3.6 + e.off * 5;
+      if (ph < 0.36 || ph >= 0.68) {                                 // walking: out (0–0.36) or home (0.68–1)
+        const out = ph < 0.36, k = out ? ph / 0.36 : 1 - (ph - 0.68) / 0.32;
+        const p = curve.getPoint(k), tan = curve.getTangent(k), lat = e.lat * (out ? 1 : -1), arrive = k * k * k;
+        const x = p.x - tan.z * lat + off.x * arrive, z = p.z + tan.x * lat + off.z * arrive, gait = t * 7.5 + e.off * 9, sw = Math.sin(gait);
+        g.position.set(x, F.heightAt(x, z) + Math.abs(sw) * 0.012, z);
         const dir = out ? 1 : -1; g.rotation.y = Math.atan2(tan.x * dir, tan.z * dir);
         u.lL.rotation.x = sw * 0.75; u.lR.rotation.x = -sw * 0.75; u.aL.rotation.x = -sw * 0.6; u.aR.rotation.x = sw * 0.6;
         u.body.rotation.x = 0.06; u.body.rotation.z = Math.sin(gait * 0.5) * 0.03; u.head.rotation.y = 0;
@@ -118,19 +127,18 @@ export class Agents {
         if (u.pack) u.pack.visible = !out;
         if (Math.floor(gait / Math.PI) !== e.foot) { e.foot = Math.floor(gait / Math.PI); this.fx?.dust(x, F.heightAt(x, z), z); }
         u.q.visible = false;
-      } else {                                                    // at the ground: work it, or wait
-        const end = curve.getPoint(1), ang = e.spot * 6.28, r = 0.5 + e.spot * 0.45, x = end.x + Math.cos(ang) * r, z = end.z + Math.sin(ang) * r;
+      } else {                                                       // at the ground: work it (or wait, if left un-tasked)
+        const x = end.x + off.x, z = end.z + off.z;
         g.position.set(x, F.heightAt(x, z), z); g.rotation.y = ang + Math.PI * 1.5 + Math.sin(t * 0.7 + e.off * 7) * 0.12;
-        const wait = e.pending || e.status === 'awaiting_approval', w = t * 3.6 + e.off * 5;
         u.lL.rotation.x = u.lR.rotation.x = 0;
-        if (e.res === 'wood' || e.res === 'gold') {                // chop / dig
-          const s = Math.sin(w); u.aR.rotation.x = -1.4 + Math.max(0, s) * 2.1; u.aL.rotation.x = -0.9 + Math.max(0, s) * 1.4; u.body.rotation.x = 0.12 + Math.max(0, s) * 0.16;
-          if (u.tool) u.tool.rotation.x = 1.2 - Math.max(0, s) * 0.5;
-        } else { const s = 0.5 + 0.5 * Math.sin(w * 0.6); u.body.rotation.x = 0.45 * s; u.aR.rotation.x = -0.4 - 0.8 * s; u.aL.rotation.x = -0.3 - 0.4 * s; }
-        u.head.rotation.y = wait ? Math.sin(t * 0.8 + e.off * 6) * 0.6 : 0; u.body.rotation.z = 0;
-        if (wait) { u.aL.rotation.x = u.aR.rotation.x = -0.1 + Math.sin(t * 1.2 + e.off) * 0.04; u.body.rotation.x = 0; }
-        if (u.pack) u.pack.visible = false;
-        u.q.visible = wait; if (wait) u.q.position.y = 0.72 + Math.sin(t * 2.2 + e.off * 4) * 0.05;
+        if (e.res === 'wood' || e.res === 'gold') {                  // chop / dig
+          const sn = Math.sin(w); u.aR.rotation.x = -1.4 + Math.max(0, sn) * 2.1; u.aL.rotation.x = -0.9 + Math.max(0, sn) * 1.4; u.body.rotation.x = 0.12 + Math.max(0, sn) * 0.16;
+          if (u.tool) u.tool.rotation.x = 1.2 - Math.max(0, sn) * 0.5;
+        } else { const sn = 0.5 + 0.5 * Math.sin(w * 0.6); u.body.rotation.x = 0.45 * sn; u.aR.rotation.x = -0.4 - 0.8 * sn; u.aL.rotation.x = -0.3 - 0.4 * sn; }
+        u.head.rotation.y = 0; u.body.rotation.z = 0;
+        if (stuck) { u.aL.rotation.x = u.aR.rotation.x = -0.1 + Math.sin(t * 1.2 + e.off) * 0.04; u.body.rotation.x = 0; u.head.rotation.y = Math.sin(t * 0.8 + e.off * 6) * 0.6; }
+        if (u.pack) u.pack.visible = ph > 0.6;                       // the last of the haul goes on the back before the walk home
+        u.q.visible = stuck; if (stuck) u.q.position.y = 0.72 + Math.sin(t * 2.2 + e.off * 4) * 0.05;
       }
     }
   }
