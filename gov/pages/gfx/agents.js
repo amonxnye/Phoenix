@@ -73,6 +73,8 @@ export function makeFigure(kit, { res, herald, uid }) {
   return root;
 }
 
+const IDLE_HOLD_S = 25;
+
 export class Agents {
   constructor(scene, kit, field, fx) { this.kit = kit; this.field = field; this.fx = fx; this.root = new THREE.Group(); scene.add(this.root); this.ents = new Map(); this.beaconOn = false; this.curves = {}; this.town = null; }
   setCurves(curves) { this.curves = curves; }
@@ -91,6 +93,11 @@ export class Agents {
         this.root.add(e.g); this.ents.set(a.uid, e);
       }
       e.status = a.status; e.pending = a.pending; e.task = a.task; e.role = a.role;
+      // 'idle' only means "no state change for 2 s" and flickers on any working agent; an agent counts as
+      // left standing only after being idle on every poll for IDLE_HOLD_S
+      const nowMs = performance.now();
+      if (a.status === 'idle') e.idleSince ??= nowMs; else e.idleSince = null;
+      e.stuck = e.idleSince != null && nowMs - e.idleSince > IDLE_HOLD_S * 1000;
       e.g.traverse((o) => { o.userData.agent = { uid: a.uid, task: a.task, status: a.status, role: a.role || (herald ? 'herald' : 'villager'), pending: a.pending }; });
     }
     for (const [uid, e] of this.ents) if (!seen.has(uid)) { this.root.remove(e.g); this.ents.delete(uid); }
@@ -110,7 +117,7 @@ export class Agents {
       // A villager's gather step is instant, so the record shows it "awaiting orders" between turns even
       // while it is hard at work. Only a villager left un-tasked for long ('idle') is drawn standing about;
       // everyone else commutes: out to the ground, work it, and carry the haul home.
-      const stuck = e.status === 'idle';
+      const stuck = !!e.stuck;
       const end = curve.getPoint(1), ang = e.spot * 6.28, rr = 0.5 + e.spot * 0.45;
       const off = { x: Math.cos(ang) * rr, z: Math.sin(ang) * rr };
       const CYC = 30, ph = stuck ? 0.5 : ((t / CYC) + e.off * 0.5) % 1;

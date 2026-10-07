@@ -66,6 +66,52 @@ _THINKING: dict = {}                              # (base_url, model) → {"thin
 SKIPPED: dict = {}                                # purpose → calls not made (a thinker, no time)
 
 
+# A gateway's edge (Cloudflare) answers 524 when a request sends nothing for ~100 s. A thinking model
+# given room to reason takes minutes, so such a call is STREAMED: reasoning tokens arrive as they are
+# made, the connection is never silent, and the call can outlast 100 s. Streaming is tried only for a
+# model observed to think (BRAIN_STREAM=auto, the default), is always on with 1 and off with 0, and is
+# abandoned for a host that rejects it. A call that is NOT streamed must fit the edge's window, so its
+# reasoning allowance is cut to what a model of this speed can finish in EDGE_SAFE_S.
+STREAM_MODE = os.environ.get("BRAIN_STREAM", "auto").strip().lower()
+STREAM_GAP_S = float(os.environ.get("BRAIN_STREAM_GAP_S", "90"))      # the longest silence inside a stream
+EDGE_SAFE_S = float(os.environ.get("BRAIN_EDGE_SAFE_S", "85"))
+STREAM_OFF: set = set()                                               # hosts that rejected streaming
+
+
+def _streaming(p: dict) -> bool:
+    if STREAM_MODE == "0" or p.get("base_url") in STREAM_OFF or p.get("kind") != "openai":
+        return False
+    return STREAM_MODE == "1" or thinks(p)
+
+
+def _collect_stream(stream, total_s: float):
+    """Fold a chat-completion stream into one response-shaped object. Raises TimeoutError when the
+    whole reply outlasts `total_s` or the calling turn's budget, so a stream cannot run on unbounded."""
+    from types import SimpleNamespace as NS
+    t0, content, reasoning, finish, model, usage = _time.time(), [], [], "", "", None
+    for chunk in stream:
+        model = getattr(chunk, "model", "") or model
+        if getattr(chunk, "usage", None):
+            usage = chunk.usage
+        for ch in (getattr(chunk, "choices", None) or []):
+            dl = getattr(ch, "delta", None)
+            if dl is not None:
+                if getattr(dl, "content", None):
+                    content.append(dl.content)
+                r = getattr(dl, "reasoning_content", None) or getattr(dl, "reasoning", None)
+                if r:
+                    reasoning.append(r)
+            finish = getattr(ch, "finish_reason", None) or finish
+        d = _deadline()
+        if _time.time() - t0 > total_s or (d is not None and _time.time() > d):
+            raise TimeoutError(f"the model's reply outlasted its time budget after {_time.time() - t0:.0f}s")
+    text, think = "".join(content), "".join(reasoning)
+    if usage is None:                                 # a gateway that omits usage: estimate from the text
+        usage = NS(prompt_tokens=0, completion_tokens=(len(text) + len(think)) // 4)
+    return NS(choices=[NS(message=NS(content=text, reasoning_content=think), finish_reason=finish or "stop")],
+              usage=usage, model=model)
+
+
 def thinks(p: dict) -> bool:
     """Is this provider's model a thinking model? Learned from the permanent call log
     (reasoning outweighing the answer over its recent calls), then from every reply."""
@@ -423,14 +469,16 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
     d = _deadline()
     if d is not None and d - t0 < 5:                # no call is made, so none is logged
         raise BudgetSpent("the turn's model-time budget is spent")
-    think_extra = 0
+    think_extra, streaming = 0, _streaming(p)
     if THINK_TOKENS and p["kind"] == "openai" and thinks(p):
-        need_s = (THINK_TOKENS + max_tokens) / max(0.1, THINK_TOK_PER_S)
+        # streamed: the allowance is the full one. Not streamed: only what fits the edge's window.
+        allow = THINK_TOKENS if streaming else max(0, min(THINK_TOKENS, int(EDGE_SAFE_S * THINK_TOK_PER_S) - max_tokens))
+        need_s = (allow + max_tokens) / max(0.1, THINK_TOK_PER_S)
         if d is not None and d - t0 < need_s:
             SKIPPED[purpose] = SKIPPED.get(purpose, 0) + 1
             raise BudgetSpent(f"a thinking model needs ~{need_s:.0f}s to answer; this turn has "
                               f"{d - t0:.0f}s — the rules answer instead")
-        think_extra = THINK_TOKENS
+        think_extra = allow
     think_wait = 1.3 * (think_extra + max_tokens) / max(0.1, THINK_TOK_PER_S) if think_extra else 0.0
     try:
         native = (os.environ.get("BRAIN_NATIVE", "").strip() == "1" and p["kind"] == "openai"
@@ -468,9 +516,26 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
             if extras:
                 kw["extra_body"] = extras
             # A completion is a read with a cost, not an action: safe to repeat.
-            resp = netretry.call(lambda: client.with_options(timeout=_attempt_timeout(think_wait)).chat.completions.create(**kw),
-                                 what=f"{p['model']} {purpose}", idempotent=True,
-                                 key=_host(p), deadline=_deadline())
+            resp = None
+            if streaming:
+                total = _attempt_timeout(max(think_wait, 300.0))
+                try:
+                    resp = netretry.call(
+                        lambda: _collect_stream(client.with_options(timeout=min(STREAM_GAP_S, total)).chat.completions.create(
+                            stream=True, stream_options={"include_usage": True}, **kw), total),
+                        what=f"{p['model']} {purpose} (streamed)", idempotent=True, key=_host(p), deadline=_deadline())
+                except Exception as se:                    # noqa: BLE001 — classified below
+                    if netretry.status_of(se) in (400, 404, 405, 415, 422, 501):
+                        STREAM_OFF.add(p["base_url"])      # this host does not stream: plain calls from now on
+                        netretry._emit("stream_unsupported", _host(p), f"HTTP {netretry.status_of(se)} — falling back to plain calls")
+                        kw["max_tokens"] = max_tokens + max(0, min(think_extra, int(EDGE_SAFE_S * THINK_TOK_PER_S) - max_tokens))
+                        think_wait = 0.0
+                    else:
+                        raise
+            if resp is None:
+                resp = netretry.call(lambda: client.with_options(timeout=_attempt_timeout(think_wait)).chat.completions.create(**kw),
+                                     what=f"{p['model']} {purpose}", idempotent=True,
+                                     key=_host(p), deadline=_deadline())
             msg = resp.choices[0].message
             out, usage = (msg.content or "").strip(), resp.usage
             # The service API routes a service NAME to a model and says which one served;

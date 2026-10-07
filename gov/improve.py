@@ -437,8 +437,7 @@ def _world_cycle(trigger: str) -> dict:
         # silent, or whose research a restart cut short is tried again later
         ideas.reap_stale()
         rows_ = ideas.rows(limit=1000)
-        settled = {r["topic"] for r in rows_ if r["status"] not in ideas.RETRY_STATUSES}
-        already = settled
+        already = ideas.skip_topics(rows_)
         tops = ideas.topics(w, already, MAX_TRIES)
         counts["candidates"] = len(tops)
         situation = (f"The settlement is in the {w.get('age')} with food {w.get('food')}, wood {w.get('wood')}, "
@@ -449,11 +448,12 @@ def _world_cycle(trigger: str) -> dict:
             r = ideas.consider(cid, topic, w, situation)
             if r["status"] == "queued":
                 counts["verified"] += 1; counts["queued"] += 1
-            elif r["status"] in ("unverified", "unread", "model-silent"):
+            elif r["status"] in ("unverified", "unread", "model-silent", "unresearched"):
                 counts["rejected"] += 1
         note = (f"mode: world — {counts['tried']} topics read, {counts['queued']} sourced and researched "
                 f"developments queued for the Board, {counts['rejected']} unread or uncited"
-                if tops else "mode: world — every topic for this age has been read; nothing new to consider")
+                if tops else ("mode: world — every topic for this age is settled or cooling after a failure; "
+                              "nothing new to consider"))
     except Exception as e:                        # noqa: BLE001 — closed, not abandoned
         status, note = "halted", f"{type(e).__name__}: {str(e)[:200]}"
     c = _conn()

@@ -1495,8 +1495,10 @@ def decision_series(buckets: int = 24) -> list[dict]:
     c = _conn()
     try:
         lo, hi = c.execute("SELECT MIN(turn), MAX(turn) FROM decisions").fetchone()
-        if lo is None or hi is None or hi <= lo:
-            return []
+        if lo is None or hi is None:
+            return []                              # no decisions yet
+        # (hi == lo is a real state — a new world decides many times in its first turn — and must be
+        # ONE bucket holding them all; returning [] dropped every decision from the chart)
         width = max(1, (hi - lo + 1) // max(1, buckets))
         rows = c.execute(
             "SELECT (turn - ?) / ? AS b, COUNT(*), "

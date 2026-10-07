@@ -1467,6 +1467,54 @@ try:
 finally:
     _NR._SLEEP = _saved_sleep
 check("the retry policy starts no retry past the caller's deadline", len(_sleeps) <= 1, f"{len(_sleeps)} backoffs")
+# a gateway's edge drops a request that is silent for ~100 s, so a thinking model's reply is STREAMED
+_modes = {"reject": False}; _bodies = []
+
+class _Sse(_BH):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0) or 0); body = _json_mod.loads(self.rfile.read(n) or b"{}"); _bodies.append(body)
+        if body.get("stream") and _modes["reject"]:
+            e = b'{"error": {"message": "stream not supported"}}'
+            self.send_response(400); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(e))); self.end_headers(); self.wfile.write(e); return
+        if not body.get("stream"):
+            r = _json_mod.dumps({"id": "x", "object": "chat.completion", "created": 0, "model": "sse-model", "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": '{"plain": true}'}}], "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(r))); self.end_headers(); self.wfile.write(r); return
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+        def ev(delta, finish=None, usage=None):
+            c = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "sse-model", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}] if delta is not None else []}
+            if usage: c["usage"] = usage
+            self.wfile.write(b"data: " + _json_mod.dumps(c).encode() + b"\n\n"); self.wfile.flush()
+        for i in range(8): ev({"reasoning_content": "thinking %d " % i}); time.sleep(0.05)
+        ev({"content": '{"streamed"'}); ev({"content": ": true}"}); ev({}, "stop"); ev(None, usage={"prompt_tokens": 7, "completion_tokens": 40, "total_tokens": 47})
+        self.wfile.write(b"data: [DONE]\n\n"); self.wfile.flush()
+    def log_message(self, *a):
+        pass
+
+_srv3 = _TS(("127.0.0.1", 0), _Sse); _th.Thread(target=_srv3.serve_forever, daemon=True).start()
+_sp = {"kind": "openai", "model": "sse-model", "key": "k", "base_url": f"http://127.0.0.1:{_srv3.server_address[1]}/v1"}
+_m0 = B.STREAM_MODE; B.STREAM_MODE = "1"
+try:
+    _o1 = B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-stream", provider_override=_sp)
+    _streamed = bool(_bodies[-1].get("stream")) and _bodies[-1].get("stream_options", {}).get("include_usage")
+    _cr = anchor_calls = A._conn().execute("SELECT completion_tokens, reasoning_chars, content_chars, ok FROM model_calls WHERE purpose='suite-stream' ORDER BY id DESC LIMIT 1").fetchone()
+    _modes["reject"] = True
+    _o2 = B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-stream", provider_override=_sp)
+    _off = _sp["base_url"] in B.STREAM_OFF
+    _n_before = len(_bodies); _o3 = B._chat([{"role": "user", "content": "hi"}], 100, 0.1, "suite-stream", provider_override=_sp)
+    _third_plain = not _bodies[-1].get("stream") and len(_bodies) == _n_before + 1
+finally:
+    B.STREAM_MODE = _m0; _srv3.shutdown(); B.STREAM_OFF.discard(_sp["base_url"])
+check("a thinking model's reply is streamed (so the gateway edge never sees 100 s of silence): reasoning and answer are "
+      "folded back together and the real token count is logged",
+      _o1 == '{"streamed": true}' and _streamed and _cr and _cr[0] == 40 and _cr[1] > 50 and _cr[2] == len(_o1) and _cr[3] == 1, str(_cr))
+check("a host that rejects streaming is not an outage: the call falls back to a plain one, and the host is not asked to stream again",
+      _o2 == '{"plain": true}' and _off and _o3 == '{"plain": true}' and _third_plain)
+_no_stream_allow = max(0, min(B.THINK_TOKENS, int(B.EDGE_SAFE_S * B.THINK_TOK_PER_S) - 800))
+check("a call that is NOT streamed gets only the reasoning allowance that fits the edge's window (the full allowance made every "
+      "thinking call outlast 100 s: 3 of 24 proposals succeeded, down from 77 of 101)",
+      _no_stream_allow == 0 and B.EDGE_SAFE_S * B.THINK_TOK_PER_S < 800 + B.THINK_TOKENS)
+
 # a thinking model: its reasoning gets an allowance, and a turn that cannot afford a thought does not ask
 _seen = []
 
@@ -1516,6 +1564,36 @@ _A2.init()
 _jm = sqlite3.connect(_A2.DB).execute("PRAGMA journal_mode").fetchone()[0]
 check("the record runs in write-ahead mode, so a long read never locks the writer out", _jm.lower() == "wal", _jm)
 
+# ── a restart with an agent whose thread is gone must boot, not crash ──
+import tempfile as _tf2
+_bd = _tf2.mkdtemp(prefix="boot-")
+_env = dict(os.environ, GOV_DATA_DIR=_bd, IMPROVE="0", MECHANIC_WATCH="0")
+_py = [sys.executable, "-c"]
+_r1 = subprocess.run(_py + ["import sim_console"], cwd=HERE, env=_env, capture_output=True, text=True, timeout=120)
+_r2 = subprocess.run(_py + ["import economy; economy.init(); economy.enlist('vil-99')"], cwd=HERE, env=_env, capture_output=True, text=True, timeout=60)
+_r3 = subprocess.run(_py + ["import sim_console as C; print('VILLAGERS', C._S['villagers'])"], cwd=HERE, env=_env, capture_output=True, text=True, timeout=120)
+check("a restart with an enlisted agent whose thread went missing boots and revives it, instead of dying with NameError "
+      "(the renewal helper was defined after the boot code that calls it)",
+      _r1.returncode == 0 and _r2.returncode == 0 and _r3.returncode == 0 and "vil-99" in _r3.stdout,
+      (_r3.stderr.strip().splitlines() or [_r3.stdout.strip()])[-1][:100])
+
+# ── ideas: a topic that only ever failed is retried after a growing wait, and never settled by a failure ──
+import ideas as _ID2
+_now = 1_000_000.0
+_row = lambda t, st, ago: {"topic": t, "status": st, "ts": _now - ago}
+_rows = [_row("settled", "queued", 10), _row("settled", "model-silent", 5000),
+         _row("fresh-fail", "model-silent", 600),                                       # failed 10 min ago: cooling
+         _row("old-fail", "model-silent", 7200),                                        # one failure, 2 h ago: due
+         _row("lost-research", "unresearched", 7200),                                   # a transient research failure: due again
+         _row("many-fail", "model-silent", 7200), _row("many-fail", "unread", 8000), _row("many-fail", "model-silent", 9000),
+         _row("day-old", "model-silent", 90000)]
+_skip = _ID2.skip_topics(_rows, _now)
+check("failed ideas are retried after a doubling wait (a failed research call no longer settles a topic for good), "
+      "and settled ones are left alone",
+      "settled" in _skip and "fresh-fail" in _skip and "many-fail" in _skip       # still cooling (3 failures → 4 h)
+      and not ({"old-fail", "lost-research", "day-old"} & _skip) and "unresearched" in _ID2.RETRY_STATUSES,
+      str(sorted(_skip)))
+
 # ── the admin view: systems, compute, actors, the innovation journal, export and reset ──
 import admin as AD
 import tempfile as _tf
@@ -1557,6 +1635,15 @@ finally:
 check("admin: the efficiency review reads the compute, proposes an innovation and writes it to the journal",
       "batch the suite prompts" in _er["innovation"] and _er["how"] == "rules + brain"
       and any(e["kind"] == "efficiency" and "batch the suite prompts" in e["body"] for e in AD.journal()))
+for _i in range(3): A.model_call_log("suite", "suite-model", "efficiency-review", 900000, 100, 0, False, "524")
+_saved_av = B.available; B.available = lambda: True
+try:
+    _AD_ask0 = AD.ASK; AD.ASK = None
+    _er2 = AD.efficiency_review()
+finally:
+    AD.ASK = _AD_ask0; B.available = _saved_av
+check("admin: a model that failed the last reviews is not asked again at once — the review stays rule-based and says why",
+      _er2["how"].startswith("rules (the model failed") and "not asked again" in _er2["how"], _er2["how"][:90])
 check("admin: every improvement cycle is followed by an efficiency review",
       "def _reflect(" in open(os.path.join(HERE, "improve.py")).read()
       and "admin.efficiency_review()" in open(os.path.join(HERE, "improve.py")).read())
@@ -1832,6 +1919,16 @@ check("the time series accounts for every decision, not a sample",
       sum(b["n"] for b in _ser) == _fs["proposed"], f"{len(_ser)} buckets")
 check("measured never exceeds taken in any bucket",
       all(0 <= b["measured"] <= b["n"] for b in _ser))
+_cx = A._conn(); _saved_dec = _cx.execute("SELECT * FROM decisions").fetchall(); _cols = [r[1] for r in _cx.execute("PRAGMA table_info(decisions)")]
+try:
+    _cx.execute("DELETE FROM decisions"); _cx.commit()
+    for i in range(3): A.reason_add(5, "suite", f"same-turn decision {i}", "all in one turn")
+    _one = A.decision_series(12)
+    check("a world whose decisions all fall in ONE turn still charts them (one bucket), instead of an empty series",
+          len(_one) == 1 and _one[0]["n"] == 3, str(_one))
+finally:
+    _cx.execute("DELETE FROM decisions")
+    _cx.executemany(f"INSERT INTO decisions({','.join(_cols)}) VALUES({','.join('?' * len(_cols))})", _saved_dec); _cx.commit(); _cx.close()
 
 _br = A.board_record()
 check("the board's ledger is kept on its OWN denominator",
@@ -1988,9 +2085,9 @@ if _sh.which("node"):
     if _r.returncode: _bad.append("map3d.html: " + _r.stderr.strip().splitlines()[-1][:80])
     check("every renderer module and the page script parse as ES modules", not _bad, "; ".join(_bad) or f"{len(_gfx) + 1} scripts")
 _ag = open(os.path.join(_pages, "gfx", "agents.js")).read()
-check("villagers commute whatever the record calls them between turns (the live world never reports 'running'); only an "
-      "un-tasked 'idle' one stands about, and the beacon is lit only by a herald's pending decision",
-      "const stuck = e.status === 'idle'" in _ag and "e.status === 'running'" not in _ag
+check("villagers commute whatever the record calls them between turns (the live world never reports 'running'); only one "
+      "idle on every poll for a sustained time stands about (a 2 s 'idle' flicker does not), and the beacon is lit only by a herald's pending decision",
+      "const stuck = !!e.stuck" in _ag and "IDLE_HOLD_S" in _ag and "e.status === 'running'" not in _ag
       and "any = any || (herald && !!a.pending)" in _ag)
 _p3src = open(_p3).read()
 check("the 3D world draws the live record: state, placements, registry, agents, terrain stock — and offers three quality tiers",

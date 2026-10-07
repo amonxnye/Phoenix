@@ -118,6 +118,50 @@ _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
       "born": {}, "last_turn_ts": time.time()}
+# ── Article II: renewal. Defined BEFORE the boot block below, which calls it: on a restart an
+# enlisted agent whose thread ended or went missing is renewed at import time. It used to be
+# defined ~250 lines later, so that restart died with NameError and crash-looped.
+def _forget_thread(uid: str) -> None:
+    """Drop a DEAD thread's checkpoint history. The permanent record of the agent —
+    career, lineage, telemetry — lives in the anchor; the checkpointer history of the
+    dead serves nothing and grew without bound (888 lifetime agents = a fat game DB
+    and the memory climb Railway's charts showed). Best-effort: skipped silently on
+    checkpointers without delete support."""
+    try:
+        if hasattr(_CP, "delete_thread"):
+            _CP.delete_thread(uid)
+    except Exception:
+        pass
+
+
+def _renew(uid: str, u, why: str, event: str = "renewed") -> int | None:
+    """Article II as amended: an agent is never struck off by the system. Its season is
+    closed (the old thread stood down and forgotten, its compute added to the lifetime
+    burn) and it returns at once on the SAME identity — the ledger keeps its rank and
+    contribution, the anchor keeps its career. Returns the event id."""
+    try:
+        if u is not None and u.pending:
+            sim.resume(_GRAPH, uid, "dismiss")
+    except Exception:                              # noqa: BLE001 — a thread that cannot close still renews
+        pass
+    if u is not None:
+        anchor.counter_add("lifetime_spend", u.tokens)
+    _forget_thread(uid)
+    res = (_S.get("orders") or {}).get(uid) or (_S.get("last_res") or {}).get(uid) \
+        or lives.temperament(uid)["favourite"]
+    try:
+        sim.spawn(_GRAPH, uid, "villager", resource=res)
+    except Exception as e:                         # noqa: BLE001 — recorded, the agent stays enlisted
+        anchor.record(_S["turn"], "error", f"{uid} could not be renewed: {type(e).__name__}: {str(e)[:120]}")
+    economy.enlist(uid)                            # no-op for the living: rank and contribution kept
+    if uid not in _S["villagers"]:
+        _S["villagers"].append(uid)
+    _S["born"][uid] = _S["turn"]                   # the season's start, for burn math
+    ev = anchor.record(_S["turn"], "renew", f"{uid} {event} — {why}; same career, same rank")
+    anchor.career_add(uid, _S["turn"], event, why)
+    return ev
+
+
 START_TS = time.time()
 if _FRESH_WORLD:
     # A new world, same memory: the generation counter rises so agent ids stay unique
@@ -370,47 +414,6 @@ def _propose_development():
     anchor.record(_S["turn"], "proposal",
                   f"governor proposes development '{prop['name']}' ({prop.get('why','')[:60]}) "
                   f"— board {bv['tally']}, awaiting the human")
-
-
-def _forget_thread(uid: str) -> None:
-    """Drop a DEAD thread's checkpoint history. The permanent record of the agent —
-    career, lineage, telemetry — lives in the anchor; the checkpointer history of the
-    dead serves nothing and grew without bound (888 lifetime agents = a fat game DB
-    and the memory climb Railway's charts showed). Best-effort: skipped silently on
-    checkpointers without delete support."""
-    try:
-        if hasattr(_CP, "delete_thread"):
-            _CP.delete_thread(uid)
-    except Exception:
-        pass
-
-
-def _renew(uid: str, u, why: str, event: str = "renewed") -> int | None:
-    """Article II as amended: an agent is never struck off by the system. Its season is
-    closed (the old thread stood down and forgotten, its compute added to the lifetime
-    burn) and it returns at once on the SAME identity — the ledger keeps its rank and
-    contribution, the anchor keeps its career. Returns the event id."""
-    try:
-        if u is not None and u.pending:
-            sim.resume(_GRAPH, uid, "dismiss")
-    except Exception:                              # noqa: BLE001 — a thread that cannot close still renews
-        pass
-    if u is not None:
-        anchor.counter_add("lifetime_spend", u.tokens)
-    _forget_thread(uid)
-    res = (_S.get("orders") or {}).get(uid) or (_S.get("last_res") or {}).get(uid) \
-        or lives.temperament(uid)["favourite"]
-    try:
-        sim.spawn(_GRAPH, uid, "villager", resource=res)
-    except Exception as e:                         # noqa: BLE001 — recorded, the agent stays enlisted
-        anchor.record(_S["turn"], "error", f"{uid} could not be renewed: {type(e).__name__}: {str(e)[:120]}")
-    economy.enlist(uid)                            # no-op for the living: rank and contribution kept
-    if uid not in _S["villagers"]:
-        _S["villagers"].append(uid)
-    _S["born"][uid] = _S["turn"]                   # the season's start, for burn math
-    ev = anchor.record(_S["turn"], "renew", f"{uid} {event} — {why}; same career, same rank")
-    anchor.career_add(uid, _S["turn"], event, why)
-    return ev
 
 
 def _live_ids() -> list:

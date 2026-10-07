@@ -236,7 +236,29 @@ def consider(cycle_id: int, topic: str, world: dict, situation: str) -> dict:
     return {"status": "queued", "id": iid, "proposal": prop}
 
 
-RETRY_STATUSES = ("unread", "model-silent", "interrupted")   # a topic in these is read again
+RETRY_STATUSES = ("unread", "model-silent", "interrupted", "unresearched")   # a topic in these is read again
+BACKOFF_BASE_S, BACKOFF_CAP_S = 3600, 86400
+
+
+def skip_topics(rows: list[dict], now: float | None = None) -> set:
+    """Topics NOT to consider this cycle: any with a settled outcome (queued, adopted, rejected,
+    cited-but-unproposed, still researching…), and any whose failures are still cooling. A topic
+    that only ever failed — the source unreadable, the model silent, the research call lost to a
+    network error — is tried again, but after 1 h, then 2 h, 4 h … capped at a day, so a gateway
+    outage neither settles a topic for good (it used to, for a failed research call) nor writes a
+    new row for it every hour (143 rows from a handful of topics)."""
+    now = time.time() if now is None else now
+    by: dict = {}
+    for r in rows:
+        by.setdefault(r["topic"], []).append(r)
+    skip = set()
+    for topic, rs in by.items():
+        if any(r["status"] not in RETRY_STATUSES for r in rs):
+            skip.add(topic); continue
+        last = max((r.get("ts") or 0) for r in rs)
+        if now - last < min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** min(len(rs) - 1, 10)):
+            skip.add(topic)
+    return skip
 
 
 def reap_stale(older_than_s: float = 1800) -> int:

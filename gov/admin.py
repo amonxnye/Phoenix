@@ -344,6 +344,12 @@ def _efficiency_spent_today() -> int:
     return int(r[0][0]) if r else 0
 
 
+def _efficiency_outcomes_24h() -> tuple[int, int]:
+    r = _q("SELECT COALESCE(SUM(1-ok),0), COALESCE(SUM(ok),0) FROM model_calls WHERE purpose='efficiency-review' AND ts>=?",
+           (time.time() - 86400,))
+    return (int(r[0][0]), int(r[0][1])) if r else (0, 0)
+
+
 def efficiency_review() -> dict:
     """Measure how compute was spent in the last day, state what the numbers say, and
     propose ONE innovation to spend it better. Rules speak from the measurements; the
@@ -368,7 +374,12 @@ def efficiency_review() -> dict:
     obs.append(f"Each research entry, queued idea or adopted development cost about {t['model_tokens_per_outcome']:,} model tokens.")
     innovation, how = "", "rules"
     if brain.available() or ASK is not None:
-        if _efficiency_spent_today() < EFFICIENCY_TOKENS_PER_DAY:
+        fails, oks = _efficiency_outcomes_24h()
+        if ASK is None and fails >= 3 and not oks:
+            # a failed call logs no tokens, so the daily token budget never trips on a model that is down:
+            # 167 reviews in a week each spent up to ~1,000 s of retries on a gateway that answered none of them
+            how = f"rules (the model failed {fails} reviews in a row in the last 24 h; not asked again until one can)"
+        elif _efficiency_spent_today() < EFFICIENCY_TOKENS_PER_DAY:
             prompt = ("Role: the Phoenix world's efficiency analyst. From these measurements of how the world spent "
                       "its compute in the last 24 hours, propose ONE concrete innovation that would get more value per "
                       "token, and say how its effect would be measured.\n"
