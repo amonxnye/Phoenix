@@ -12,6 +12,7 @@ Knowledge. All live from the checkpointer + World + anchor. Standard library onl
 Run:  python3 gov/sim_console.py --seed   # then open http://127.0.0.1:8788
 """
 
+import gzip
 import json
 import os
 import sys
@@ -1954,13 +1955,28 @@ def _mechanic_web():
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, body, ctype="application/json", download=None):
+    def _gzip_ok(self, ctype: str, n: int) -> bool:
+        """Compress text (pages, JSON, scripts) over 1 KB when the browser accepts gzip:
+        the fronting proxy does not, so a 25 KB state poll went out whole every second."""
+        return (n > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+                and (ctype.startswith("text/") or ctype.startswith("application/json")
+                     or ctype.startswith("application/javascript")))
+
+    def _send(self, code, body, ctype="application/json", download=None, gz=None, headers=None):
         payload = body.encode() if isinstance(body, str) else body
+        if gz is None and not download and self._gzip_ok(ctype, len(payload)):
+            gz = gzip.compress(payload, 5)
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             if download:                          # serve as a file download
                 self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            if gz:
+                payload = gz
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -1983,11 +1999,31 @@ class Handler(BaseHTTPRequestHandler):
         if full not in self._PAGE_CACHE or os.environ.get("PHOENIX_DEV"):   # dev: always re-read
             try:
                 with open(full, "rb") as f:
-                    self._PAGE_CACHE[full] = f.read()
+                    data = f.read()
             except OSError:
                 return self._send(404, json.dumps({"error": "not found"}))
+            import hashlib
+            self._PAGE_CACHE[full] = (data, None, '"%s"' % hashlib.sha1(data).hexdigest()[:16])
+        data, gz, etag = self._PAGE_CACHE[full]
         ctype = self._PAGE_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
-        return self._send(200, self._PAGE_CACHE[full], ctype)
+        # The browser keeps a copy and asks "still this one?" (ETag): a revisit of the 3D
+        # world re-downloaded 7 MB of engine every time; now it gets a 304.
+        hdrs = {"ETag": etag, "Cache-Control": "no-cache"}
+        if self.headers.get("If-None-Match") == etag:
+            try:
+                self.send_response(304)
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self._gzip_ok(ctype, len(data)):
+            if gz is None:                        # compressed once, then served from memory
+                gz = gzip.compress(data, 6)
+                self._PAGE_CACHE[full] = (data, gz, etag)
+            return self._send(200, data, ctype, gz=gz, headers=hdrs)
+        return self._send(200, data, ctype, gz=False, headers=hdrs)
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -2269,9 +2305,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
-            wtasks = WS.sync_tasks()              # sync first so counts are current
+            verdict = WS.oracle()                 # one suite run serves both (it was run twice)
+            wtasks = WS.sync_tasks(verdict)       # sync first so counts are current
             return self._send(200, json.dumps({
-                "world": WS.world(),
+                "world": WS.world(verdict),
                 "tasks": wtasks,
                 "module": WS.read_file("calculator.py"),
                 "brain": brain.brain_name(),

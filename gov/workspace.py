@@ -148,9 +148,10 @@ def oracle() -> dict:
             "total": passed + len(failures), "failures": sorted(failures)}
 
 
-def world() -> dict:
-    """The workspace's world-state — same shape of truth the game world provided."""
-    o = oracle()
+def world(o: dict | None = None) -> dict:
+    """The workspace's world-state — same shape of truth the game world provided.
+    Pass a verdict just taken to avoid running the suite a second time."""
+    o = o or oracle()
     c = _conn()
     try:
         open_n = c.execute("SELECT COUNT(*) FROM tasks WHERE status='open'").fetchone()[0]
@@ -165,10 +166,10 @@ def world() -> dict:
 
 # ── tasks: derived from the oracle, never invented ────────────────────────────
 
-def sync_tasks() -> list[dict]:
+def sync_tasks(o: dict | None = None) -> list[dict]:
     """Every failing test is an open task; every task whose test now passes is done.
     Tasks come from the oracle, so the backlog can't drift from reality."""
-    o = oracle()
+    o = o or oracle()
     c = _conn()
     try:
         for name in o["failures"]:

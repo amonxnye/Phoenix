@@ -1739,11 +1739,13 @@ check("three consecutive failed calls are a recorded outage, from the record alo
 check("who spends the model's time is broken down by purpose",
       any(p["purpose"] == "panel:quality" and p["errors"] >= 3 for p in _rv["purposes"]))
 N.reset()
+_sleep0, N._SLEEP = N._SLEEP, lambda s: None     # the backoff is checked elsewhere; here only the breaker
 try:
     for _ in range(N.BREAK_AFTER):
         try: N.call(lambda: (_ for _ in ()).throw(TimeoutError("hung")), what="gw", idempotent=True, key="gw.example")
         except TimeoutError: pass
 finally:
+    N._SLEEP = _sleep0
     N.reset()
 check("a breaker opening is written to the permanent record as an event",
       any(e["kind"] == "breaker_open" and e["host"] == "gw.example" for e in _MP._events()))
@@ -2064,6 +2066,36 @@ check("the vendored engines are present",
       all(os.path.getsize(os.path.join(_pages, "vendor", f)) > 100_000
           for f in ("three.module.js", "babylon.min.js"))
       and os.path.exists(os.path.join(_pages, "vendor", "addons", "controls", "OrbitControls.js")))
+_probe = r"""
+import gzip, json, threading, urllib.request as U
+import sim_console as C
+srv = C.QuietServer(("127.0.0.1", 0), C.Handler); threading.Thread(target=srv.serve_forever, daemon=True).start()
+b = "http://127.0.0.1:%d" % srv.server_address[1]
+def get(p, **h):
+    try:
+        with U.urlopen(U.Request(b + p, headers=h), timeout=30) as r: return r.status, dict(r.headers), r.read()
+    except U.HTTPError as e: return e.code, dict(e.headers), e.read()
+s1, h1, z = get("/pages/vendor/three.module.js", **{"Accept-Encoding": "gzip"})
+s2, h2, _ = get("/pages/vendor/three.module.js", **{"If-None-Match": h1.get("ETag", "-")})
+s3, h3, raw = get("/pages/vendor/three.module.js")
+s4, h4, st = get("/api/state", **{"Accept-Encoding": "gzip"})
+print(json.dumps({"engine": [s1, h1.get("Content-Encoding"), len(z), gzip.decompress(z) == raw],
+                  "revisit": [s2, h2.get("ETag") == h1.get("ETag")], "plain": [s3, h3.get("Content-Encoding"), len(raw)],
+                  "state": [s4, h4.get("Content-Encoding"), "turn" in json.loads(gzip.decompress(st))]}))
+"""
+_gd = _tf2.mkdtemp(prefix="gz-")
+_rg = subprocess.run([sys.executable, "-c", _probe], cwd=HERE, capture_output=True, text=True, timeout=180,
+                     env=dict(os.environ, GOV_DATA_DIR=_gd, IMPROVE="0", MECHANIC_WATCH="0"))
+try:
+    _g = _json_mod.loads(_rg.stdout.strip().splitlines()[-1])
+except Exception:                                 # noqa: BLE001
+    _g = {}
+check("the console gzips what it serves (the 3D engine goes out at a fifth of its size, the state poll compressed too) "
+      "and a browser that already holds a page file gets a 304, not the bytes again",
+      _g.get("engine", [0])[0] == 200 and _g["engine"][1] == "gzip" and _g["engine"][3]
+      and _g["engine"][2] * 4 < _g["plain"][2] and _g["plain"][1] is None
+      and _g["revisit"] == [304, True] and _g["state"] == [200, "gzip", True],
+      str(_g) or _rg.stderr[-200:])
 _addons = os.path.join(_pages, "vendor", "addons")
 _want = ("postprocessing/EffectComposer.js", "postprocessing/UnrealBloomPass.js", "postprocessing/GTAOPass.js",
          "postprocessing/OutputPass.js", "objects/Sky.js", "objects/Water.js", "utils/BufferGeometryUtils.js")
