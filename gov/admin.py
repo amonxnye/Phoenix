@@ -66,11 +66,6 @@ def databases() -> dict:
         out["workspace"] = workspace.DB
     except Exception:                              # noqa: BLE001
         pass
-    try:
-        from mechanic import store
-        out["mechanic"] = store.DB()
-    except Exception:                              # noqa: BLE001
-        pass
     return out
 
 
@@ -101,17 +96,11 @@ def systems(live: dict | None = None) -> dict:
     try:
         import improve
         s = improve.status()
-        out["improve"] = {k: s.get(k) for k in ("enabled", "running", "current", "mode", "interval_s", "parked",
-                                                "empty_streak", "isolation", "github")}
+        out["improve"] = {k: s.get(k) for k in ("enabled", "running", "current", "interval_s", "empty_streak")}
         out["improve"]["last_cycle"] = {k: (s.get("last_cycle") or {}).get(k) for k in ("ts", "status", "note")}
         out["research"] = s.get("research")
     except Exception as e:                        # noqa: BLE001
         out["improve"] = {"error": str(e)[:120]}
-    try:
-        from mechanic import store, watch
-        out["mechanic"] = {"summary": store.summary(), "watch": watch.status()}
-    except Exception as e:                        # noqa: BLE001
-        out["mechanic"] = {"error": str(e)[:120]}
     dd = anchor._DATA_DIR
     try:
         du = shutil.disk_usage(dd)

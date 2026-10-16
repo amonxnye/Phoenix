@@ -1941,38 +1941,23 @@ class QuietServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def _mechanic_web():
-    """The Software Mechanic mounts here. It owns its pages and its API (mechanic/web.py);
-    the console lends it the process, the port, the palette and the token gate."""
-    import sys as _sys
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if root not in _sys.path:
-        _sys.path.insert(0, root)
-    from mechanic import web
-    if os.environ.get("MECHANIC_WATCH", "1") != "0":
-        web.start_watch()                      # idempotent; the watch loop lives here
-    return web
-
-
 class Handler(BaseHTTPRequestHandler):
     def _gzip_ok(self, ctype: str, n: int) -> bool:
-        """Compress text (pages, JSON, scripts) over 1 KB when the browser accepts gzip:
-        the fronting proxy does not, so a 25 KB state poll went out whole every second."""
+        """Compress text (pages, JSON) over 1 KB when the browser accepts gzip: the
+        fronting proxy does not, so a 25 KB state poll went out whole every second."""
         return (n > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
-                and (ctype.startswith("text/") or ctype.startswith("application/json")
-                     or ctype.startswith("application/javascript")))
+                and (ctype.startswith("text/") or ctype.startswith("application/json")))
 
-    def _send(self, code, body, ctype="application/json", download=None, gz=None, headers=None):
+    def _send(self, code, body, ctype="application/json", download=None):
         payload = body.encode() if isinstance(body, str) else body
-        if gz is None and not download and self._gzip_ok(ctype, len(payload)):
+        gz = None
+        if not download and self._gzip_ok(ctype, len(payload)):
             gz = gzip.compress(payload, 5)
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             if download:                          # serve as a file download
                 self.send_header("Content-Disposition", f'attachment; filename="{download}"')
-            for k, v in (headers or {}).items():
-                self.send_header(k, v)
             if gz:
                 payload = gz
                 self.send_header("Content-Encoding", "gzip")
@@ -1982,48 +1967,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         except (BrokenPipeError, ConnectionResetError):
             pass                                  # client hung up mid-response — not an error
-
-    _PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript",
-                   ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg",
-                   ".glb": "model/gltf-binary", ".json": "application/json"}
-    _PAGE_CACHE: dict = {}
-
-    def _serve_page_file(self, rel: str):
-        """Serve a file from gov/pages/ — the 3D worlds and their vendored engines.
-        The path is resolved and must stay inside the pages dir (no traversal), and
-        files are cached in memory after the first read (they never change at runtime)."""
-        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
-        full = os.path.realpath(os.path.join(base, rel.lstrip("/")))
-        if not full.startswith(os.path.realpath(base) + os.sep):
-            return self._send(404, json.dumps({"error": "not found"}))
-        if full not in self._PAGE_CACHE or os.environ.get("PHOENIX_DEV"):   # dev: always re-read
-            try:
-                with open(full, "rb") as f:
-                    data = f.read()
-            except OSError:
-                return self._send(404, json.dumps({"error": "not found"}))
-            import hashlib
-            self._PAGE_CACHE[full] = (data, None, '"%s"' % hashlib.sha1(data).hexdigest()[:16])
-        data, gz, etag = self._PAGE_CACHE[full]
-        ctype = self._PAGE_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
-        # The browser keeps a copy and asks "still this one?" (ETag): a revisit of the 3D
-        # world re-downloaded 7 MB of engine every time; now it gets a 304.
-        hdrs = {"ETag": etag, "Cache-Control": "no-cache"}
-        if self.headers.get("If-None-Match") == etag:
-            try:
-                self.send_response(304)
-                for k, v in hdrs.items():
-                    self.send_header(k, v)
-                self.end_headers()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            return
-        if self._gzip_ok(ctype, len(data)):
-            if gz is None:                        # compressed once, then served from memory
-                gz = gzip.compress(data, 6)
-                self._PAGE_CACHE[full] = (data, gz, etag)
-            return self._send(200, data, ctype, gz=gz, headers=hdrs)
-        return self._send(200, data, ctype, gz=False, headers=hdrs)
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -2182,6 +2125,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             # The host's health check: process up, record writable, commit, uptime.
             import improve as _imp
+            import workspace as _ws
             try:
                 anchor.config_get("healthz")
                 writable = os.access(anchor._DATA_DIR, os.W_OK)
@@ -2192,7 +2136,7 @@ class Handler(BaseHTTPRequestHandler):
                                            os.environ.get("SOURCE_COMMIT", ""))[:12],
                 "uptime_s": int(time.time() - _BOOT_TS), "data_dir": anchor._DATA_DIR,
                 "brain": brain.brain_name(), "improve": _imp.enabled(),
-                "isolation": _imp.workspace.sandbox_mode()}))
+                "isolation": _ws.sandbox_mode()}))
         if self.path in ("/", "/index.html"):
             self._count_view()
             return self._send(200, PAGE, "text/html; charset=utf-8")
@@ -2261,17 +2205,7 @@ class Handler(BaseHTTPRequestHandler):
                                                "entries": research.entries(limit=500)}))
         if self.path == "/api/improve":
             import improve
-            return self._send(200, json.dumps({"status": improve.status(), "cycles": improve.cycles(),
-                                               "proposals": improve.proposals()}))
-        if self.path.startswith("/api/improve/") and self.path.endswith(".patch"):
-            import improve
-            try:
-                p = improve.proposal(int(self.path.rsplit("/", 1)[1][:-6]))
-            except ValueError:
-                p = None
-            if not p:
-                return self._send(404, json.dumps({"error": "no such proposal"}))
-            return self._send(200, p["patch"] or "", "text/x-diff; charset=utf-8")
+            return self._send(200, json.dumps({"status": improve.status(), "cycles": improve.cycles()}))
         if self.path.startswith("/api/models"):
             import models_page
             import netretry
@@ -2290,15 +2224,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/map":
             self._count_view()
             return self._send(200, MAP_PAGE, "text/html; charset=utf-8")
-        # The 3D worlds live as standalone files under gov/pages/ (each is a whole
-        # scene — far too large to inline), with their engines VENDORED under
-        # gov/pages/vendor/ so the deployed console needs no CDN and no network.
-        _route = self.path.split("?", 1)[0]       # a page takes options in its query (?q=low&tod=0.5)
-        if _route == "/map3d":
-            self._count_view()
-            return self._serve_page_file("map3d.html")
-        if _route.startswith("/pages/"):
-            return self._serve_page_file(_route[len("/pages/"):])
         if self.path == "/api/workdata":
             import workspace as WS
             WS.init()
@@ -2593,12 +2518,6 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "model": brain._model(),
                                                    "error": str(e)[:600]}))
-        if self.path == "/mechanic" or self.path.startswith("/api/mechanic"):
-            code, ctype, body = _mechanic_web().handle_get(self.path)
-            if ctype.startswith("text/html"):
-                self._count_view()
-                body = _page(body)                 # the house palette, like every page
-            return self._send(code, body, ctype)
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
@@ -2622,26 +2541,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, json.dumps({"error": "console token required", "needs": "console"}))
         if self.path.startswith("/api/admin/"):         # POWER; full reset also needs ADMIN_TOKEN
             return self._admin_post()
-        if self.path.startswith("/api/mechanic/"):      # POWER: gated by the token above
-            code, ctype, body = _mechanic_web().handle_post(self.path, self._read_json())
-            return self._send(code, body, ctype)
-        if self.path.startswith("/api/improve/"):       # POWER: the gate is a human act
+        if self.path.startswith("/api/improve/"):       # POWER: gated by the token above
             import improve
-            body = self._read_json()
             action = self.path.rsplit("/", 1)[1]
-            actor = "console-token" if tok else "console"
             if action == "run":
                 if improve._STATE["running"]:
                     return self._send(409, json.dumps({"status": "busy", "note": improve._STATE["current"]}))
                 threading.Thread(target=improve.cycle, args=("manual",), daemon=True).start()
                 return self._send(202, json.dumps({"status": "started"}))
-            if action == "approve":
-                return self._send(200, json.dumps(improve.approve(int(body.get("id") or 0), actor)))
-            if action == "revert":
-                return self._send(200, json.dumps(improve.revert(int(body.get("id") or 0), actor)))
-            if action == "reject":
-                return self._send(200, json.dumps(improve.reject(int(body.get("id") or 0),
-                                                                 str(body.get("reason") or ""), actor)))
             return self._send(404, json.dumps({"error": "no such improve action"}))
         if self.path == "/api/resume":
             body = self._read_json()
@@ -2945,7 +2852,6 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
   <div class=vmeta id=vmeta></div>
   <div class=ops>
     <a class=navlink href="/map">World Map &rarr;</a>
-    <a class=navlink href="/map3d">3D World &rarr;</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -3279,7 +3185,7 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
+<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
   <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
   <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
@@ -3798,7 +3704,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 </style>
 <header>
   <h1>&#9670; DECISION FLOW</h1>
-  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
 <div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
@@ -4013,7 +3919,7 @@ summary:hover{background:#241a0f}
 .turn .n{color:var(--dim);font-size:11px;white-space:nowrap}
 </style>
 <header><h1>&#9670; CONVERSATIONS</h1>
-  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a>
+  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a>
   <a href="/chats">Chats</a><a href="/logs">Logs</a>
   <span class=meta id=meta>loading&hellip;</span></header>
 <main>
@@ -4528,7 +4434,7 @@ canvas{display:block;width:100%;height:auto}
 </style>
 <header><h1>&#9670; WORLD MAP</h1>
   <span class=age id=age>&mdash;</span>
-  <a href="/">Console</a><a href="/map3d">3D World</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
   <span class=meta id=meta></span></header>
 <main>
   <div class=card>

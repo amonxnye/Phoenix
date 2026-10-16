@@ -26,5 +26,3 @@ venv/
 gov/tmp*/
 gov/archive/
 
-# the Software Mechanic's local record
-mechanic/data/

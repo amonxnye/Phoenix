@@ -194,7 +194,7 @@ td:first-child,th:first-child{text-align:left}
 dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;padding:10px 14px;margin:0;font-size:12px}
 dt{color:var(--dim)}dd{margin:0}
 </style>
-<header><h1>MODEL REVIEW</h1><a href="/">&larr; Console</a><a href="/mechanic">Mechanic</a><a href="/network">Network</a>
+<header><h1>MODEL REVIEW</h1><a href="/">&larr; Console</a><a href="/network">Network</a>
 <span class=meta id=meta>loading…</span></header>
 <main>
 <div class=card><div class=filters>window

@@ -125,7 +125,7 @@ async function systems(){
   $('sys').innerHTML=kv([['age',esc(w.age)],['difficulty',esc((w.difficulty||{}).name||w.difficulty)],['turn',n(w.turn)],['agents',n(w.agents)],
     ['food',n(w.food)],['wood',n(w.wood)],['gold',n(w.gold)],['utopia index',n(s.utopia.index)],
     ['brain',esc(b.model)],['calls 1 h',n(b.calls_1h)],['errors 1 h',n(b.errors_1h),b.errors_1h?'bad':''],['avg latency',n(b.avg_latency_ms_1h)+' ms'],
-    ['improvement',im.error?'error':(im.running?'running':im.enabled?'enabled':'off'),im.error?'bad':''],['mode',esc(im.mode)],
+    ['improvement',im.error?'error':(im.running?'running':im.enabled?'enabled':'off'),im.error?'bad':''],
     ['research chain',s.research&&s.research.ok?'intact':'BROKEN',s.research&&s.research.ok?'good':'bad'],
     ['disk used',st.disk.used_pct!=null?st.disk.used_pct+'%':'—',st.disk.used_pct>90?'bad':''],['disk free',bytes(st.disk.free)]]);
   const rows=[];
@@ -133,8 +133,6 @@ async function systems(){
   const net=s.network||{};for(const[k,v]of Object.entries(net.stats||{}))rows.push(['network',k,n(v)]);
   for(const[k,v]of Object.entries(net.breakers||{}))rows.push(['breaker',k,esc(JSON.stringify(v))]);
   if(im.last_cycle)rows.push(['improvement','last cycle',when(im.last_cycle.ts)+' · '+esc(im.last_cycle.status)+' · '+esc(im.last_cycle.note)]);
-  rows.push(['improvement','isolation / github',esc(im.isolation)+' / '+(im.github?'token':'no token')]);
-  const m=s.mechanic||{};if(m.error)rows.push(['mechanic','error',esc(m.error)]);else rows.push(['mechanic','summary',esc(JSON.stringify(m.summary||{}).slice(0,300))]);
   rows.push(['utopia','qualities',esc(JSON.stringify(s.utopia.qualities))]);
   $('systab').innerHTML='<tr><th>system</th><th>what</th><th>reading</th></tr>'+rows.map(r=>`<tr><td class=dim>${r[0]}</td><td>${esc(r[1])}</td><td>${r[2]}</td></tr>`).join('');
 }
