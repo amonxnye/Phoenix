@@ -133,7 +133,7 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs the first three on every push)
+# the acceptance suites (CI runs all three on every push)
 python3 gov/verify.py          # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py      # 151 — economy, upkeep, permanence, lineage, governance, evidence, retrieval, comms, substrate, archive, views, legibility, the map, the land, 3D
 python3 gov/verify_work.py     # 23 — real-work oracle, sandbox guards, worker loop
