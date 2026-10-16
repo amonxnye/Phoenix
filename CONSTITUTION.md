@@ -414,9 +414,9 @@ Everything below is those two laws, applied.
 5. **Voted, adopted, built, drawn.** A civic work goes to the Board, then the human
    (silence consents under IV.7); the director builds it when the treasury pays; the 3D
    worlds draw it where its district is, as it was designed, and the town centre grows
-   grander with every age (`/utopia`, `/map3d`, `/babylon`).
+   grander with every age (`/utopia`, `/map3d`).
 > Enforced by `sim.py` (`utopia_state`, `clean_visual`, `effective_yield`, `decay_tick`),
-> `utopia.py`, `sim_console.py` (`_propose_development`, `/utopia`) and the two 3D pages.
+> `utopia.py`, `sim_console.py` (`_propose_development`, `/utopia`) and the 3D page.
 
 ## Amending this constitution
 

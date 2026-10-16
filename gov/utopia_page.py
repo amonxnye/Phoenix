@@ -24,7 +24,7 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px 12px;
 th{color:var(--dim);font-weight:400;font-size:10px;text-transform:uppercase}.empty{padding:14px;color:var(--dim)}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:6px}
 </style>
-<header><h1>UTOPIA</h1><a href="/">&larr; Console</a><a href="/map3d">3D World</a><a href="/babylon">Babylon</a><a href="/improve">Self-Improvement</a><a href="/rules">Rules</a>
+<header><h1>UTOPIA</h1><a href="/">&larr; Console</a><a href="/map3d">3D World</a><a href="/improve">Self-Improvement</a><a href="/rules">Rules</a>
 <span class=meta id=meta>loading…</span></header>
 <main>
 <div class=card><div class=kpi id=kpi></div>

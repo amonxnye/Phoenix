@@ -1387,10 +1387,8 @@ try:
           and _csrc.count("economy.retire(") == 1 and "honourable discharge" not in _csrc)
     EC.retire("vil-mentee-" + _tag.strip("[]")); EC.retire("vil-elder-" + _tag.strip("[]"))
     _pg3 = "".join(open(f).read() for f in [os.path.join(HERE, "pages", "map3d.html")] + sorted(_glob.glob(os.path.join(HERE, "pages", "gfx", "*.js"))))
-    _pgb = open(os.path.join(HERE, "pages", "babylon.html")).read()
-    check("both 3D worlds draw every civic shape, and grow the town centre with each age",
-          all(f"'{sh}'" in _pg3 and f"'{sh}'" in _pgb for sh in S.UTOPIA_SHAPES)
-          and "age_index" in _pg3 and "age_index" in _pgb)
+    check("the 3D world draws every civic shape, and grows the town centre with each age",
+          all(f"'{sh}'" in _pg3 for sh in S.UTOPIA_SHAPES) and "age_index" in _pg3)
 finally:
     _cx = S._conn()
     for _n in _ut_names:
@@ -2051,20 +2049,19 @@ check("the paint registry covers everything built, with rank and effect",
 check("water is never built on",
       not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 
-print("\n20. The third dimension — 3D worlds ship whole, offline, and wired")
+print("\n20. The third dimension — the 3D world ships whole, offline, and wired")
 _pages = os.path.join(HERE, "pages")
-_p3, _pb = (os.path.join(_pages, f) for f in ("map3d.html", "babylon.html"))
-check("both 3D pages exist and are real scenes, not stubs",
-      all(os.path.exists(p) and os.path.getsize(p) > 10_000 for p in (_p3, _pb)),
-      " + ".join(f"{os.path.getsize(p) // 1024}KB" for p in (_p3, _pb) if os.path.exists(p)))
+_p3 = os.path.join(_pages, "map3d.html")
+check("the 3D page exists and is a real scene, not a stub",
+      os.path.exists(_p3) and os.path.getsize(_p3) > 10_000,
+      f"{os.path.getsize(_p3) // 1024}KB" if os.path.exists(_p3) else "missing")
 _gfx = sorted(_glob.glob(os.path.join(_pages, "gfx", "*.js")))
-_srcs = "".join(open(p).read() for p in [_p3, _pb] + _gfx if os.path.exists(p))
+_srcs = "".join(open(p).read() for p in [_p3] + _gfx if os.path.exists(p))
 check("the pages load nothing from the network — engines are vendored",
       "http://" not in _srcs and "https://" not in _srcs
       and "/pages/vendor/" in _srcs)
-check("the vendored engines are present",
-      all(os.path.getsize(os.path.join(_pages, "vendor", f)) > 100_000
-          for f in ("three.module.js", "babylon.min.js"))
+check("the vendored engine is present",
+      os.path.getsize(os.path.join(_pages, "vendor", "three.module.js")) > 100_000
       and os.path.exists(os.path.join(_pages, "vendor", "addons", "controls", "OrbitControls.js")))
 _probe = r"""
 import gzip, json, threading, urllib.request as U
@@ -2127,7 +2124,7 @@ check("the 3D world draws the live record: state, placements, registry, agents, 
       and all(t in open(os.path.join(_pages, "gfx", "post.js")).read() for t in ("low:", "medium:", "high:")))
 _console_src2 = open(os.path.join(HERE, "sim_console.py")).read()
 check("the console routes them, path-safely, from one file-server",
-      all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
+      all(s in _console_src2 for s in ('"/map3d"', "_serve_page_file",
                                        "realpath")))
 
 # ── 21. charter provenance — which rules bound a decision, and which brain took it ──

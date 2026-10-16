@@ -2297,9 +2297,6 @@ class Handler(BaseHTTPRequestHandler):
         if _route == "/map3d":
             self._count_view()
             return self._serve_page_file("map3d.html")
-        if _route == "/babylon":
-            self._count_view()
-            return self._serve_page_file("babylon.html")
         if _route.startswith("/pages/"):
             return self._serve_page_file(_route[len("/pages/"):])
         if self.path == "/api/workdata":
@@ -2949,7 +2946,6 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
   <div class=ops>
     <a class=navlink href="/map">World Map &rarr;</a>
     <a class=navlink href="/map3d">3D World &rarr;</a>
-    <a class=navlink href="/babylon">Babylon &rarr;</a>
     <a class=navlink href="/agents">Agent Health &rarr;</a>
     <a class=navlink href="/chats">Chats &rarr;</a>
     <a class=navlink href="/rules">Rules &rarr;</a>
@@ -4532,7 +4528,7 @@ canvas{display:block;width:100%;height:auto}
 </style>
 <header><h1>&#9670; WORLD MAP</h1>
   <span class=age id=age>&mdash;</span>
-  <a href="/">Console</a><a href="/map3d">3D World</a><a href="/babylon">Babylon</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  <a href="/">Console</a><a href="/map3d">3D World</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
   <span class=meta id=meta></span></header>
 <main>
   <div class=card>

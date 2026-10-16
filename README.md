@@ -133,11 +133,10 @@ git clone https://github.com/amonxnye/Phoenix.git
 cd Phoenix
 pip install -r requirements.txt
 
-# the acceptance suites (CI runs all four on every push)
+# the acceptance suites (CI runs the first three on every push)
 python3 gov/verify.py          # 16 — runtime, gate, governor, durability
 python3 gov/verify_sim.py      # 151 — economy, upkeep, permanence, lineage, governance, evidence, retrieval, comms, substrate, archive, views, legibility, the map, the land, 3D
 python3 gov/verify_work.py     # 23 — real-work oracle, sandbox guards, worker loop
-python3 gov/console_smoke.py   # headless console API smoke
 
 # the live console
 python3 gov/sim_console.py --seed     # → http://127.0.0.1:8788
@@ -167,7 +166,6 @@ Deploying: [`DEPLOY.md`](DEPLOY.md) — a `Procfile` is included; the console re
 | `/` | Vision & progress, world meters, **balance sheet** (assets, disrepair, net worth), the human gate, development tree, board proposals, permanent event log |
 | `/map` | **The settlement as a place** — a live canvas of the town: every built development on its own tile (placed at build time, drawn with per-placement variety seeded by its record id), condition bars on worn assets, villagers afield, the herald at the gate. **Place matters**: camps seek the finite ring around their resource ground (+15% each inside it), and the deterministic terrain — forest, berries, gold seam, a pond — is live stock the camps work into extra yield and wear down to nothing |
 | `/map3d` | **The world in 3D (Three.js)** — the same live settlement as a golden-hour diorama: voxel terrain, seeded low-poly buildings with turning mill blades, villagers walking their gather routes, animated water, orbit + WASD flythrough, hover tooltips. Engines are vendored — no CDN, works offline |
-| `/babylon` | **Night watch (Babylon.js)** — the settlement after dark: glowing windows, torchlight, fireflies and chimney smoke, moonlit water, a slow cinematic orbit until you take the controls. Same live data, different engine, same vendored-offline rule |
 | `/agents` | System health (stalls, burn, value per 1k compute), per-agent vitals & token math, gated Terminate, and the **Hall of Records** — every agent ever, permanently, with downloadable careers & health telemetry |
 | `/work` | **Real work**: the test suite as a progress bar, tasks derived from failing tests, a button that sends a live agent to fix the code — oracle-scored, auto-reverting |
 | `/chats` | Talk to any agent, the board, or the Chief Governor; watch votes narrated with live evidence (runway, momentum, affordability) |
@@ -281,10 +279,10 @@ not try to make agents smarter. It tries to make an organization of them account
 
 ## The documents
 
-[`CONSTITUTION.md`](CONSTITUTION.md) · [`SRS-Project-Phoenix-v2.md`](SRS-Project-Phoenix-v2.md) ·
+[`CONSTITUTION.md`](CONSTITUTION.md) ·
 [`EVAL.md`](EVAL.md) · [`REALWORK.md`](REALWORK.md) · [`LINEAGE.md`](LINEAGE.md) ·
 [`WORLD-DYNAMICS.md`](WORLD-DYNAMICS.md) · [`HARNESSES.md`](HARNESSES.md) · [`DEPLOY.md`](DEPLOY.md) ·
-[`GOVERNOR.md`](GOVERNOR.md) / [`PROJECT-RECORD.md`](PROJECT-RECORD.md)
+[`GOVERNOR.md`](GOVERNOR.md)
 
 ## License
 
