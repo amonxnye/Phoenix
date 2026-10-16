@@ -1,7 +1,7 @@
 # Deploying Phoenix
 
-Phoenix is one process — the Governor console, the Software Mechanic and the Article XI
-improvement cycle — on a standard-library HTTP server. It needs Python 3.11, the packages
+Phoenix is one process — the Governor console and the Article XI improvement
+cycle — on a standard-library HTTP server. It needs Python 3.11, the packages
 in `requirements.txt`, a writable data directory, and a model endpoint.
 
 ## RupertCloud (own host) — the current production target
@@ -13,7 +13,7 @@ the public round trip from every model call, and gives the record a real disk.
 
 ```
 git clone https://github.com/amonxnye/Phoenix && cd Phoenix
-cp .env.example .env            # BRAIN_API_KEY, CONSOLE_TOKEN, GITHUB_TOKEN, BRAIN_MODEL
+cp .env.example .env            # BRAIN_API_KEY, CONSOLE_TOKEN, BRAIN_MODEL
 PHOENIX_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 curl -s http://127.0.0.1:8788/healthz
 ```
@@ -74,36 +74,29 @@ Dockerfile poll it.
 |---|---|
 | `SEED=1` | Seed a demo game on boot (or keep `--seed` in the Procfile) |
 | `GOV_DATA_DIR=/data` | Point the SQLite DB at a mounted **Volume** so game state survives redeploys |
-| `BRAIN_API_KEY` | Turns on the brain for EVERY model call (settlement and mechanic) against the platform's own gateway, `https://api.ripaplatform.com/v1`, model `qwen3:30b` |
+| `BRAIN_API_KEY` | Turns on the brain for EVERY model call  against the platform's own gateway, `https://api.ripaplatform.com/v1`, model `qwen3:30b` |
 | `BRAIN_BASE_URL` / `BRAIN_MODEL` | Optional: another OpenAI-compatible endpoint, or another model the gateway serves (`GET /v1/models` lists them). The gateway's `qwen3:30b` is the thinking-only build and reasons on every call whatever the request says; pull `qwen3:30b-instruct` (non-thinking) on the gateway and set `BRAIN_MODEL=qwen3:30b-instruct` |
 | `BRAIN_MODEL_FALLBACKS` | Comma-separated models to use, in order, when the gateway answers `403 model_disabled` for the current one (the administrator switched it off). The record names the model that actually answered |
 | Services (`svc.ripaplatform.com`) | `BRAIN_BASE_URL=https://svc.ripaplatform.com/v1` and `BRAIN_MODEL=<service-name>` use a managed endpoint: the gateway routes to the best available model with fallback and keeps it warm; the response names the model that served and the record logs that. A `503 model_warming` (Retry-After 30) is retried; a 503 without that code, a 403 `model_disabled` and a 429 service-limit are not — they need an administrator |
-| `IMPROVE_MODE` | `world` (default): each hourly cycle reads public sources about topics for the settlement's age, checks every citation, proposes developments from verified facts, researches them and queues them for the Board and the human. `code`: the mechanic's patches to Phoenix itself. `both` |
 | `WORLD_DIFFICULTY` | `easy`, `medium` (default) or `hard`: the total food + wood + gold spent climbing all ten ages, Stone to Tech — 100 million, 1 billion, 10 billion. Each leap costs the previous one times the same factor, solved from the total. `WORLD_MATURITY` sets any total; `AGE_GROWTH` an exact factor |
-| (research) | No variable: every published change is preceded by a research entry (advantage, risk, blast radius, detection, undo, alternatives, confidence) written by the brain into an append-only hash-chained ledger, shown at `/research` and committed as `RESEARCH.md` ahead of the change. Without a working brain, verified patches are held back as *unresearched* — no research, no change |
-| `IMPROVE_PUSH_BRANCH` | Set to a branch name (e.g. `claude/project-review-1l2hho`) and verified patches are committed straight onto it instead of opening pull requests. If that is the deployed branch the change goes live on the next build with no human reading it; the console keeps a one-click revert per commit. Empty (default) means draft PRs |
-| `IMPROVE_AUTO_PR` | `1` (default): a verified patch is pushed to `phoenix/improve-N` and opened as a DRAFT pull request by the cycle itself; `0` parks it at the console gate for a human to approve first. Needs `GITHUB_TOKEN` either way to reach GitHub |
-| `IMPROVE` / `IMPROVE_INTERVAL_S` / `IMPROVE_MAX_TRIES` | Article XI self-improvement cycle: on by default every hour, trying up to 10 mechanic-proposed patches per cycle (each costs a full suite run on a copy; publishing happens as one burst at the end so the rebuild it triggers cannot cut the cycle short) against the project's own suites in a scratch copy; `IMPROVE=0` disables. `IMPROVE_SUITES` limits which suites are the oracle (comma list of governor, work, settlement, mechanic) |
-| `GITHUB_TOKEN` / `IMPROVE_REPO` | Only with a token does an approval at `/improve` push a branch and open a DRAFT pull request (default repo `amonxnye/Phoenix`); without one the approved patch is handed over. The token lives in the orchestrator's environment, never in the sandbox |
+| (research) | No variable: every development the cycle queues is preceded by a research entry (advantage, risk, blast radius, detection, undo, alternatives, confidence) written by the brain into an append-only hash-chained ledger, shown at `/research`. Without a working brain a development is held back as *unresearched* — no research, no proposal |
+| `IMPROVE` / `IMPROVE_INTERVAL_S` / `IMPROVE_MAX_TRIES` | Article XI improvement cycle: on by default every hour; each cycle reads public sources about up to 10 topics for the settlement's age, checks every citation, proposes developments from verified facts, researches them and queues them for the Board and the human. `IMPROVE=0` disables |
 | `BRAIN_NATIVE=1` | Call a tagged model on Ollama's native `/api/chat` with `think: false` instead of `/v1`. Only for a model that honours the switch — on a thinking-only build it moves the reasoning into the answer |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | The original provider; used only when `BRAIN_API_KEY` is unset. Remove it once the switch is made so a missing key fails loudly instead of falling back |
-| `MECHANIC_BASE_URL` / `MECHANIC_API_KEY` / `MECHANIC_MODEL` | The mechanic alone on its own server, e.g. `https://api.ripaplatform.com/v1` + `qwen3:30b`; the settlement keeps its provider. All three are required — a gateway never picks the model |
-| `MECHANIC_PRICE` | `self-hosted` (0¢, the default for an Ollama tag), `cheap` or `strong` — which price table meters the mechanic's budget |
 | `BRAIN_TIMEOUT_S` | Per-attempt timeout for model calls (default 300) |
 | `BRAIN_THINK_TOKENS` / `BRAIN_THINK_TOK_PER_S` | A model observed to think (its reasoning outweighs its answers in the call log) gets this many extra tokens for reasoning on every call (default 2500), so the answer is not crowded out; the per-attempt timeout stretches to fit at the measured speed (default 8 tokens/s). A call inside a director turn whose budget cannot cover a thought is not made — the rules answer at once. `0` turns both off. A non-thinking model needs none of this |
 | `BRAIN_STREAM` / `BRAIN_STREAM_GAP_S` / `BRAIN_EDGE_SAFE_S` | A gateway's edge (Cloudflare) answers 524 to a request silent for ~100 s, and a thinking model given room to reason takes minutes. So a model observed to think (`BRAIN_STREAM=auto`, the default; `1` always, `0` never) has its reply **streamed**: reasoning tokens arrive as they are made, the connection is never silent, and a call can run for minutes. `BRAIN_STREAM_GAP_S` (default 90) is the longest silence tolerated inside a stream. A host that rejects streaming (HTTP 400/404/405/415/422/501) is remembered and called plainly from then on; a plain call gets only the reasoning allowance that finishes within `BRAIN_EDGE_SAFE_S` (default 85 s) at `BRAIN_THINK_TOK_PER_S` |
-| `DRIVER_MODEL_BUDGET_S` | The most model time one director turn may spend, retries included (default 180, always kept under the watchdog's 300 s). A slow model makes a turn fall back to its rules instead of wedging the world into a restart. Background work — the improvement cycle, research, the mechanic — is not bounded by it |
-| `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, GitHub archive, OSV.dev) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried; a request not declared idempotent is made once |
+| `DRIVER_MODEL_BUDGET_S` | The most model time one director turn may spend, retries included (default 180, always kept under the watchdog's 300 s). A slow model makes a turn fall back to its rules instead of wedging the world into a restart. Background work — the improvement cycle, research — is not bounded by it |
+| `NET_RETRIES` / `NET_BACKOFF_S` | Every outbound request (model, public sources) is retried on timeouts, connection loss, 429 and 5xx — including Cloudflare's 52x — with exponential backoff and jitter: `NET_RETRIES` retries after the first attempt (default 5), first wait `NET_BACKOFF_S` seconds (default 1, doubling, capped at 30). 401/402/404 are never retried; a request not declared idempotent is made once |
 | `NET_BREAK_AFTER` / `NET_COOL_S` | Circuit breaker per host: after `NET_BREAK_AFTER` calls (default 2) have exhausted their retries against one host, calls to it fail at once for `NET_COOL_S` seconds (default 60), then one probe is let through |
 | `ADMIN_TOKEN` | The stronger key: it opens everything `CONSOLE_TOKEN` does, and it alone opens the **full reset** (export, then delete every database and the event log, then restart) and the **whole-world JSON export**. Unset, the full reset takes `CONSOLE_TOKEN` instead, and is disabled only when neither is set; the export is open. Paste it into the box at the top of `/admin` (or answer the prompt); it is kept in that browser only |
 | `EFFICIENCY_TOKENS_PER_DAY` | Model tokens per day the efficiency review may spend (default 50000). The review runs after every improvement cycle and on demand at `/admin`; over budget it still writes the rule-based reading to the innovation journal. `IMPROVE_EFFICIENCY_REVIEW=0` stops the automatic one |
 | `UTOPIA_TOKENS_PER_DAY` / `UTOPIA_PRICE_SHARE` | The architect's daily model-token budget for designing civic works (default 200000; over it the pattern book designs), and the share of the current age-up a 10-point work costs (default 0.04) |
-| `MECHANIC_PROVIDER_DOWN_AFTER` | The mechanic halts a run after this many consecutive failed model calls (default 5) instead of asking every unit |
 
 ## Admin
 
 `/admin` shows every system (world, brain, network breakers, improvement cycle,
-research chain, mechanic, disk), compute over time (model tokens per hour and per
+research chain, disk), compute over time (model tokens per hour and per
 purpose, tokens wasted on failed calls, agent compute and the contribution it bought,
 tokens per research entry, idea or adopted development), the agents ranked with flags
 for low efficiency, chaos sources grouped from the incident log, questionable
@@ -116,28 +109,6 @@ logs stay) and a full reset (needs `ADMIN_TOKEN` — or `CONSOLE_TOKEN` when no 
 the whole world is exported to `<data>/exports/world-<time>.json` first, the nightly
 archives are moved beside it, then every database and the event log are deleted and
 the process restarts from nothing.
-
-## The 3D world (`/map3d`)
-
-Drawn live from the simulation's own record (`/api/state`: terrain stock, placements, registry, agents) with
-three.js r160 and its addons, all vendored under `gov/pages/vendor/` — nothing is fetched, so it works on an
-air-gapped host. The renderer is a set of ES modules under `gov/pages/gfx/`: `terrain` (a heightfield with hills,
-mountains and a lake, painted from the tile classes), `sky` (physically-based atmosphere, day/night cycle, moon,
-stars, clouds, image-based lighting from the sky itself), `nature` (wind-swayed forests, grass, flowers, rocks,
-reeds, berry bushes, ore), `buildings` and `civic` (every building and all twelve civic shapes), `agents`
-(articulated villagers with job-specific tools, and a grazing flock), `fx` (smoke, fire, spray, dust, fireflies,
-butterflies, birds) and `post` (HDR, MSAA, ambient occlusion, bloom, tone mapping, colour grade). Every texture is
-painted procedurally at start-up.
-
-Quality is **Auto** by default (starts at Medium and steps up or down from the measured frame rate) or Low / Medium /
-High from the panel; the choice is remembered in the browser. Low skips post-processing and water reflections and
-runs on integrated graphics. Keys: drag orbit · wheel zoom · WASD move · QE rise/sink · **C** cinematic orbit ·
-**H** hide the UI · **F2** save a screenshot.
-
-Review aids in the query string (`/map3d?…`): `q=low|medium|high`, `tod=0.0–1.0` (time of day: 0.25 dawn, 0.5 noon,
-0.75 dusk), `cam=x,y,z,tx,ty,tz` (camera and target), `still=N` (render N frames then stop — for headless captures),
-`demo=1` (adds one of every civic shape and a few homes in varying condition — nothing is written), `walk=1` (sends
-every agent walking). `PHOENIX_DEV=1` makes the console re-read page files on every request while editing them.
 
 ## State persistence
 

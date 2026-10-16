@@ -32,7 +32,7 @@ from contextlib import contextmanager as _contextmanager
 # research) must cost the turn at most this long, retries included — then the
 # caller's rule-based fallback decides. Without it one 17-minute reply held the
 # turn past the watchdog, and the watchdog restarted the whole world. Background
-# work (the improvement cycle, research, the mechanic) runs without a budget.
+# work (the improvement cycle, research) runs without a budget.
 _BUDGET = _threading.local()
 
 
@@ -455,8 +455,8 @@ def _chat(messages: list, max_tokens: int, temperature: float, purpose: str,
     errors to the anchor, returns the reply text. Raises on failure — callers keep
     their own rule-based fallbacks.
 
-    `extra_body`: per-call provider fields (the mechanic turns thinking off).
-    `provider_override`: one subsystem (the mechanic) on its own endpoint, every call
+    `extra_body`: per-call provider fields.
+    `provider_override`: another endpoint (a model fallback), every call
     still logged through this one seam."""
     # The single choke point: whatever a caller assembled, no turn leaves here
     # unbounded. Callers clip their own fields to sensible sizes; this catches the
