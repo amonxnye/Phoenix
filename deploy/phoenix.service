@@ -8,7 +8,7 @@
 #   sudo cp /opt/phoenix/app/deploy/phoenix.service /etc/systemd/system/ && sudo systemctl enable --now phoenix
 # For the sandbox's private network namespace: sysctl kernel.unprivileged_userns_clone=1
 [Unit]
-Description=Phoenix — the Governor, the Mechanic, the improvement cycle
+Description=Phoenix — the Governor and the improvement cycle
 After=network-online.target ollama.service
 Wants=network-online.target
 

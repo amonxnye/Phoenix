@@ -632,9 +632,10 @@ check("no page hard-codes a text colour outside the palette",
 
 _GRAPHIC = {k: _SC.PALETTE[k] for k in _GRAPHICS}
 check("no page animates against the reader's stated preference",
-      _console_src.count("prefers-reduced-motion") >= 11
+      "prefers-reduced-motion" in _SC._LOADER
+      and _console_src.count("/*LOADER*/") >= 10 and "ldrsp" not in _console_src.replace(_SC._LOADER, "")
       and "const STILL=matchMedia" in _console_src,
-      f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
+      f"the shared spinner is guarded on {_console_src.count('/*LOADER*/') - 1} pages, and the graph")
 check("the graphic colours tested are ones the pages actually use",
       all(v in _console_src for v in _GRAPHIC.values()))
 
@@ -1010,182 +1011,31 @@ check("the deploy package mounts the record at /data and points GOV_DATA_DIR at 
 check("the container installs unshare for the sandbox and lifts the seccomp block for it, saying why",
       "util-linux" in _df and "seccomp=unconfined" in _dc and "unshare -rn" in _dc)
 check("every variable the code reads is in .env.example",
-      all(v in _ee for v in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "CONSOLE_TOKEN", "GITHUB_TOKEN",
-                             "IMPROVE_INTERVAL_S", "MECHANIC_BASE_URL", "NET_RETRIES", "SANDBOX_NETNS")))
+      all(v in _ee for v in ("BRAIN_API_KEY", "BRAIN_BASE_URL", "BRAIN_MODEL", "CONSOLE_TOKEN",
+                             "IMPROVE_INTERVAL_S", "NET_RETRIES", "SANDBOX_NETNS")))
 check("the host health check exists and reports the record's writability, commit and isolation",
       '"/healthz"' in open(os.path.join(HERE, "sim_console.py")).read() and "healthz" in _df and "healthz" in _dc)
 
-# ── Article XI: the self-improvement cycle, offline — scripted candidates, oracle, researcher ──
+# ── Article XI: the improvement cycle, offline — a scripted researcher ──
 import improve as IMP
 import research as RS
-import ghpr as _GH
-import hashlib as _hl
-_fixture_rel = "gov/verify_fixture_improve.py"           # a real file in the live tree, for the copy
-_fixture_abs = os.path.join(os.path.dirname(HERE), _fixture_rel)
-with open(_fixture_abs, "w") as _f:
-    _f.write("def hello():\n    return 1\n")
-_live_before = _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest()
 _tag = "[%d]" % int(time.time())                        # titles unique per run: the record persists across runs
-_cand = {"finding_id": "f1", "title": "hello should say so " + _tag, "severity": "low", "category": "quality",
-         "file": _fixture_rel, "patch": "--- a/gov/verify_fixture_improve.py\n+++ b/gov/verify_fixture_improve.py\n@@ -1,2 +1,2 @@\n def hello():\n-    return 1\n+    return 2\n"}
-_seen_trees = []
-def _green(tree, only=None):
-    _seen_trees.append(tree)
-    patched = "return 2" in open(os.path.join(tree, _fixture_rel)).read()
-    return {"green": True, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": "", "failed": []},
-                                      "settlement": {"passed": 200 + (1 if patched else 0), "total": 200 + (1 if patched else 0), "ok": True, "seconds": 2, "tail": "", "failed": []}}}
 _asked = []
 def _researcher(prompt):
     _asked.append(prompt)
     return ('{"advantage": "hello now says 2, which the patched settlement suite counts as one more passing check", '
             '"risk": "a caller that expected 1 would see 2", "blast_radius": "callers of hello()", '
             '"detection": "the settlement suite", "undo": "revert the commit", "alternatives": "leave it", "confidence": "high — trivial diff"}')
-_saved_seams = (IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file)
-_mode0 = IMP.MODE
-_envt = os.environ.pop("GITHUB_TOKEN", None)          # the suite must never reach GitHub
-IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK = _green, (lambda: [_cand]), False, "", _researcher
-IMP.MODE = "code"                                     # this section exercises the code mode; world mode is checked below
+_saved_ask = RS.ASK
+RS.ASK = _researcher
 try:
-    _r = IMP.cycle("test")
-    check("a cycle takes the mechanic's patches, tries each on a COPY against the suites, and parks what survived",
-          _r["status"] == "complete" and _r["candidates"] == 1 and _r["tried"] == 1 and _r["verified"] == 1
-          and len(_seen_trees) == 2 and all(t != os.path.dirname(HERE) and not os.path.exists(t) for t in _seen_trees), str(_r))
-    _p = IMP.proposals(status="verified")
-    check("the verified improvement waits at the gate with its diff and the suite delta",
-          _p and _p[0]["file"] == _fixture_rel and "+    return 2" in _p[0]["patch"]
-          and _p[0]["after_json"]["suites"]["settlement"]["passed"] == 201 and IMP.status()["parked"] >= 1)
-    check("the live tree was never written — the fixture's digest is unchanged",
-          _hl.sha256(open(_fixture_abs, "rb").read()).hexdigest() == _live_before)
-    _e = RS.for_proposal(_p[0]["id"])
-    check("the research — advantage AND risk — was written for the verified change from the measured facts, before anything else",
-          _e is not None and _e["body"]["advantage"].startswith("hello now says 2") and _e["body"]["risk"]
-          and _e["evidence"]["suites_after"]["settlement"]["passed"] == 201 and "BEGIN DIFF" in _asked[-1]
-          and "return 2" in _asked[-1] and RS.verify_chain()["intact"])
-    check("the record is a file too — RESEARCH.md regenerated from the ledger, never edited",
-          "R%d" % _e["id"] in RS.render() and "**Advantage.** hello now says 2" in RS.render()
-          and os.path.exists(RS.local_path()))
-    # a rejection, by name, confirmed on re-run
-    def _red(tree, only=None):
-        return {"green": False, "suites": {"governor": {"passed": 15, "total": 16, "ok": False, "seconds": 1, "tail": "FAIL x", "failed": ["the gate holds"]},
-                                           "settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": "", "failed": []}}}
-    IMP.ORACLE = lambda tree, only=None: _green(tree) if "return 2" not in open(os.path.join(tree, _fixture_rel)).read() else _red(tree)
-    IMP.CANDIDATES = lambda: [dict(_cand, title="red one " + _tag)]
-    _r2 = IMP.cycle("test")
-    check("a patch that makes a check fail is rejected NAMING the check, confirmed on a re-run, and recorded as a lesson",
-          _r2["verified"] == 0 and _r2["rejected"] == 1
-          and any(p["status"] == "rejected" and "governor: the gate holds" in p["note"] and "confirmed on re-run" in p["note"] for p in IMP.proposals())
-          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-rejected'").fetchone()[0] >= 1,
-          str([p["note"][:80] for p in IMP.proposals()[:2]]))
-    # the flake guard
-    _runs = {"n": 0}
-    def _flaky(tree, only=None):
-        _runs["n"] += 1
-        if "return 2" not in open(os.path.join(tree, _fixture_rel)).read():
-            return _green(tree)
-        if _runs["n"] == 2:
-            return {"green": False, "suites": {"governor": {"passed": 16, "total": 16, "ok": True, "seconds": 1, "tail": "", "failed": []},
-                                               "settlement": {"passed": 200, "total": 201, "ok": False, "seconds": 2, "tail": "",
-                                                              "failed": ["the time series accounts for every decision"]}}}
-        return {"green": True, "suites": {"settlement": {"passed": 201, "total": 201, "ok": True, "seconds": 2, "tail": "", "failed": []}}}
-    IMP.ORACLE = _flaky
-    IMP.CANDIDATES = lambda: [dict(_cand, title="flaky one " + _tag)]
-    _r3 = IMP.cycle("test"); _p3 = IMP.proposals()[0]
-    check("a check that fails on the first run and passes on a re-run of the same copy is a flake: verified, and the note says so",
-          _r3["verified"] == 1 and _p3["status"] == "verified" and "flaky, not the patch" in _p3["note"]
-          and "the time series" in _p3["note"] and _p3["after_json"]["suites"]["settlement"].get("first_run"), _p3["note"][:200])
-    IMP.ORACLE = _green
-    # unverifiable, protected, unresearched
-    IMP.CANDIDATES = lambda: [dict(_cand, file="requirements.txt", title="bump a pin " + _tag,
-                                   patch="--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1 +1 @@\n-x\n+y\n")]
-    _r4 = IMP.cycle("test"); _p4 = IMP.proposals()[0]
-    check("a patch to a file the suites do not exercise is parked unverified — never 'verified' — and still approvable",
-          _r4["verified"] == 0 and _p4["status"] == "unverified" and "do not exercise requirements.txt" in _p4["note"] and "unverified" in _r4["note"], str(_r4))
-    IMP.CANDIDATES = lambda: [dict(_cand, file="RESEARCH.md", title="rewrite the record " + _tag,
-                                   patch="--- a/RESEARCH.md\n+++ b/RESEARCH.md\n@@ -1 +1 @@\n-x\n+y\n"),
-                              dict(_cand, file="CONSTITUTION.md", title="loosen a rule " + _tag,
-                                   patch="--- a/CONSTITUTION.md\n+++ b/CONSTITUTION.md\n@@ -1 +1 @@\n-x\n+y\n")]
-    _r5 = IMP.cycle("test")
-    check("a patch to the research record or the constitution is REFUSED before any suite runs — agents cannot reach them",
-          _r5.get("refused") == 2 and all(p["status"] == "refused" and "protected" in p["note"] for p in IMP.proposals()[:2])
-          and "refused as protected" in _r5["note"] and RS.protected("gov/research.py") and RS.protected("mechanic/CHARTER.md")
-          and not RS.protected("gov/improve.py"), str(_r5))
-    RS.ASK = lambda prompt: "I cannot say."
-    IMP.CANDIDATES = lambda: [dict(_cand, title="no research possible " + _tag)]
-    _r6 = IMP.cycle("test"); _p6 = IMP.proposals()[0]
-    check("no research — no change: a verified patch whose research lacks advantage and risk is held back, never published",
-          _p6["status"] == "unresearched" and "NOT published" in _p6["note"] and _r6.get("proposed", 0) == 0
-          and "want of research" in _r6["note"] and RS.for_proposal(_p6["id"]) is None, _p6["note"][:160])
-    RS.ASK = _researcher
-    check("the suites' FAIL lines are read by name",
-          IMP._FAILED.search("  [\x1b[31mFAIL\x1b[0m] the time series accounts for every decision, not a sample  — 0 buckets").group(1).strip()
-          == "the time series accounts for every decision, not a sample")
-    # the gate without a token: approved → the patch is handed over
-    _ap = IMP.approve(_p[0]["id"], "tester")
-    check("approval without a GITHUB_TOKEN hands the patch to the human — nothing is pushed",
-          _ap["ok"] and _ap["status"] == "approved" and "+    return 2" in _ap["patch"] and IMP.proposal(_p[0]["id"])["status"] == "approved")
-    # Article XI.3: published on its own — a draft PR carrying RESEARCH.md
-    _opened = []
-    _GH.open_pr = lambda repo, token, branch, files, title, body, base="": (_opened.append((branch, sorted(files), title, body)) or "https://github.com/o/r/pull/42")
-    os.environ["GITHUB_TOKEN"] = "tok"; IMP.AUTO_PR = True
-    IMP.CANDIDATES = lambda: [dict(_cand, title="publish me " + _tag)]
-    _r7 = IMP.cycle("test"); _p7 = IMP.proposals()[0]
-    check("a verified, researched patch is pushed to its own branch and opened as a draft PR with RESEARCH.md — the merge stays human",
-          _r7["verified"] == 1 and _r7.get("proposed") == 1 and _p7["status"] == "proposed" and _p7["pr_url"].endswith("/pull/42")
-          and _opened and _opened[-1][0] == "phoenix/improve-%d" % _p7["id"] and _opened[-1][1] == ["RESEARCH.md", _fixture_rel]
-          and "advantage" in _opened[-1][3], str(_p7["note"])[:120])
-    _r8 = IMP.cycle("test")
-    check("the same change is not proposed again while its PR is open — skipped and recorded",
-          _r8["tried"] == 0 and _r8["candidates"] == 1
-          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='improve-skipped'").fetchone()[0] >= 1, str(_r8))
-    # the operator names the deploy branch: research committed FIRST, then the patch; the undo kept
-    _branch_files = {_fixture_rel: ("def hello():\n    return 1\n", "sha-a")}
-    _commits = []
-    _GH.get_file = lambda repo, token, branch, path: _branch_files.get(path, (None, ""))
-    def _fake_commit(repo, token, branch, path, content, message, expect_sha=""):
-        assert expect_sha == _branch_files.get(path, (None, ""))[1], "the write must name the blob it last saw"
-        _commits.append((branch, path, content, message)); _branch_files[path] = (content, "sha-%d" % len(_commits))
-        return {"sha": "c" * 40, "url": "https://github.com/o/r/commit/" + "c" * 40}
-    _GH.commit_file = _fake_commit
-    IMP.PUSH_BRANCH = "claude/project-review-1l2hho"
-    IMP.CANDIDATES = lambda: [dict(_cand, title="straight to the branch " + _tag)]
-    _r9 = IMP.cycle("test"); _p9 = IMP.proposals()[0]
-    check("with IMPROVE_PUSH_BRANCH: RESEARCH.md is committed first, then the patch, naming the proposal; the original is kept",
-          _p9["status"] == "committed" and len(_commits) >= 2 and _commits[-2][1] == "RESEARCH.md" and "Research R" in _commits[-2][3]
-          and "**Advantage.**" in _commits[-2][2] and _commits[-1][0] == "claude/project-review-1l2hho"
-          and "return 2" in _commits[-1][2] and "Self-improvement #%d" % _p9["id"] in _commits[-1][3]
-          and _p9["original"] == "def hello():\n    return 1\n", str(_p9["note"])[:120])
-    _rv = IMP.revert(_p9["id"], "tester")
-    check("revert puts the file back as one commit and the proposal reads reverted",
-          _rv["ok"] and _commits[-1][2] == "def hello():\n    return 1\n" and "Revert self-improvement" in _commits[-1][3]
-          and IMP.proposal(_p9["id"])["status"] == "reverted", str(_rv))
-    _branch_files["RESEARCH.md"] = ("# someone rewrote the research file\n", "sha-t")
-    IMP.CANDIDATES = lambda: [dict(_cand, title="tampered record " + _tag)]
-    _r10 = IMP.cycle("test"); _p10 = IMP.proposals()[0]
-    check("a RESEARCH.md on the branch that does not match the record stops the publish and escalates — never overwritten",
-          _p10["status"] == "verified" and "refused to append" in _p10["note"]
-          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE '%does not match the research record%'").fetchone()[0] >= 1,
-          _p10["note"][-160:])
-    _branch_files["RESEARCH.md"] = (RS.expected_tail(10**9), "sha-u")
-    IMP.CANDIDATES = lambda: [dict(_cand, title="edited underneath " + _tag)]
-    _r11 = IMP.cycle("test"); _p11 = IMP.proposals()[0]
-    _branch_files[_fixture_rel] = ("def hello():\n    return 3   # a human edited this since\n", "sha-z")
-    _rv2 = IMP.revert(_p11["id"], "tester")
-    check("a revert is refused when the file changed since the commit — a later edit is not the proposal's to undo",
-          _p11["status"] == "committed" and not _rv2["ok"] and "changed" in _rv2["error"] and IMP.proposal(_p11["id"])["status"] == "committed", str(_rv2))
     _cc = IMP._conn(); _cc.execute("INSERT INTO improve_cycles(ts, trigger, status, candidates, tried, verified, rejected, note, seconds, baseline, signals, model, charter) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (time.time(), "test", "running", 0, 0, 0, 0, "cut off", 0, "{}", "{}", "", "")); _cc.commit(); _cc.close()
     check("a cycle still marked running at boot is reaped as interrupted — a restart mid-cycle is recorded, not left looking alive",
           IMP.reap() >= 1 and IMP.cycles(limit=1)[0]["status"] == "interrupted" and "restarted" in IMP.cycles(limit=1)[0]["note"])
-    check("the research chain is intact after every append, and has no edit or delete anywhere in the module",
-          RS.verify_chain()["intact"] and RS.verify_chain()["entries"] >= 4
+    check("the research chain is intact, and has no edit or delete anywhere in the module",
+          RS.verify_chain()["intact"]
           and "UPDATE research" not in open(os.path.join(HERE, "research.py")).read()
           and "DELETE FROM research" not in open(os.path.join(HERE, "research.py")).read())
-    # escalation after three empty cycles
-    IMP.CANDIDATES = lambda: []
-    for _ in range(IMP.EMPTY_CYCLES_ESCALATE):
-        IMP.cycle("test")
-    check("three consecutive empty cycles are an escalation to the Chief Governor, not a quiet repeat",
-          IMP.status()["empty_streak"] >= IMP.EMPTY_CYCLES_ESCALATE
-          and A._conn().execute("SELECT COUNT(*) FROM knowledge WHERE kind='escalation' AND note LIKE 'IMPROVEMENT STALLED%'").fetchone()[0] >= 1)
     check("the constitution names the article and its enforcing code, and bumped its version",
           "## Article XI" in A.charter_text() and "improve.cycle" in A.charter_text() and "research.py" in A.charter_text()
           and re.search(r"^Version: 1\.([6-9]|\d\d)", A.charter_text(), re.M) is not None)
@@ -1279,7 +1129,6 @@ try:
         _tops = ID.topics({"age": "Iron Age", "food": 1, "wood": 10**9, "gold": 10**9}, set(), 3)
         check("topics follow the age and the scarcest resource first",
               _tops[0] == "agricultural productivity" and _tops[1] in ID.TOPICS["Iron Age"] and len(_tops) == 3, str(_tops))
-        _m0 = IMP.MODE; IMP.MODE = "world"
         ID.FETCH = lambda topic: None
         _topics0 = ID.topics
         ID.topics = lambda w, already, limit: ["a fresh topic " + _tag]     # the record persists across runs
@@ -1290,15 +1139,10 @@ try:
         check("in world mode a cycle reads topics for this age and records what it found — no code is touched",
               _wc["status"] == "complete" and _wc["candidates"] >= 1 and "mode: world" in _wc["note"]
               and IMP.cycles(limit=1)[0]["note"].startswith("mode: world"), str(_wc))
-        IMP.MODE = _m0
     finally:
         ID.FETCH, ID.PROPOSE, RS.ASK, N._OPEN = _saved_ideas
 finally:
-    IMP.ORACLE, IMP.CANDIDATES, IMP.AUTO_PR, IMP.PUSH_BRANCH, RS.ASK, _GH.open_pr, _GH.get_file, _GH.commit_file = _saved_seams
-    IMP.MODE = _mode0
-    os.environ.pop("GITHUB_TOKEN", None)
-    if _envt is not None: os.environ["GITHUB_TOKEN"] = _envt
-    os.remove(_fixture_abs)
+    RS.ASK = _saved_ask
 # ── Article XII: utopia — five qualities with effects, civic works designed by the world ──
 import utopia as UT
 import lives as LV
@@ -1333,7 +1177,7 @@ try:
     check("health houses more settlers", S.world()["pop_cap"] > _p0, f"{_p0} → {S.world()['pop_cap']}")
     _reg = S.render_registry()[_nm]
     _pl = [q for q in S.map_state()["placements"] if q["name"] == _nm]
-    check("the design reaches the 3D worlds as drawn: known shape, colour, scale, district — junk stripped; placed in its district",
+    check("the design reaches the map as drawn: known shape, colour, scale, district — junk stripped; placed in its district",
           _reg["shape"] == "garden" and _reg["color"] == "#e07a9a" and _reg["scale"] == 1.3 and "evil" not in _reg
           and _pl and max(abs(_pl[0]["x"] - S.DISTRICT_ANCHOR["nature"][0]), abs(_pl[0]["y"] - S.DISTRICT_ANCHOR["nature"][1])) <= 3
           and "utopia" in S.map_state() and "age_index" in S.map_state())
@@ -1386,11 +1230,6 @@ try:
           "def _renew(" in _csrc and "economy.retire" not in _csrc.split("def _op_terminate")[0].split("def _renew(")[0][-4000:]
           and _csrc.count("economy.retire(") == 1 and "honourable discharge" not in _csrc)
     EC.retire("vil-mentee-" + _tag.strip("[]")); EC.retire("vil-elder-" + _tag.strip("[]"))
-    _pg3 = "".join(open(f).read() for f in [os.path.join(HERE, "pages", "map3d.html")] + sorted(_glob.glob(os.path.join(HERE, "pages", "gfx", "*.js"))))
-    _pgb = open(os.path.join(HERE, "pages", "babylon.html")).read()
-    check("both 3D worlds draw every civic shape, and grow the town centre with each age",
-          all(f"'{sh}'" in _pg3 and f"'{sh}'" in _pgb for sh in S.UTOPIA_SHAPES)
-          and "age_index" in _pg3 and "age_index" in _pgb)
 finally:
     _cx = S._conn()
     for _n in _ut_names:
@@ -1567,7 +1406,7 @@ check("the record runs in write-ahead mode, so a long read never locks the write
 # ── a restart with an agent whose thread is gone must boot, not crash ──
 import tempfile as _tf2
 _bd = _tf2.mkdtemp(prefix="boot-")
-_env = dict(os.environ, GOV_DATA_DIR=_bd, IMPROVE="0", MECHANIC_WATCH="0")
+_env = dict(os.environ, GOV_DATA_DIR=_bd, IMPROVE="0")
 _py = [sys.executable, "-c"]
 _r1 = subprocess.run(_py + ["import sim_console"], cwd=HERE, env=_env, capture_output=True, text=True, timeout=120)
 _r2 = subprocess.run(_py + ["import economy; economy.init(); economy.enlist('vil-99')"], cwd=HERE, env=_env, capture_output=True, text=True, timeout=60)
@@ -1691,34 +1530,6 @@ check("admin: the page and its API are routed, and the console links to it",
       'self.path == "/admin"' in _csrc2 and '"/api/admin/"' in _csrc2 and 'href="/admin"' in _csrc2
       and "ADMIN_PAGE" in _csrc2)
 
-# the pull request is made of reads retried and writes made once, as a draft
-import ghpr as GH
-_calls = []
-class _R:
-    def __init__(self, b): self._b = b
-    def read(self): return _json_mod.dumps(self._b).encode()
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-def _gh_open(req, timeout=None, context=None):
-    _calls.append((req.get_method(), req.full_url.replace(GH.API, ""), _json_mod.loads(req.data) if req.data else None))
-    u = req.full_url
-    if u.endswith("/repos/o/r"): return _R({"default_branch": "main"})
-    if "/git/ref/heads/main" in u: return _R({"object": {"sha": "abc"}})
-    if "/git/ref/heads/phoenix/improve-1" in u: raise urllib.error.HTTPError(u, 404, "no", {}, None)
-    if "/contents/" in u and req.get_method() == "GET": return _R({"sha": "old"})
-    if u.endswith("/pulls"): return _R({"html_url": "https://github.com/o/r/pull/9"})
-    return _R({})
-_open0, N._OPEN = N._OPEN, _gh_open
-try:
-    _url = GH.open_pr("o/r", "tok", "phoenix/improve-1", {"gov/x.py": "print(1)\n"}, "t", "b")
-    _writes = [c for c in _calls if c[0] != "GET"]
-    check("an approval opens a DRAFT pull request: branch from the default branch, file put, PR draft:true",
-          _url.endswith("/pull/9") and [c[0] for c in _writes] == ["POST", "PUT", "POST"]
-          and _writes[0][2]["ref"] == "refs/heads/phoenix/improve-1" and _writes[1][2]["sha"] == "old"
-          and _writes[2][2]["draft"] is True and _writes[2][2]["head"] == "phoenix/improve-1", str([c[:2] for c in _calls]))
-finally:
-    N._OPEN = _open0
-
 # ── the model review: every call's telemetry, downtime from the record, events from the breaker ──
 import anchor as _A
 import models_page as _MP
@@ -1739,11 +1550,13 @@ check("three consecutive failed calls are a recorded outage, from the record alo
 check("who spends the model's time is broken down by purpose",
       any(p["purpose"] == "panel:quality" and p["errors"] >= 3 for p in _rv["purposes"]))
 N.reset()
+_sleep0, N._SLEEP = N._SLEEP, lambda s: None     # the backoff is checked elsewhere; here only the breaker
 try:
     for _ in range(N.BREAK_AFTER):
         try: N.call(lambda: (_ for _ in ()).throw(TimeoutError("hung")), what="gw", idempotent=True, key="gw.example")
         except TimeoutError: pass
 finally:
+    N._SLEEP = _sleep0
     N.reset()
 check("a breaker opening is written to the permanent record as an event",
       any(e["kind"] == "breaker_open" and e["host"] == "gw.example" for e in _MP._events()))
@@ -2049,54 +1862,34 @@ check("the paint registry covers everything built, with rank and effect",
 check("water is never built on",
       not ({(p['x'], p['y']) for p in S.map_state()['placements']} & S.WATER))
 
-print("\n20. The third dimension — 3D worlds ship whole, offline, and wired")
-_pages = os.path.join(HERE, "pages")
-_p3, _pb = (os.path.join(_pages, f) for f in ("map3d.html", "babylon.html"))
-check("both 3D pages exist and are real scenes, not stubs",
-      all(os.path.exists(p) and os.path.getsize(p) > 10_000 for p in (_p3, _pb)),
-      " + ".join(f"{os.path.getsize(p) // 1024}KB" for p in (_p3, _pb) if os.path.exists(p)))
-_gfx = sorted(_glob.glob(os.path.join(_pages, "gfx", "*.js")))
-_srcs = "".join(open(p).read() for p in [_p3, _pb] + _gfx if os.path.exists(p))
-check("the pages load nothing from the network — engines are vendored",
-      "http://" not in _srcs and "https://" not in _srcs
-      and "/pages/vendor/" in _srcs)
-check("the vendored engines are present",
-      all(os.path.getsize(os.path.join(_pages, "vendor", f)) > 100_000
-          for f in ("three.module.js", "babylon.min.js"))
-      and os.path.exists(os.path.join(_pages, "vendor", "addons", "controls", "OrbitControls.js")))
-_addons = os.path.join(_pages, "vendor", "addons")
-_want = ("postprocessing/EffectComposer.js", "postprocessing/UnrealBloomPass.js", "postprocessing/GTAOPass.js",
-         "postprocessing/OutputPass.js", "objects/Sky.js", "objects/Water.js", "utils/BufferGeometryUtils.js")
-check("the 3D world's renderer modules and the three.js addons they use are all vendored, and every import resolves offline",
-      len(_gfx) >= 9 and all(os.path.exists(os.path.join(_addons, f)) for f in _want)
-      and all(os.path.exists(os.path.normpath(os.path.join(_pages, "gfx", m))) for src in _gfx
-              for m in re.findall(r"from '(\./[\w./-]+)'", open(src).read()))
-      and all(os.path.exists(os.path.join(_addons, m)) for src in _gfx + [_p3]
-              for m in re.findall(r"from 'three/addons/([\w./-]+)'", open(src).read())),
-      f"{len(_gfx)} modules, {sum(os.path.getsize(f) for f in _gfx) // 1024} KB")
-import shutil as _sh, subprocess as _sp
-if _sh.which("node"):
-    _bad = []
-    for _f in _gfx:
-        _r = _sp.run(["node", "--input-type=module", "--check"], input=open(_f).read(), capture_output=True, text=True)
-        if _r.returncode: _bad.append(os.path.basename(_f) + ": " + _r.stderr.strip().splitlines()[-1][:80])
-    _html = open(_p3).read(); _m = re.search(r"<script type=\"module\">(.*?)</script>", _html, re.S)
-    _r = _sp.run(["node", "--input-type=module", "--check"], input=_m.group(1), capture_output=True, text=True)
-    if _r.returncode: _bad.append("map3d.html: " + _r.stderr.strip().splitlines()[-1][:80])
-    check("every renderer module and the page script parse as ES modules", not _bad, "; ".join(_bad) or f"{len(_gfx) + 1} scripts")
-_ag = open(os.path.join(_pages, "gfx", "agents.js")).read()
-check("villagers commute whatever the record calls them between turns (the live world never reports 'running'); only one "
-      "idle on every poll for a sustained time stands about (a 2 s 'idle' flicker does not), and the beacon is lit only by a herald's pending decision",
-      "const stuck = !!e.stuck" in _ag and "IDLE_HOLD_S" in _ag and "e.status === 'running'" not in _ag
-      and "any = any || (herald && !!a.pending)" in _ag)
-_p3src = open(_p3).read()
-check("the 3D world draws the live record: state, placements, registry, agents, terrain stock — and offers three quality tiers",
-      all(k in _p3src for k in ("/api/state", "placements", "registry", "d.agents", "m.terrain", "age_index"))
-      and all(t in open(os.path.join(_pages, "gfx", "post.js")).read() for t in ("low:", "medium:", "high:")))
-_console_src2 = open(os.path.join(HERE, "sim_console.py")).read()
-check("the console routes them, path-safely, from one file-server",
-      all(s in _console_src2 for s in ('"/map3d"', '"/babylon"', "_serve_page_file",
-                                       "realpath")))
+print("\n20. Compression — the console gzips what it serves")
+_probe = r"""
+import gzip, json, threading, urllib.request as U
+import sim_console as C
+srv = C.QuietServer(("127.0.0.1", 0), C.Handler); threading.Thread(target=srv.serve_forever, daemon=True).start()
+b = "http://127.0.0.1:%d" % srv.server_address[1]
+def get(p, **h):
+    with U.urlopen(U.Request(b + p, headers=h), timeout=30) as r: return r.status, dict(r.headers), r.read()
+s1, h1, z = get("/", **{"Accept-Encoding": "gzip"})
+s3, h3, raw = get("/")
+s4, h4, st = get("/api/state", **{"Accept-Encoding": "gzip"})
+print(json.dumps({"page": [s1, h1.get("Content-Encoding"), len(z), gzip.decompress(z) == raw],
+                  "plain": [s3, h3.get("Content-Encoding"), len(raw)],
+                  "state": [s4, h4.get("Content-Encoding"), "turn" in json.loads(gzip.decompress(st))]}))
+"""
+_gd = _tf2.mkdtemp(prefix="gz-")
+_rg = subprocess.run([sys.executable, "-c", _probe], cwd=HERE, capture_output=True, text=True, timeout=180,
+                     env=dict(os.environ, GOV_DATA_DIR=_gd, IMPROVE="0"))
+try:
+    _g = _json_mod.loads(_rg.stdout.strip().splitlines()[-1])
+except Exception:                                 # noqa: BLE001
+    _g = {}
+check("the console gzips what it serves when the browser accepts it (the console page at under half its size, "
+      "the state poll compressed too) and sends it plain when it does not",
+      _g.get("page", [0])[0] == 200 and _g["page"][1] == "gzip" and _g["page"][3]
+      and _g["page"][2] * 2 < _g["plain"][2] and _g["plain"][1] is None
+      and _g["state"] == [200, "gzip", True],
+      str(_g) or _rg.stderr[-200:])
 
 # ── 21. charter provenance — which rules bound a decision, and which brain took it ──
 # A report written in March must be readable against March's rules, and "which model

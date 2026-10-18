@@ -1,11 +1,10 @@
-# Phoenix — the Governor console, the Mechanic and the improvement cycle, one process.
+# Phoenix — the Governor console and the improvement cycle, one process.
 # Standard-library HTTP server; requirements.txt is the whole dependency list.
 FROM python:3.11-slim
 
-# util-linux gives `unshare`, which the worker sandbox and the improvement oracle use
-# for a private network namespace (Article V). git is optional: the mechanic reads
-# history facts when a .git directory is present, and refuses honestly when it is not.
-RUN apt-get update && apt-get install -y --no-install-recommends util-linux git curl \
+# util-linux gives `unshare`, which the worker sandbox uses for a private network
+# namespace (Article V).
+RUN apt-get update && apt-get install -y --no-install-recommends util-linux curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -1,6 +1,6 @@
 # The Constitution
 
-Version: 1.8
+Version: 1.9
 
 The rule book the fleet operates under. Every agent, and the director that commands
 them, is bound by these articles. They are not aspirations — each one names the code
@@ -333,64 +333,32 @@ Everything below is those two laws, applied.
    look like evidence.
 > Enforced by `anchor.py` (`charter`, `reason_add`) and `sim_console.py` (`/rules`).
 
-## Article XI — The world improves itself, and every improvement stops at the gate
+## Article XI — The world improves itself with knowledge, and every improvement stops at the gate
 
-0. **The world improves itself first with knowledge, then with code.** The improvement cycle
-   has two modes, chosen by the operator (`IMPROVE_MODE`). In its intended mode, *world*,
-   each cycle takes the settlement's age and its scarcest need, reads about topics a
-   settlement at that age would want to know from a public source, ingests each fact
-   with its citation and CHECKS it against the source (Article VI — an uncited fact is
-   kept and steers nothing), proposes a development from the verified fact in the
-   vocabulary the settlement can build, researches its advantage and risk into the
-   record of XI.6, and queues it for the Board's vote and the human's adoption under
-   Article IV.7. Nothing in that path adopts anything by itself (`ideas.py`,
-   `sim_console._propose_development`). The *code* mode is the one described below.
-1. **Improvement is a measured cycle, not an aspiration.** On a schedule the world runs
-   its own mechanic on its own code, takes the patches that applied and parsed, applies
-   each to a scratch copy of the repository, and runs every verification suite it ships
-   on that copy — with no credentials and no network. A candidate is *verified* only if
-   every suite is green at or above the unpatched baseline. No model judges whether a
-   change is good; the suites do (`improve.cycle`, `improve.run_suites`).
-2. **The live tree is never written by a cycle.** A digest of the running code is taken
-   before and after; a cycle that finds it changed is halted and escalated as a broken
-   invariant, whatever else it produced (`improve._tree_digest`).
-3. **Verified means proposed, never merged.** A verified improvement is pushed to its own
-   branch and opened as a *draft* pull request by the cycle itself, when a token was given
-   to the orchestrator — never to a sandbox — so the human decides on GitHub with the
-   diff and the suite delta in front of them; the merge is the human act. Without a
-   token, or for a patch the suites cannot judge, the proposal waits at the console gate
-   for a human. The same change is never proposed twice while one proposal for it is
-   open or a human has rejected it (`improve.publish`, `improve._already_proposed`,
-   `ghpr.open_pr`).
-   **The operator may name a branch instead** (`IMPROVE_PUSH_BRANCH`): then a verified
-   patch is committed straight onto it, and if that is the branch the host deploys, the
-   change is live minutes later with no human having read it. That is the operator's
-   choice, made once, in the environment. What the record guarantees in return is the
-   undo the first law demands: every commit names its proposal, the pre-patch content is
-   kept, and `revert` puts the file back as one commit — refused if the file has changed
-   since, because a later edit is not the proposal's to undo (`improve._commit_to_branch`,
-   `improve.revert`, `ghpr.commit_file`).
-4. **What was rejected is a lesson, not a loss.** Every rejection — by the suites or by
-   the human — is written to the record with its reason, so the next cycle's proposals
-   can be steered by what failed before (`anchor.record`, kind `improve-rejected`).
-5. **Producing nothing is a fact, and repeated nothing is an escalation.** Three
-   consecutive cycles that verify nothing are reported to the Chief Governor with the
-   last reason, not silently repeated (Article IX applied to improvement).
-6. **No change without its research, and the research is out of the agents' reach.**
-   Before a verified change is published, its advantage and its risk are researched from
-   the measured facts — what improves and how that is known; what could break, how far it
-   reaches, how a failure would be detected, how it is undone, what else was considered,
-   and with what confidence — and written into a record that is append-only and
-   hash-chained: every entry names the one before it, the chain is verified on every
-   read, and nothing in the code edits or deletes an entry. The record is also a file,
-   `RESEARCH.md`, regenerated from the ledger and committed to the repository ahead of the
-   change it justifies; a copy on the branch that does not match the record stops the
-   cycle rather than being overwritten. No proposed patch may touch the research file, this
-   constitution, the mechanic's charter or the researcher: such a candidate is refused
-   before any suite runs. No research — no change (`research.py`, `improve.cycle`,
-   `improve._commit_to_branch`, `/research`).
-> Enforced by `improve.py` (`cycle`, `run_suites`, `verdict`, `approve`, `reject`),
-> `research.py`, `ghpr.py` and `sim_console.py` (`/improve`, `/research`, `/api/improve/*`).
+1. **Improvement is a measured cycle, not an aspiration.** On a schedule each cycle takes
+   the settlement's age and its scarcest need, reads about topics a settlement at that
+   age would want to know from a public source, ingests each fact with its citation and
+   CHECKS it against the source (Article VI — an uncited fact is kept and steers
+   nothing), and proposes a development from the verified fact in the vocabulary the
+   settlement can build (`improve.cycle`, `ideas.py`).
+2. **Proposed, never adopted by the cycle.** Every development goes to the Board's vote
+   and the human's adoption under Article IV.7. Nothing in this path adopts anything by
+   itself (`sim_console._propose_development`).
+3. **What failed is a fact.** A topic that could not be read, whose citation did not
+   check, or whose research was cut short is recorded with its reason and tried again
+   later; a topic settled once is not read again (`ideas.skip_topics`, `ideas.reap_stale`).
+4. **No proposal without its research, and the research is out of the agents' reach.**
+   Before a development is queued, its advantage and its risk are researched — what
+   improves and how that is known; what could break, how far it reaches, how a failure
+   would be detected, how it is undone, what else was considered, and with what
+   confidence — and written into a record that is append-only and hash-chained: every
+   entry names the one before it, the chain is verified on every read, and nothing in the
+   code edits or deletes an entry. No research — no proposal (`research.py`, `/research`).
+5. **Every cycle is on the record.** A cycle's topics, reads, rejections and duration are
+   written to the anchor and shown on `/improve`; a cycle cut off by a restart is marked
+   interrupted, never left looking alive (`improve.reap`).
+> Enforced by `improve.py` (`cycle`, `reap`), `ideas.py`, `research.py` and
+> `sim_console.py` (`/improve`, `/research`, `/api/improve/*`).
 
 ## Article XII — The world grows toward utopia on its own ideas
 
@@ -412,11 +380,10 @@ Everything below is those two laws, applied.
    charged to a daily budget, and over budget the architect uses its own pattern book —
    the record says which.
 5. **Voted, adopted, built, drawn.** A civic work goes to the Board, then the human
-   (silence consents under IV.7); the director builds it when the treasury pays; the 3D
-   worlds draw it where its district is, as it was designed, and the town centre grows
-   grander with every age (`/utopia`, `/map3d`, `/babylon`).
+   (silence consents under IV.7); the director builds it when the treasury pays; the map
+   shows it standing (`/utopia`, `/map`).
 > Enforced by `sim.py` (`utopia_state`, `clean_visual`, `effective_yield`, `decay_tick`),
-> `utopia.py`, `sim_console.py` (`_propose_development`, `/utopia`) and the two 3D pages.
+> `utopia.py`, `sim_console.py` (`_propose_development`, `/utopia`).
 
 ## Amending this constitution
 
