@@ -2776,12 +2776,21 @@ _TOKENS = ":root{" + ";".join(f"--{k}:{v}" for k, v in PALETTE.items()) + "}"
 PALETTE_JS = "const C=" + json.dumps(PALETTE) + ";"
 
 
+_LOADER = '''<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
+  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
+  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+</div>
+<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
+<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>'''
+
+
 def _page(html: str, **differs) -> str:
     """Give a page the shared palette, plus the tokens it deliberately differs on."""
     css = _TOKENS
     if differs:
         css += ":root{" + ";".join(f"--{k}:{v}" for k, v in differs.items()) + "}"
-    return html.replace("/*TOKENS*/", css).replace("/*PALETTE_JS*/", PALETTE_JS)
+    return html.replace("/*TOKENS*/", css).replace("/*PALETTE_JS*/", PALETTE_JS).replace("/*LOADER*/", _LOADER)
 
 
 PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
@@ -2876,13 +2885,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <span id=pubstats class=navlink style="border-color:var(--line);color:var(--dim)"></span>
   </div>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main>
   <div class="card wide"><h2>Fleet</h2>
     <table><thead><tr><th>Unit</th><th>Task</th><th>State</th><th class=num>Rounds</th><th class=num>Compute</th></tr></thead>
@@ -3063,13 +3066,7 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
     <span>Cap</span><input id=capin type=number step=10000 style="width:110px"><button onclick=setCap()>Set</button>
   </div>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
 <main id=grid></main>
 <div style="max-width:1200px;margin:0 auto 24px;padding:0 18px">
@@ -3186,13 +3183,7 @@ button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-rad
 .hint{color:var(--dim);padding:16px}
 </style>
 <header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <div class=wrap>
   <div class=side id=side></div>
   <div class=main>
@@ -3253,13 +3244,7 @@ textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:
 </style>
 <header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main id=main>loading…</main>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -3353,13 +3338,7 @@ mark{background:#5a4a1a;color:#fff}
   <button class=on onclick=exportLogs()>Export file</button>
   <span class=meta><span id=shown>0</span> shown &middot; <span id=total>0</span> total (permanent)</span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <div class=log id=log></div>
 <script>
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -3438,13 +3417,7 @@ td.why{color:var(--blue);white-space:normal}
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main>
   <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
   <div class=card><h2>Capability ladder — what each rank may do</h2><div class=body id=tiers></div></div>
@@ -3511,13 +3484,7 @@ td.n{text-align:right}.best{color:var(--green);font-weight:700}
 <header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>current brain: <b id=br>—</b></span></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main>
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
     <div class=p id=telemetry>loading…</div></div>
@@ -3599,13 +3566,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
 <header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
   <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
@@ -3707,13 +3668,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
   <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <main>
   <div class="card wide"><div id=live></div><div class=kpi id=kpi></div></div>
 
@@ -4045,13 +4000,7 @@ svg text{font:10px ui-monospace,Menlo,monospace}
   <a href="/">Console</a><a href="/flow">Decision Flow</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
-</div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
-<script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
+/*LOADER*/
 <div id=tip></div>
 <main>
   <div class="card wide"><div class=kpi id=kpi></div></div>

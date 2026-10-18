@@ -632,9 +632,10 @@ check("no page hard-codes a text colour outside the palette",
 
 _GRAPHIC = {k: _SC.PALETTE[k] for k in _GRAPHICS}
 check("no page animates against the reader's stated preference",
-      _console_src.count("prefers-reduced-motion") >= 11
+      "prefers-reduced-motion" in _SC._LOADER
+      and _console_src.count("/*LOADER*/") >= 10 and "ldrsp" not in _console_src.replace(_SC._LOADER, "")
       and "const STILL=matchMedia" in _console_src,
-      f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
+      f"the shared spinner is guarded on {_console_src.count('/*LOADER*/') - 1} pages, and the graph")
 check("the graphic colours tested are ones the pages actually use",
       all(v in _console_src for v in _GRAPHIC.values()))
 
