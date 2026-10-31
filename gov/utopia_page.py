@@ -7,24 +7,24 @@ PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:14px}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px}.kpi b{display:block;font-size:19px}.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase}
-.bars{padding:10px 14px;display:grid;gap:8px}
-.bar{display:grid;grid-template-columns:110px 1fr 60px;gap:10px;align-items:center}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px}.kpi b{display:block;font-size:19px}.kpi span{color:var(--dim);font-size:10px;}
+.bars{padding:12px 16px;display:grid;gap:8px}
+.bar{display:grid;grid-template-columns:110px 1fr 60px;gap:12px;align-items:center}
 .track{height:12px;background:#0e0a05;border:1px solid var(--line);border-radius:6px;overflow:hidden}
-.fill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e)}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px 12px;border-bottom:1px solid var(--line);text-align:left}
-th{color:var(--dim);font-weight:400;font-size:10px;text-transform:uppercase}.empty{padding:14px;color:var(--dim)}
-.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.fill{height:100%;background:var(--gold)}
+.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--dim);font-weight:400;font-size:10px;}.empty{padding:16px;color:var(--dim)}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:8px}
 </style>
-<header><h1>UTOPIA</h1><a href="/">&larr; Console</a><a href="/map3d">3D World</a><a href="/babylon">Babylon</a><a href="/improve">Self-Improvement</a><a href="/rules">Rules</a>
+<header><h1>Utopia</h1>
 <span class=meta id=meta>loading…</span></header>
 <main>
 <div class=card><div class=kpi id=kpi></div>

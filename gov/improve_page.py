@@ -7,41 +7,41 @@ PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1240px;margin:0 auto;padding:16px;display:grid;gap:14px}
+main{max-width:1240px;margin:0 auto;padding:16px;display:grid;gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px}
 .kpi b{display:block;font-size:19px;line-height:1.3}
-.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.empty{padding:14px;color:var(--dim)}
-.filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);align-items:center}
-.ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
+.kpi span{color:var(--dim);font-size:10px;}
+.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:16px;color:var(--dim)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
+.ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:2px 12px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
 .ghost:hover{border-color:var(--gold);color:var(--gold)}
-.go{background:#3b2a12;border:1px solid var(--gold);color:var(--gold);border-radius:5px;padding:3px 12px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
+.go{background:#3b2a12;border:1px solid var(--gold);color:var(--gold);border-radius:5px;padding:4px 12px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
 .go:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse;font-size:12px}
-th,td{padding:6px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
-th{color:var(--dim);font-weight:400;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--dim);font-weight:400;font-size:10px;}
 td:first-child,th:first-child{text-align:left}
 .wrap{overflow-x:auto}
 .bad{color:#f87171}.good{color:#22c55e}.warn{color:#fbbf24}
-.p{border-bottom:1px solid var(--line);padding:10px 14px}
+.p{border-bottom:1px solid var(--line);padding:12px 16px}
 .p h3{margin:0 0 4px;font-size:13px}.p h3 small{color:var(--dim);font-weight:400}
-.st{display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border:1px solid var(--line)}
+.st{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;border:1px solid var(--line)}
 .st-committed{color:#22c55e;border-color:#22c55e}.st-unresearched{color:#f87171}.st-refused{color:#f87171}.st-reverted{color:var(--dim)}.st-verified{color:#fbbf24;border-color:#fbbf24}.st-unverified{color:#f87171;border-color:#f87171}.st-proposed{color:#22c55e;border-color:#22c55e}.st-approved{color:#22c55e}.st-rejected{color:#f87171}.st-stale{color:var(--dim)}
-pre.diff{background:#0e0a05;border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow:auto;max-height:320px;font-size:11px;margin:8px 0}
+pre.diff{background:#0e0a05;border:1px solid var(--line);border-radius:6px;padding:8px 12px;overflow:auto;max-height:320px;font-size:11px;margin:8px 0}
 pre.diff .a{color:#22c55e}pre.diff .d{color:#f87171}pre.diff .h{color:var(--gold)}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
-.row input{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:3px 8px;font:inherit;min-width:260px}
-dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;padding:10px 14px;margin:0;font-size:12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.row input{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:4px 8px;font:inherit;min-width:260px}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;padding:12px 16px;margin:0;font-size:12px}
 dt{color:var(--dim)}dd{margin:0}
 </style>
-<header><h1>SELF-IMPROVEMENT</h1><a href="/">&larr; Console</a><a href="/research">Research</a><a href="/models">Models</a><a href="/mechanic">Mechanic</a><a href="/rules">Rules</a>
+<header><h1>Self-improvement</h1>
 <span class=meta id=meta>loading…</span>
 <span class=meta id=tokbox style="margin-left:0"><input id=tok type=password placeholder="console token" style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 8px;font:inherit;width:160px" title="CONSOLE_TOKEN — needed to approve, reject or run a cycle; kept only in this browser"> <button class=ghost id=savetok>save</button></span></header>
 <main>
@@ -84,7 +84,7 @@ async function load(){
   const l=s.last_cycle||{};
   $('kpi').innerHTML=[['cycles',d.cycles.length],['parked at gate',s.parked],['last: candidates',l.candidates??'—'],['last: tried',l.tried??'—'],['last: verified',l.verified??'—'],['last: rejected',l.rejected??'—'],['empty streak',s.empty_streak],['proposed (PRs)',d.proposals.filter(p=>p.status==='proposed').length]].map(([a,b])=>`<div><b>${b}</b><span>${a}</span></div>`).join('');
   $('tokbox').hidden=!s.token_required;       // no CONSOLE_TOKEN set: every action is open
-  $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'BROKEN'):'')+' · mode '+esc(s.mode||'world');
+  $('meta').textContent+=(s.research?' · research chain '+(s.research.intact?'intact ('+s.research.entries+')':'broken'):'')+' · mode '+esc(s.mode||'world');
   const id=(s.ideas||{}).recent||[];
   $('ideas').innerHTML='<tr><th>when</th><th>age</th><th>topic</th><th>source</th><th>cited</th><th>development</th><th>research</th><th>status</th></tr>'+
     (id.length?id.map(i=>`<tr><td>${ts(i.ts)}</td><td>${esc(i.age)}</td><td style="white-space:normal">${esc(i.topic)}</td><td>${i.source?'<a href="'+esc(i.source)+'" target=_blank>'+esc(i.title||'source')+'</a>':'—'}</td><td class=${i.verified?'good':'bad'}>${i.verified?'verified':'no'}</td><td style="white-space:normal">${i.proposal?esc(i.proposal.name)+' — '+esc(i.proposal.kind)+' '+esc(i.proposal.value)+(i.proposal.resource?' '+esc(i.proposal.resource):'')+' (cost '+esc(JSON.stringify(i.proposal.cost))+')':'—'}</td><td>${i.research_id?'<a href="/research">R'+i.research_id+'</a>':'—'}</td><td class=${['queued','voting','adopted'].includes(i.status)?'good':'warn'} title="${esc(i.note)}">${esc(i.status)}</td></tr>`).join(''):'<tr><td colspan=8 class=empty>no idea considered yet — the next cycle reads about this age</td></tr>');

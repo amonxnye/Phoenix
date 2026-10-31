@@ -9,40 +9,40 @@ PAGE = """<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-nav.tabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--line)}
-nav.tabs a{border:1px solid var(--line);padding:3px 12px;border-radius:20px;color:var(--dim)}
-nav.tabs a:hover{color:var(--gold);border-color:var(--gold)}
-main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:14px}
+nav.tabs{display:flex;gap:8px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line)}
+nav.tabs a{padding:4px 8px;border-radius:6px;color:var(--dim)}
+nav.tabs a:hover{color:var(--ink);background:rgba(240,230,210,.05)}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px;min-width:0}.kpi b{display:block;font-size:17px;overflow-wrap:anywhere}.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px;min-width:0}.kpi b{display:block;font-size:17px;overflow-wrap:anywhere}.kpi span{color:var(--dim);font-size:10px;}
 .kpi .bad b{color:var(--alert)}.kpi .good b{color:var(--green)}
 .scroll{overflow:auto;max-height:420px}
-table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{color:var(--dim);font-weight:400;font-size:10px;text-transform:uppercase;position:sticky;top:0;background:var(--panel)}
+table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:400;font-size:10px;position:sticky;top:0;background:var(--panel)}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.empty{padding:14px;color:var(--dim)}.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:16px;color:var(--dim)}.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
 .flag{color:var(--alert);font-size:11px}.dim{color:var(--dim)}
-.chart{padding:10px 14px}.chart svg{width:100%;height:170px;display:block}
-.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dim);padding:0 14px 8px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
-button{font:inherit;padding:4px 11px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:#26200f;color:var(--ink)}
+.chart{padding:12px 16px}.chart svg{width:100%;height:170px;display:block}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--dim);padding:0 16px 8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+button{font:inherit;padding:4px 12px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:#26200f;color:var(--ink)}
 button.no{border-color:#5b2a1a;background:#2a140f;color:var(--alert)}button:disabled{opacity:.5;cursor:default}
 input,select,textarea{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px}
-.dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;padding:12px 14px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px}
+.dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;padding:12px 16px}
 .dl a,.dl button{display:block;border:1px solid var(--line);border-radius:8px;padding:8px 12px;text-align:left}
 .dl small{display:block;color:var(--dim);font-size:10px}
-.j{padding:10px 14px;border-bottom:1px solid var(--line)}.j b{color:var(--gold)}.j .k{font-size:10px;text-transform:uppercase;border:1px solid var(--line);border-radius:20px;padding:0 8px;margin-right:6px;color:var(--dim)}
+.j{padding:12px 16px;border-bottom:1px solid var(--line)}.j b{color:var(--gold)}.j .k{font-size:10px;border:1px solid var(--line);border-radius:6px;padding:0 8px;margin-right:8px;color:var(--dim)}
 .j p{margin:4px 0 0;white-space:pre-wrap;color:var(--ink)}
 .danger{border-color:#5b2a1a}.danger h2{color:var(--alert)}
-pre{margin:0;padding:10px 14px;font-size:11px;white-space:pre-wrap;color:var(--dim)}
+pre{margin:0;padding:12px 16px;font-size:11px;white-space:pre-wrap;color:var(--dim)}
 </style>
-<header><h1>ADMIN</h1><a href="/">&larr; Console</a><a href="/logs">Logs</a><a href="/models">Models</a><a href="/improve">Self-Improvement</a><a href="/research">Research</a><a href="/utopia">Utopia</a>
+<header><h1>Admin</h1>
 <span class=meta><span id=meta>loading…</span> · admin token <input id=atok type=password placeholder="ADMIN_TOKEN" style="width:130px"> <button id=saveatok>save</button></span></header>
 <nav class=tabs><a href="#systems">Systems</a><a href="#compute">Compute &amp; efficiency</a><a href="#actors">Actors &amp; decisions</a><a href="#journal">Innovation journal</a><a href="#records">Records &amp; downloads</a><a href="#danger">Danger zone</a></nav>
 <main>
@@ -126,7 +126,7 @@ async function systems(){
     ['food',n(w.food)],['wood',n(w.wood)],['gold',n(w.gold)],['utopia index',n(s.utopia.index)],
     ['brain',esc(b.model)],['calls 1 h',n(b.calls_1h)],['errors 1 h',n(b.errors_1h),b.errors_1h?'bad':''],['avg latency',n(b.avg_latency_ms_1h)+' ms'],
     ['improvement',im.error?'error':(im.running?'running':im.enabled?'enabled':'off'),im.error?'bad':''],['mode',esc(im.mode)],
-    ['research chain',s.research&&s.research.ok?'intact':'BROKEN',s.research&&s.research.ok?'good':'bad'],
+    ['research chain',s.research&&s.research.ok?'intact':'broken',s.research&&s.research.ok?'good':'bad'],
     ['disk used',st.disk.used_pct!=null?st.disk.used_pct+'%':'—',st.disk.used_pct>90?'bad':''],['disk free',bytes(st.disk.free)]]);
   const rows=[];
   for(const[k,v]of Object.entries(st.files))rows.push(['storage',k,bytes(v)]);

@@ -68,7 +68,7 @@ check("seeded units are parked at the gate",
 status, page = None, None
 with urllib.request.urlopen(base + "/", timeout=5) as r:
     status, page = r.status, r.read().decode()
-check("GET / serves the console page", status == 200 and "THE GOVERNOR" in page)
+check("GET / serves the console page", status == 200 and "The Governor" in page)
 
 target = snap["units"][0]["unit_id"]
 status, after = post("/api/resume", {"unit_id": target, "decision": "approve"})

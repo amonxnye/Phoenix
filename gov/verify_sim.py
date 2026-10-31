@@ -632,9 +632,9 @@ check("no page hard-codes a text colour outside the palette",
 
 _GRAPHIC = {k: _SC.PALETTE[k] for k in _GRAPHICS}
 check("no page animates against the reader's stated preference",
-      _console_src.count("prefers-reduced-motion") >= 11
+      "@keyframes" not in _console_src and "prefers-reduced-motion" in _console_src
       and "const STILL=matchMedia" in _console_src,
-      f"{_console_src.count('prefers-reduced-motion')} guards (10 spinners + the graph)")
+      "no looping loaders; the graph honours the preference")
 check("the graphic colours tested are ones the pages actually use",
       all(v in _console_src for v in _GRAPHIC.values()))
 
@@ -1688,7 +1688,7 @@ check("every page keeps the console token under one key, and the admin page asks
       "ls('ctok')" in _apg and "prompt('Console token required" in _apg and "prompt('Admin token required" in _apg
       and "localStorage.setItem('ctok'" in open(os.path.join(HERE, "improve_page.py")).read())
 check("admin: the page and its API are routed, and the console links to it",
-      'self.path == "/admin"' in _csrc2 and '"/api/admin/"' in _csrc2 and 'href="/admin"' in _csrc2
+      'self.path == "/admin"' in _csrc2 and '"/api/admin/"' in _csrc2 and 'href="/admin"' in _SC.NAV
       and "ADMIN_PAGE" in _csrc2)
 
 # the pull request is made of reads retried and writes made once, as a draft
@@ -1749,7 +1749,7 @@ check("a breaker opening is written to the permanent record as an event",
       any(e["kind"] == "breaker_open" and e["host"] == "gw.example" for e in _MP._events()))
 _csrc = open(os.path.join(HERE, "sim_console.py")).read()
 check("the review page is served by the console with the shared palette and a nav link",
-      "MODEL REVIEW" in _MP.PAGE and "MODELS_PAGE = _page(" in _csrc and 'href="/models"' in _csrc
+      "Model review" in _MP.PAGE and "MODELS_PAGE = _page(" in _csrc and 'href="/models"' in _SC.NAV
       and '"/api/models"' in _csrc)
 
 # ── provider selection: the platform's own gateway is the default, DeepSeek the fallback ──
