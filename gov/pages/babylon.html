@@ -7,28 +7,29 @@
   .hud{position:fixed;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#f0e6d2;
     background:rgba(28,21,13,.84);border:1px solid #3a2c18;border-radius:6px;padding:10px 14px;
     backdrop-filter:blur(2px);pointer-events:none}
-  #hud{top:14px;left:14px;min-width:190px}
-  #hud h1{margin:0 0 2px;font-size:13px;font-weight:700;letter-spacing:.14em;color:#e0b23a}
+  #hud{top:56px;left:16px;min-width:192px}
+  #hud h1{margin:0 0 2px;font-size:13px;font-weight:500;color:#f0e6d2}
   #hud .sub{color:#b09a72;font-size:11px;margin-bottom:7px}
   #hud .res{display:flex;justify-content:space-between;gap:14px}
-  #hud .res b{font-weight:600}
+  #hud .res b{font-weight:500}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
   #pend{margin-top:7px;color:#e0b23a;font-size:11px;display:none}
-  #pend .dot{background:#e0b23a;box-shadow:0 0 6px #e0b23a;animation:pp 1.6s infinite}
+  #pend .dot{background:#e0b23a;animation:pp 1.6s infinite}
   @keyframes pp{50%{opacity:.35}}
   #keys{bottom:14px;left:14px;color:#b09a72;font-size:11px;padding:7px 12px}
   #keys b{color:#f0e6d2;font-weight:600}
   #tip{display:none;min-width:150px;z-index:5}
-  #tip .nm{color:#e0b23a;font-weight:700;letter-spacing:.06em}
+  #tip .nm{color:#e0b23a;font-weight:500}
   #tip .fx{color:#b09a72}
   #tip .ring{color:#a8e086}
   #tip .worn{color:#e05a5a}
 </style>
 <script src="/pages/vendor/babylon.min.js"></script>
 </head><body>
+<!--NAV-->
 <canvas id="c"></canvas><div id="vig"></div>
 <div class="hud" id="hud">
-  <h1>PHOENIX</h1><div class="sub" id="ageln">night watch</div>
+  <h1>Phoenix</h1><div class="sub" id="ageln">night watch</div>
   <div class="res"><span><i class="dot" style="background:#e05a5a"></i>food</span><b id="rf">–</b></div>
   <div class="res"><span><i class="dot" style="background:#b5793a"></i>wood</span><b id="rw">–</b></div>
   <div class="res"><span><i class="dot" style="background:#e0b23a"></i>gold</span><b id="rg">–</b></div>

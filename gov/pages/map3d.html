@@ -7,34 +7,33 @@
   html,body{margin:0;height:100%;background:#0a0f1a;overflow:hidden;color:var(--ink);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   canvas{display:block;outline:none}
   .glass{background:var(--glass);border:1px solid var(--line);border-radius:10px;backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);box-shadow:0 6px 24px rgba(0,0,0,.35)}
-  #hud{position:fixed;top:14px;left:14px;padding:11px 15px;min-width:200px;pointer-events:none}
-  #hud .t{color:var(--gold);font-weight:700;letter-spacing:.16em;font-size:13px}
+  #hud{position:fixed;top:56px;left:16px;padding:12px 16px;min-width:200px;pointer-events:none}
+  #hud .t{color:var(--ink);font-weight:500;font-size:13px}
   #hud .d{color:var(--dim);margin-bottom:6px}
   #hud .r{display:flex;justify-content:space-between;gap:16px;align-items:center}
   #hud .r b{font-variant-numeric:tabular-nums}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:0;box-shadow:0 0 8px currentColor}
-  #panel{position:fixed;top:14px;right:14px;width:236px;padding:10px 12px 12px}
-  #panel h4{margin:0 0 8px;font-size:11px;letter-spacing:.14em;color:var(--dim);font-weight:600;text-transform:uppercase;display:flex;justify-content:space-between}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:0}
+  #panel{position:fixed;top:56px;right:16px;width:236px;padding:10px 12px 12px}
+  #panel h4{margin:0 0 8px;font-size:11px;color:var(--dim);font-weight:500;display:flex;justify-content:space-between}
   #panel h4 span{color:var(--ink);letter-spacing:0;text-transform:none}
   #panel .row{display:flex;gap:5px;flex-wrap:wrap;margin:6px 0}
   #panel button,#panel select{font:inherit;color:var(--ink);background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer}
   #panel button:hover{background:rgba(255,255,255,.15)} #panel button.on{border-color:var(--gold);color:var(--gold)}
   #panel input[type=range]{width:100%;accent-color:var(--gold)}
   #tip{position:fixed;display:none;padding:8px 11px;max-width:270px;pointer-events:none;z-index:5;background:rgba(18,13,8,.92);border:1px solid var(--line);border-radius:8px}
-  #tip .n{color:var(--gold);font-weight:700} #tip .e{color:var(--dim)} #tip .g{color:#a8e086} #tip .w{color:#ffd766}
+  #tip .n{color:var(--gold);font-weight:500} #tip .e{color:var(--dim)} #tip .g{color:#a8e086} #tip .w{color:#ffd766}
   #keys{position:fixed;bottom:12px;left:14px;padding:5px 10px;color:var(--dim);font-size:11px;pointer-events:none}
   #pill{position:fixed;right:14px;bottom:14px;padding:4px 12px;border-radius:14px;color:var(--gold);z-index:5}
-  #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:radial-gradient(ellipse at 50% 60%,#1c1610,#07090f);z-index:20;transition:opacity .9s;letter-spacing:.2em;color:var(--gold)}
-  #boot i{width:34px;height:34px;border:2px solid rgba(230,185,62,.25);border-top-color:var(--gold);border-radius:50%;animation:sp 1s linear infinite}
-  @keyframes sp{to{transform:rotate(360deg)}}
+  #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0a0f1a;z-index:20;transition:opacity .9s ease;color:var(--dim)}
   body.photo #hud,body.photo #panel,body.photo #keys,body.photo #pill{display:none}
   @media (max-width:640px){#panel{width:auto;left:14px;top:auto;bottom:44px}#hud{min-width:0}}
 </style>
 <script type="importmap">{"imports":{"three":"/pages/vendor/three.module.js","three/addons/":"/pages/vendor/addons/"}}</script>
 </head><body>
-<div id="boot"><i></i><div>FOUNDING THE WORLD</div></div>
+<!--NAV-->
+<div id="boot"><div>Founding the world</div></div>
 <div id="hud" class="glass">
-  <div class="t">PHOENIX</div>
+  <div class="t">Phoenix</div>
   <div class="d" id="age">— · turn —</div>
   <div class="r"><span><i class="dot" style="color:#e05a5a;background:#e05a5a"></i>food</span><b id="vfood">—</b></div>
   <div class="r"><span><i class="dot" style="color:#b5793a;background:#b5793a"></i>wood</span><b id="vwood">—</b></div>

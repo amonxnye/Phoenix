@@ -1987,7 +1987,11 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._send(404, json.dumps({"error": "not found"}))
         ctype = self._PAGE_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
-        return self._send(200, self._PAGE_CACHE[full], ctype)
+        body = self._PAGE_CACHE[full]
+        if b"<!--NAV-->" in body:                 # the 3D worlds wear the same navigation
+            body = body.replace(b"<!--NAV-->", ("<style>" + NAV_CSS + ".gnav{position:fixed;top:0;left:0;right:0;"
+                                                "z-index:30;background:rgba(18,13,8,.88)}</style>" + NAV).encode())
+        return self._send(200, body, ctype)
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -2835,11 +2839,65 @@ _TOKENS = ":root{" + ";".join(f"--{k}:{v}" for k, v in PALETTE.items()) + "}"
 PALETTE_JS = "const C=" + json.dumps(PALETTE) + ";"
 
 
+# ── One navigation, one set of shared rules ───────────────────────────────────
+#
+# Every page used to carry its own link list, each a different subset, so some pages
+# could not be reached from others. NAV is the one list, in groups; the page you are
+# on is marked by its path. NAV_CSS is the shared layer every page wears on top of its
+# own rules: the nav, the gate marker, the one icon set, the focus ring.
+NAV_GROUPS = (
+    (("/map", "Map"), ("/map3d", "3D world"), ("/babylon", "Babylon"), ("/utopia", "Utopia")),
+    (("/agents", "Agents"), ("/chats", "Chats"), ("/comms", "Conversations"), ("/network", "Network"),
+     ("/skills", "Skills"), ("/leaderboard", "Leaderboard"), ("/work", "Workboard")),
+    (("/flow", "Decision flow"), ("/rules", "Rules"), ("/logs", "Logs")),
+    (("/models", "Models"), ("/mechanic", "Mechanic"), ("/improve", "Self-improvement"),
+     ("/research", "Research"), ("/admin", "Admin")),
+)
+NAV = ('<nav class=gnav aria-label="Phoenix"><a class=brand href="/">Phoenix</a><i></i>'
+       + "<i></i>".join("".join(f'<a href="{h}">{t}</a>' for h, t in g) for g in NAV_GROUPS)
+       + "</nav><script>(function(){var p=location.pathname.replace(/\\/$/,'')||'/';"
+       "document.querySelectorAll('.gnav a').forEach(function(a){"
+       "if(a.getAttribute('href')===p)a.setAttribute('aria-current','page')})})()</script>")
+_ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' "
+         "stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E{}%3C/svg%3E")
+NAV_CSS = (
+    ".gnav{display:flex;align-items:center;gap:0;height:44px;padding:0 20px;background:var(--bg,#120d08);"
+    "border-bottom:1px solid var(--line,#3a2c18);overflow-x:auto;scrollbar-width:none;"
+    "font:12px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+    ".gnav::-webkit-scrollbar{display:none}"
+    ".gnav a{flex:none;color:var(--dim,#b09a72);text-decoration:none;padding:4px 4px;border-radius:4px;"
+    "transition:color .15s ease,background-color .15s ease}"
+    ".gnav a:hover{color:var(--ink,#f0e6d2);background:rgba(240,230,210,.05)}"
+    ".gnav a[aria-current=page]{color:var(--ink,#f0e6d2);background:rgba(240,230,210,.08)}"
+    ".gnav .brand{color:var(--ink,#f0e6d2);font-weight:500;margin-right:12px;padding-left:0}"
+    ".gnav .brand:hover,.gnav .brand[aria-current]{background:none}"
+    ".gnav i{flex:none;width:1px;height:16px;background:var(--line,#3a2c18);margin:0 4px}"
+    ":focus-visible{outline:2px solid var(--gold,#e0b23a);outline-offset:2px}"
+)
+_SHARED_CSS = NAV_CSS + (
+    "body>header{background:var(--bg);border-bottom:1px solid var(--line)}"
+    "body>header h1{font-size:15px;font-weight:500}"
+    "b,strong{font-weight:500}"
+    ".kpi{background:none;gap:0}.kpi>div{box-shadow:inset -1px -1px 0 var(--line)}"
+    ".gatemark{display:inline-block;color:var(--gold);border:1px solid currentColor;border-radius:4px;"
+    "padding:0 4px;margin-right:8px;font-size:10px;line-height:14px;vertical-align:1px}"
+    ".gate td:first-child{box-shadow:inset 2px 0 0 var(--gold)}"
+    ".ic{display:inline-block;width:14px;height:14px;margin-right:4px;vertical-align:-2px;background:currentColor;"
+    "-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat}"
+    ".ic-warn{--i:url(\"" + _ICON.format("%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E"
+                                        "%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E") + "\")}"
+    ".ic-lock{--i:url(\"" + _ICON.format("%3Crect width='18' height='11' x='3' y='11' rx='2'/%3E"
+                                        "%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E") + "\")}"
+)
+
+
 def _page(html: str, **differs) -> str:
-    """Give a page the shared palette, plus the tokens it deliberately differs on."""
+    """Give a page the shared palette, plus the tokens it deliberately differs on,
+    the shared rules on top of its own, and the one navigation above its header."""
     css = _TOKENS
     if differs:
         css += ":root{" + ";".join(f"--{k}:{v}" for k, v in differs.items()) + "}"
+    html = html.replace("</style>", _SHARED_CSS + "</style>", 1).replace("<header", NAV + "\n<header", 1)
     return html.replace("/*TOKENS*/", css).replace("/*PALETTE_JS*/", PALETTE_JS)
 
 
@@ -2850,57 +2908,57 @@ PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-header{padding:14px 20px;border-bottom:2px solid var(--line);background:linear-gradient(180deg,#241a0f,#1c150d)}
+header{padding:16px 24px;border-bottom:1px solid var(--line);background:var(--bg)}
 .top{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
-h1{font-size:15px;margin:0;letter-spacing:1px;white-space:nowrap}
+h1{font-size:15px;margin:0;white-space:nowrap}
 .vision{flex:1;min-width:280px}
 .vname{color:var(--gold);font-size:12px}
-.pbar{height:16px;background:#0e0a05;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:3px}
-.pfill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e);transition:width .4s;text-align:right}
+.pbar{height:16px;background:#0e0a05;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:4px}
+.pfill{height:100%;background:var(--gold);color:var(--bg);font-size:11px;line-height:14px;padding-right:4px;transition:width .4s ease;text-align:right}
 .vmeta{display:flex;gap:16px;font-size:12px;color:var(--dim);flex-wrap:wrap}
-.ops{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--dim)}
-.ops select,.ops input{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit}
-.navlink{color:var(--gold);text-decoration:none;border:1px solid var(--gold);padding:3px 10px;border-radius:20px}
-.age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
-.res{display:flex;gap:14px;flex-wrap:wrap}.r b{font-weight:700}.r.food b{color:var(--food)}.r.wood b{color:var(--wood)}.r.gold b{color:var(--gold)}
-main{padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));max-width:1200px;margin:0 auto}
+.ops{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--dim)}
+.ops select,.ops input{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
+.navlink{color:var(--dim)}
+.age{font-size:12px;color:var(--dim);white-space:nowrap}
+.res{display:flex;gap:16px;flex-wrap:wrap}.r b{font-weight:500}.r{color:var(--dim)}.r.food b{color:var(--food)}.r.wood b{color:var(--wood)}.r.gold b{color:var(--gold)}
+main{padding:16px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));max-width:1200px;margin:0 auto}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;max-height:340px;overflow:auto}
 .card h2{position:sticky;top:0;background:var(--panel);z-index:2}
 .wide{grid-column:1/-1;max-height:420px}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;white-space:normal;overflow-wrap:normal;word-break:keep-all}
-th{color:var(--dim);font-weight:600;font-size:10px;text-transform:uppercase;position:sticky;top:36px;background:var(--panel);white-space:nowrap}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;white-space:normal;overflow-wrap:normal;word-break:keep-all}
+th{color:var(--dim);font-weight:500;font-size:10px;position:sticky;top:41px;background:var(--panel);white-space:nowrap}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .pill{white-space:nowrap}
-.pill{display:inline-flex;gap:6px;align-items:center;padding:1px 8px;border-radius:20px;font-size:11px}
+.pill{display:inline-flex;gap:8px;align-items:center;padding:2px 8px;border-radius:6px;font-size:11px}
 .dot{width:7px;height:7px;border-radius:50%}
 .running{color:var(--run)}.running .dot{background:var(--run)}
 .awaiting_approval{color:var(--wait)}.awaiting_approval .dot{background:var(--wait)}
 .idle{color:var(--idle)}.idle .dot{background:var(--idle)}.done{color:var(--done)}.done .dot{background:var(--done)}
-button{font:inherit;padding:4px 11px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:#26200f;color:var(--ink)}
+button{font:inherit;padding:4px 12px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:#26200f;color:var(--ink)}
 button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{border-color:#5b2a1a;background:#2a140f;color:var(--alert)}
-.gate td{background:#2a1c05}.empty{padding:14px;color:var(--dim)}
-.tech{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px}
-.chip{padding:4px 10px;border-radius:20px;border:1px solid var(--line);font-size:12px;color:var(--dim)}
+.gate td{background:#2a1c05}.empty{padding:16px;color:var(--dim)}
+.tech{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px}
+.chip{padding:4px 12px;border-radius:6px;border:1px solid var(--line);font-size:12px;color:var(--dim)}
 .chip.on{border-color:#3a5a1a;background:#14240c;color:var(--green)}
-.chip button{margin-left:8px;padding:2px 9px;font-size:11px}
-.propose{padding:12px 14px;background:#241a05;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.propose .why{color:var(--dim);font-size:12px}.propose-none{padding:12px 14px;color:var(--dim);font-size:12px}
-.log{margin:0;padding:10px 14px;font-size:12px;line-height:1.7}
+.chip button{margin-left:8px;padding:2px 8px;font-size:11px}
+.propose{padding:12px 16px;background:#241a05;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.propose .why{color:var(--dim);font-size:12px}.propose-none{padding:12px 16px;color:var(--dim);font-size:12px}
+.log{margin:0;padding:12px 16px;font-size:12px;line-height:1.7}
 .log div{color:var(--dim)}.log .k-build,.log .k-goal{color:var(--green)}.log .k-gate,.log .k-approve{color:var(--gold)}
 .log .k-reap{color:var(--alert)}.log .k-vision{color:var(--gold)}.log .k-spawn,.log .k-retask{color:var(--ink)}
 .log .k-board{color:var(--blue)}.log .k-promote{color:var(--green)}.log .k-cap,.log .k-waste,.log .k-error{color:var(--alert)}
-.log .k-gather{color:var(--gather)}.log .k-skill{color:var(--gold);font-weight:700}.log .k-governor,.log .k-operator{color:var(--gold)}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:var(--blue)}
-.kv{padding:10px 14px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
-.kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:14px}
-.badge{padding:1px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
+.log .k-gather{color:var(--gather)}.log .k-skill{color:var(--gold);font-weight:500}.log .k-governor,.log .k-operator{color:var(--gold)}.log .k-message,.log .k-ingest,.log .k-vision-change,.log .k-rebrief{color:var(--blue)}
+.kv{padding:12px 16px}.kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0}
+.kv b{color:var(--gold)}.foot{color:var(--dim);font-size:11px;text-align:center;padding-bottom:16px}
+.badge{padding:2px 8px;border-radius:6px;font-size:11px;border:1px solid var(--line)}
 .badge.t0{color:var(--dim)}.badge.t1{color:var(--blue);border-color:#2a3a5a}.badge.t2{color:var(--gold);border-color:#5a4a1a;background:#241a05}
-.mini{display:inline-block;width:70px;height:7px;background:#0e0a05;border:1px solid var(--line);border-radius:5px;overflow:hidden;vertical-align:middle;margin-right:6px}
-.minifill{height:100%;background:linear-gradient(90deg,#8b5a2b,#22c55e)}
+.mini{display:inline-block;width:70px;height:7px;background:#0e0a05;border:1px solid var(--line);border-radius:5px;overflow:hidden;vertical-align:middle;margin-right:8px}
+.minifill{display:block;height:100%;background:var(--gold)}
 </style>
 <header>
   <div class=top>
-    <h1>&#9670; THE GOVERNOR</h1>
+    <h1>The Governor</h1>
     <div class=vision>
       <div class=vname id=vname>&mdash;</div>
       <div class=pbar><div class=pfill id=pfill></div></div>
@@ -2910,21 +2968,6 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
   </div>
   <div class=vmeta id=vmeta></div>
   <div class=ops>
-    <a class=navlink href="/map">World Map &rarr;</a>
-    <a class=navlink href="/map3d">3D World &rarr;</a>
-    <a class=navlink href="/babylon">Babylon &rarr;</a>
-    <a class=navlink href="/agents">Agent Health &rarr;</a>
-    <a class=navlink href="/chats">Chats &rarr;</a>
-    <a class=navlink href="/rules">Rules &rarr;</a>
-    <a class=navlink href="/logs">Logs &rarr;</a>
-    <a class=navlink href="/skills">Skills &rarr;</a>
-    <a class=navlink href="/flow">Decision Flow &rarr;</a>
-    <a class=navlink href="/network">Network &rarr;</a>
-    <a class=navlink href="/models">Models &rarr;</a>
-    <a class=navlink href="/improve">Self-Improvement &rarr;</a>
-    <a class=navlink href="/research">Research &rarr;</a>
-    <a class=navlink href="/utopia">Utopia &rarr;</a>
-    <a class=navlink href="/admin">Admin &rarr;</a>
     <span>Add villager</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
     <button class=ok onclick=addAgent()>Add</button>
@@ -2933,16 +2976,13 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <span id=capprop class=why></span>
     <span>Learn</span><input id=topicin placeholder="topic" style="width:130px">
     <button onclick=ingest()>Ingest</button>
-    <span id=brainmode class=navlink style="border-color:var(--line)"></span>
-    <span id=pubstats class=navlink style="border-color:var(--line);color:var(--dim)"></span>
+    <span id=brainmode></span>
+    <span id=pubstats></span>
   </div>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>Fleet</h2>
@@ -2962,7 +3002,7 @@ button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}button.no{b
     <div id=proposal></div>
     <div class=tech id=visions></div></div>
   <div class="card wide"><h2>Event log &mdash; permanent (<span id=evcount>0</span> total)
-    &nbsp;<select id=logfilter onchange=renderLog() style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 6px;font:inherit"><option value="">all kinds</option></select></h2>
+    &nbsp;<select id=logfilter onchange=renderLog() style="background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font:inherit"><option value="">all kinds</option></select></h2>
     <div class=log id=log></div></div>
   <p class=foot>director auto-plays &middot; live over the checkpointer + World + anchor &middot; the game state is the oracle</p>
 </main>
@@ -2971,26 +3011,26 @@ const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[
 async function tick(){
   let d; try{ d=await (await fetch('/api/state')).json() }catch(e){ return }
   const v=d.vision;
-  vname.textContent=v.name+(v.goal_met?'  ✓ MET':'');
+  vname.textContent=v.name+(v.goal_met?' · met':'');
   pfill.style.width=v.progress+'%'; pfill.textContent=v.progress>8?v.progress+'% ':'';
   vmeta.innerHTML=`<span>turn ${d.turn}</span>
     <span>age ${v.age_pct}% &middot; dev ${v.dev_pct}% &middot; econ ${v.econ_pct}%</span>
-    <span>side-effects ${v.side_effects}/${v.side_effect_budget} ${v.within_budget?'&#10003;':'&#9888;'}</span>
+    <span>side-effects ${v.side_effects}/${v.side_effect_budget} ${v.within_budget?'&#10003;':'<i class="ic ic-warn"></i>'}</span>
     <span>extra value +${v.extra_value_pct}%</span>
     <span>compute ${d.spent.toLocaleString()}/${d.cap.toLocaleString()}</span>`;
-  age.textContent='Age: '+d.world.age;
-  res.innerHTML=`<span class="r food">FOOD <b>${d.world.food}</b></span>
-    <span class="r wood">WOOD <b>${d.world.wood}</b></span>
-    <span class="r gold">GOLD <b>${d.world.gold}</b></span>`;
+  age.textContent=d.world.age;
+  res.innerHTML=`<span class="r food">food <b>${d.world.food}</b></span>
+    <span class="r wood">wood <b>${d.world.wood}</b></span>
+    <span class="r gold">gold <b>${d.world.gold}</b></span>`;
   fleet.innerHTML=d.units.map(u=>`<tr><td>${esc(u.unit_id)}</td><td>${esc(u.task)}</td>
-    <td><span class="pill ${u.status}"><span class=dot></span>${u.status}</span></td>
+    <td><span class="pill ${u.status}"><span class=dot></span>${u.status.replace(/_/g,' ')}</span></td>
     <td class=num>${u.steps}</td><td class=num>${u.tokens.toLocaleString()}</td></tr>`).join('')
     || '<tr><td class=empty colspan=5>no active agents</td></tr>';
   const pend=d.units.filter(u=>u.pending);
   queueEmpty.style.display=pend.length?'none':'block';
   queue.innerHTML=pend.map(u=>{const irr=u.pending&&u.pending.reversible===false;
     return `<tr class="${irr?'gate':''}"><td>${esc(u.unit_id)}</td>
-      <td>${irr?'&#9888; ':''}${esc((u.pending&&u.pending.action)||u.task)}</td>
+      <td>${irr?'<span class=gatemark>gate</span>':''}${esc((u.pending&&u.pending.action)||u.task)}</td>
       <td style=text-align:right>
         <button class=ok onclick="decide('${esc(u.unit_id)}','${irr?'approve':'back-to-work'}')">${irr?'Approve':'Re-task'}</button>
         <button class=no onclick="decide('${esc(u.unit_id)}','${irr?'reject':'dismiss'}')">${irr?'Reject':'Dismiss'}</button>
@@ -2999,9 +3039,9 @@ async function tick(){
   const ranks={};(d.dev_catalog||[]).forEach(x=>{(ranks[x.rank]=ranks[x.rank]||[]).push(x)});
   const roman=['','I','II','III','IV'];
   tech.innerHTML=Object.keys(ranks).sort().map(r=>
-    `<div style="width:100%;color:var(--dim);font-size:10px;margin:4px 0 0">RANK ${roman[r]||r}</div>`+
+    `<div style="width:100%;color:var(--dim);font-size:10px;margin:4px 0 0">Rank ${roman[r]||r}</div>`+
     ranks[r].map(x=>`<span class="chip ${x.built?'on':''}" title="${esc(x.effect)} — cost ${esc(JSON.stringify(x.cost))}">`+
-      `${esc(x.name)}${x.custom?' ✦':''}${x.built>1?' ×'+x.built:''}${x.built?' ✓':''}</span>`).join('')).join('');
+      `${esc(x.name)}${x.custom?' · custom':''}${x.built>1?' ×'+x.built:''}${x.built?' ✓':''}</span>`).join('')).join('');
   const dp=d.dev_proposal;
   devprop.innerHTML=dp?`<div class=propose><b>Governor proposes:</b> ${esc(dp.name)} — ${esc(dp.why||'')}
       <span class=why>[board ${esc(dp.board||'')}, source ${esc(dp.source||'')}]</span>
@@ -3012,9 +3052,9 @@ async function tick(){
     <div><span>best resource</span><b>${kn.best_resource||'&mdash;'}</b></div>
     ${Object.entries(kn.learned_yields||{}).map(([r,y])=>`<div><span>avg ${r} yield</span><b>${y}</b></div>`).join('')}
     <div><span>external facts (${esc(d.brain)})</span><b>${d.external_count||0}</b></div>
-    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${x.verified?'&#10003;':'&#9888;'} ${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}&#10;&#10;${esc(x.reason||'')}" style="color:${x.verified?'var(--done)':'var(--idle)'}">${x.verified?'verified':'unverified'}</b></div>`).join('')}
+    ${(d.external||[]).slice(0,3).map(x=>`<div><span>${x.verified?'&#10003;':'<i class="ic ic-warn"></i>'} ${esc(x.topic)} <i>[${esc(x.source)}]</i></span><b title="${esc(x.fact)}&#10;&#10;${esc(x.reason||'')}" style="color:${x.verified?'var(--done)':'var(--idle)'}">${x.verified?'verified':'unverified'}</b></div>`).join('')}
     <div><span><b style=color:var(--gold)>skills (wisdom)</b></span><b>${d.skills_count||0}</b></div>
-    ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">&#x1F4D6; ${esc(x.lesson)}</span></div>`).join('')}`;
+    ${(d.skills||[]).slice(0,3).map(x=>`<div><span style="white-space:normal">${esc(x.lesson)}</span></div>`).join('')}`;
   const bs=d.balance||{};
   balance.innerHTML=`
     <div><span>current assets (stock)</span><b>${(bs.current_total||0).toLocaleString()}</b></div>
@@ -3024,8 +3064,8 @@ async function tick(){
     <div><span>disrepair liability</span><b style="color:var(--alert)">-${(bs.disrepair_liability||0).toLocaleString()}</b></div>
     <div><span>intangibles</span><b>${(bs.intangibles||{}).lessons||0} lessons &middot; ${(bs.intangibles||{}).external_facts||0} facts</b></div>
     <div><span>outstanding compute</span><b>${(bs.outstanding_compute||0).toLocaleString()}</b></div>
-    ${bs.waiting_on_human?`<div><span style="color:var(--gold)">&#9888; frozen behind your gate</span><b style="color:var(--gold)">${esc(bs.waiting_on_human)}</b></div>`:''}
-    <div><span><b>NET WORTH</b></span><b>${(bs.net_worth||0).toLocaleString()}</b></div>`;
+    ${bs.waiting_on_human?`<div><span style="color:var(--gold)"><span class=gatemark>gate</span>frozen behind your decision</span><b style="color:var(--gold)">${esc(bs.waiting_on_human)}</b></div>`:''}
+    <div><span><b>Net worth</b></span><b>${(bs.net_worth||0).toLocaleString()}</b></div>`;
   brainmode.textContent='brain: '+d.brain; d_brain_rule=(d.brain==='rule-based');
   roster.innerHTML=(d.roster||[]).map(a=>{const pct=a.next_at?Math.min(100,Math.round(100*a.contribution/a.next_at)):100;
     return `<tr><td>${esc(a.agent)}</td><td><span class="badge t${a.tier}">${esc(a.role)}</span></td>
@@ -3036,7 +3076,7 @@ async function tick(){
   const bd=d.board, lv=bd.last;
   boardp.innerHTML=`<div><span>governors</span><b>${bd.governors.join(', ')}</b></div>
     <div><span>quorum</span><b>${bd.quorum} of ${bd.governors.length}</b></div>`
-    +(lv?`<div><span>last: ${esc(lv.proposal)}</span><b>${lv.approved?'APPROVED':'BLOCKED'} ${lv.tally}</b></div>
+    +(lv?`<div><span>last: ${esc(lv.proposal)}</span><b>${lv.approved?'approved':'blocked'} ${lv.tally}</b></div>
       <div><span>ballots</span><b>${Object.entries(lv.ballots).map(([g,v])=>g+(v?' ✓':' ✗')).join('  ')}</b></div>`:'');
   const st=d.strategy;
   proposal.innerHTML=st.proposal
@@ -3067,7 +3107,7 @@ async function post(url,body){
   tick();}
 async function loadStats(){
   try{const s=await (await fetch('/api/stats')).json();
-    pubstats.innerHTML=`&#128101; ${s.online_now} watching &middot; ${s.visitors_today} today &middot; `+
+    pubstats.innerHTML=`${s.online_now} watching &middot; ${s.visitors_today} today &middot; `+
       `${s.visitors_total.toLocaleString()} all-time &middot; ${s.agents_alive} agents alive &middot; ${s.agents_ever.toLocaleString()} ever`;
   }catch(e){}}
 loadStats(); setInterval(loadStats,10000);
@@ -3092,31 +3132,31 @@ AGENTS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <style>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
-header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold)}
+header{padding:16px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
+h1{font-size:15px;margin:0;}a{color:var(--gold)}
 .ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
-select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit}
+select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
 button{cursor:pointer;background:#26200f}button.ok{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}
 button.no{border-color:#5b2a1a;background:#2a140f;color:var(--alert)}
-main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));max-width:1200px;margin:0 auto}
-.a{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+main{padding:20px;display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));max-width:1200px;margin:0 auto}
+.a{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
 .a.overwork{border-color:var(--bad)}
-.a h3{margin:0 0 2px;font-size:14px}.badge{font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
+.a h3{margin:0 0 2px;font-size:14px}.badge{font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;color:var(--dim)}
 .badge.t1{color:var(--blue)}.badge.t2{color:var(--gold)}
-.work{color:var(--dim);margin:6px 0}
-.hbar{height:12px;background:#0e0a05;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:6px 0}
+.work{color:var(--dim);margin:8px 0}
+.hbar{height:12px;background:#0e0a05;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:8px 0}
 .hfill{height:100%}
 .stat{display:flex;justify-content:space-between;color:var(--dim);padding:2px 0}.stat b{color:var(--ink)}
-.flag{color:var(--bad);font-weight:700}.ctl{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
-.empty{grid-column:1/-1;color:var(--dim);padding:30px;text-align:center}
+.flag{color:var(--bad);font-weight:500}.ctl{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.empty{grid-column:1/-1;color:var(--dim);padding:32px;text-align:center}
 </style>
 <header>
-  <h1>&#9670; AGENT HEALTH</h1>
-  <a href="/">&larr; Governor console</a>
-  <a href="/chats">Chats</a>
-  <a href="/rules">Rules</a>
-  <a href="/logs">Logs</a>
-  <a href="/skills">Skills</a>
+  <h1>Agent health</h1>
+  
+  
+  
+  
+  
   <div class=ops>
     <span>Add</span>
     <select id=addres><option value="">auto</option><option>food</option><option>wood</option><option>gold</option></select>
@@ -3124,18 +3164,15 @@ main{padding:18px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,m
     <span>Cap</span><input id=capin type=number step=10000 style="width:110px"><button onclick=setCap()>Set</button>
   </div>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
-<div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 18px"></div>
+<div id=syshealth style="max-width:1200px;margin:12px auto 0;padding:0 20px"></div>
 <main id=grid></main>
-<div style="max-width:1200px;margin:0 auto 24px;padding:0 18px">
+<div style="max-width:1200px;margin:0 auto 24px;padding:0 20px">
   <div class=a>
-    <h3>HALL OF RECORDS — every agent ever, permanently <span id=hallmeta style="color:var(--dim);font-weight:normal"></span>
+    <h3>Hall of records — every agent ever, permanently <span id=hallmeta style="color:var(--dim);font-weight:normal"></span>
       <span style="float:right;font-weight:normal">
         <a href="/api/careers/export?format=csv" style="color:var(--gold);font-size:11px">&#8681; careers csv</a> &middot;
         <a href="/api/careers/export?format=jsonl" style="color:var(--gold);font-size:11px">jsonl</a> &middot;
@@ -3153,8 +3190,8 @@ async function tick(){
   if(document.activeElement!==capin) capin.value=d.cap;
   const sy=d.system||{};
   syshealth.innerHTML=`<div class=a style="border-color:${sy.driver_ok?'var(--line)':'var(--bad)'}">
-    <h3>SYSTEM HEALTH ${sy.stall?'<span class=flag>&#9888; STALLED (Article IX)</span>':sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag>&#9888; DRIVER STALLED</span>'}</h3>
-    ${sy.stall?`<div class=stat><span>&#9888; stall</span><b style="color:var(--alert)">${esc(sy.stall)}</b></div>`:''}
+    <h3>System health ${sy.stall?'<span class=flag><i class="ic ic-warn"></i>stalled (Article IX)</span>':sy.driver_ok?'<span style=color:var(--ok)>&#10003; nominal</span>':'<span class=flag><i class="ic ic-warn"></i>DRIVER STALLED</span>'}</h3>
+    ${sy.stall?`<div class=stat><span><i class="ic ic-warn"></i>stall</span><b style="color:var(--alert)">${esc(sy.stall)}</b></div>`:''}
     <div class=stat><span>brain</span><b>${esc(sy.brain||'—')}</b></div>
     <div class=stat><span>uptime</span><b>${Math.floor((sy.uptime_s||0)/60)}m ${(sy.uptime_s||0)%60}s &middot; tick ${sy.tick_s}s &middot; last turn ${sy.last_turn_age_s}s ago</b></div>
     <div class=stat><span>fleet</span><b>${sy.fleet} agents &middot; avg health ${sy.avg_health}%</b></div>
@@ -3162,15 +3199,15 @@ async function tick(){
     <div class=stat><span>lifetime burn</span><b>${(sy.lifetime_burn||0).toLocaleString()} compute ever &middot; value ${sy.value_per_1k} contribution per 1k</b></div>
     <div class=stat><span>errors (recent)</span><b>${sy.errors_recent}</b></div>
     <div class=stat><span>storage</span><b>${esc(sy.storage||'—')}</b></div>
-    <div class=stat><span>data volume</span><b style="color:${(sy.disk&&sy.disk.used_pct>=80)?'#fca5a5':'inherit'}">${sy.disk?`${sy.disk.used_pct}% full &middot; ${sy.disk.free_mb}MB free of ${sy.disk.total_mb}MB`:'—'}${(sy.disk&&sy.disk.used_pct>=80)?' &middot; <span class=flag>&#9888; at 100% the world stops governing</span>':''}</b></div>
-    ${sy.storage_faults?`<div class=stat><span>&#9888; failed writes</span><b style="color:var(--alert)">${sy.storage_faults.toLocaleString()} &middot; last at ${esc(sy.storage_last_fault||'—')} &middot; the anchor is not recording</b></div>`:''}
+    <div class=stat><span>data volume</span><b style="color:${(sy.disk&&sy.disk.used_pct>=80)?'#fca5a5':'inherit'}">${sy.disk?`${sy.disk.used_pct}% full &middot; ${sy.disk.free_mb}MB free of ${sy.disk.total_mb}MB`:'—'}${(sy.disk&&sy.disk.used_pct>=80)?' &middot; <span class=flag><i class="ic ic-warn"></i>at 100% the world stops governing</span>':''}</b></div>
+    ${sy.storage_faults?`<div class=stat><span><i class="ic ic-warn"></i>failed writes</span><b style="color:var(--alert)">${sy.storage_faults.toLocaleString()} &middot; last at ${esc(sy.storage_last_fault||'—')} &middot; the anchor is not recording</b></div>`:''}
     <div class=stat><span>memory</span><b>${esc(sy.memory||'—')}</b></div>
     <div class=stat><span>nightly archive</span><b>${(sy.archives&&sy.archives.length)?`${sy.archives.length} file${sy.archives.length===1?'':'s'} &middot; newest ${esc(sy.archives[0].name)} (${sy.archives[0].mb}MB) &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`:`none yet &middot; runs after 02:00 UTC &middot; <a href="#" style="color:var(--gold)" onclick="archiveNow(this);return false">run now</a>`}</b></div>
-    ${sy.human_gate?`<div class=stat><span>&#9888; WAITING ON YOU</span><b style="color:var(--gold)">${esc(sy.human_gate)} &middot; <a href="/" style="color:var(--gold)">decide on the console</a></b></div>`:''}
+    ${sy.human_gate?`<div class=stat><span><span class=gatemark>gate</span>waiting on you</span><b style="color:var(--gold)">${esc(sy.human_gate)} &middot; <a href="/" style="color:var(--gold)">decide on the console</a></b></div>`:''}
   </div>`;
   const a=d.agents||[];
   grid.innerHTML=a.length? a.map(x=>`<div class="a ${x.overwork?'overwork':''}">
-    <h3>${esc(x.uid)} <span class="badge t${x.tier}">${esc(x.role)}</span> ${x.overwork?'<span class=flag>&#9888; OVERWORKING</span>':''}</h3>
+    <h3>${esc(x.uid)} <span class="badge t${x.tier}">${esc(x.role)}</span> ${x.overwork?'<span class=flag><i class="ic ic-warn"></i>overworking</span>':''}</h3>
     <div class=work>working on: <b>${esc(x.task)}</b> &middot; node ${esc(x.node)} &middot; ${esc(x.status)}${x.order?` &middot; order: gather ${esc(x.order)}`:''}</div>
     <div>health ${x.health}% &middot; utilisation ${x.utilisation_pct}%</div>
     <div class=hbar><div class=hfill style="width:${x.health}%;background:${hcolor(x.health)}"></div></div>
@@ -3228,13 +3265,13 @@ CHATS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none;margin-left:8px}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none;margin-left:8px}
 .wrap{flex:1;display:flex;min-height:0}
 .side{width:260px;border-right:1px solid var(--line);overflow:auto;flex-shrink:0}
-.p{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.p{padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer}
 .p:hover{background:#241a0f}.p.sel{background:#2a1f10;border-left:3px solid var(--gold)}
 .p .n{display:flex;justify-content:space-between}.p .n b{font-size:13px}
-.badge{font-size:10px;padding:0 7px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
+.badge{font-size:10px;padding:0 8px;border:1px solid var(--line);border-radius:6px;color:var(--dim)}
 .p .last{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .main{flex:1;display:flex;flex-direction:column;min-width:0}
 .msgs{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
@@ -3246,13 +3283,10 @@ input{flex:1;background:#0e0a05;color:var(--ink);border:1px solid var(--line);bo
 button{background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 .hint{color:var(--dim);padding:16px}
 </style>
-<header><h1>&#9670; CHATS</h1><a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a><a href="/agents">Agent Health</a><a href="/rules">Rules</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<header><h1>Chats</h1></header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=wrap>
   <div class=side id=side></div>
@@ -3297,29 +3331,26 @@ RULES_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 <style>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
-header{padding:14px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
-main{max-width:1000px;margin:0 auto;padding:18px;display:grid;gap:16px}
+header{padding:16px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;background:#241a0f}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
+main{max-width:1000px;margin:0 auto;padding:20px;display:grid;gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:11px 16px;border-bottom:1px solid var(--line)}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-size:10px;text-transform:uppercase}
-.p{padding:12px 16px}.chip{display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:20px;margin:2px;color:var(--dim)}
+.card h2{font-size:12px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;}
+.p{padding:12px 16px}.chip{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:6px;margin:2px;color:var(--dim)}
 pre{white-space:pre-wrap;word-break:break-word;padding:16px;margin:0;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
-pre .h{color:var(--gold);font-weight:700}
+pre .h{color:var(--gold);font-weight:500}
 textarea{width:100%;min-height:340px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace}
 .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 .row input{flex:1;min-width:220px;background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
-.row button,button{cursor:pointer;background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 14px;font:inherit}
+.row button,button{cursor:pointer;background:#1a2a0f;color:var(--green);border:1px solid #3a5a1a;border-radius:8px;padding:8px 16px;font:inherit}
 </style>
-<header><h1>&#9670; RULES &amp; CONSTITUTION</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/logs">Logs</a><a href="/skills">Skills</a></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<header><h1>Rules and constitution</h1>
+  </header>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main id=main>loading…</main>
 <script>
@@ -3390,20 +3421,20 @@ LOGS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
-select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font:inherit}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
+select,input,button{background:#0e0a05;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
 button{cursor:pointer}button.on{border-color:#3a5a1a;background:#1a2a0f;color:var(--green)}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
 .log{flex:1;overflow:auto;padding:12px 20px}
-.log div{white-space:pre-wrap;word-break:break-word;color:var(--dim);padding:1px 0}
+.log div{white-space:pre-wrap;word-break:break-word;color:var(--dim);padding:2px 0}
 .k-build,.k-goal,.k-promote{color:var(--green)}.k-gate,.k-approve,.k-governor,.k-operator,.k-vision{color:var(--gold)}
 .k-reap,.k-cap,.k-waste,.k-error{color:var(--alert)}.k-board,.k-message,.k-ingest,.k-proposal,.k-development,.k-constitution,.k-vision-change,.k-rebrief{color:var(--blue)}
-.k-skill{color:var(--gold);font-weight:700}.k-gather{color:var(--gather)}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
+.k-skill{color:var(--gold);font-weight:500}.k-gather{color:var(--gather)}.k-spawn,.k-retask,.k-turn{color:var(--ink)}
 mark{background:#5a4a1a;color:#fff}
 </style>
 <header>
-  <h1>&#9670; LOGS</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/skills">Skills</a>
+  <h1>Logs</h1>
+  
   <select id=kind><option value="">all kinds</option></select>
   <input id=search placeholder="search text…" style="min-width:180px">
   <select id=limit><option>300</option><option selected>1000</option><option>5000</option><option>10000</option></select>
@@ -3414,12 +3445,9 @@ mark{background:#5a4a1a;color:#fff}
   <button class=on onclick=exportLogs()>Export file</button>
   <span class=meta><span id=shown>0</span> shown &middot; <span id=total>0</span> total (permanent)</span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div class=log id=log></div>
 <script>
@@ -3478,33 +3506,30 @@ SKILLS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line)}
 .body{max-height:420px;overflow:auto}
-.skill{padding:10px 14px;border-bottom:1px solid var(--line)}
+.skill{padding:12px 16px;border-bottom:1px solid var(--line)}
 .skill b{color:var(--gold)}.skill .m{color:var(--dim);font-size:11px}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-size:10px;text-transform:uppercase}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;}
 td.why{color:var(--blue);white-space:normal}
-.chip{display:inline-block;padding:1px 8px;border:1px solid var(--line);border-radius:20px;margin:1px;color:var(--dim);font-size:11px}
+.chip{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:6px;margin:2px;color:var(--dim);font-size:11px}
 .actor-board{color:var(--blue)}.actor-governor{color:var(--gold)}.actor-director{color:var(--green)}
-.empty{padding:14px;color:var(--dim)}
+.empty{padding:16px;color:var(--dim)}
 </style>
 <header>
-  <h1>&#9670; SKILLS &amp; REASONING</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/chats">Chats</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <h1>Skills and reasoning</h1>
+  
   <span class=meta><span id=nsk>0</span> skills &middot; <span id=nrs>0</span> reasoned decisions &middot; brain: <span id=br>—</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Skills learned — wisdom across generations</h2><div class=body id=skills></div></div>
@@ -3557,27 +3582,24 @@ LEADERBOARD_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
 main{max-width:1200px;margin:0 auto;padding:16px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;margin-bottom:14px}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;margin-bottom:16px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-td,th{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--dim);font-size:10px;text-transform:uppercase}
-td.n{text-align:right}.best{color:var(--green);font-weight:700}
+td,th{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-size:10px;}
+td.n{text-align:right}.best{color:var(--green);font-weight:500}
 .empty{color:var(--dim);padding:24px;text-align:center}
-.p{padding:12px 14px;color:var(--dim);line-height:1.6}
+.p{padding:12px 16px;color:var(--dim);line-height:1.6}
 </style>
-<header><h1>&#9670; PHOENIX EVAL — LEADERBOARD</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+<header><h1>Eval leaderboard</h1>
+  
   <span class=meta>current brain: <b id=br>—</b></span></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class=card><h2>Live brain telemetry — every real call, permanently logged</h2>
@@ -3637,40 +3659,37 @@ WORK_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#12211c}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-.p{padding:12px 14px}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line)}
-th{color:var(--dim);font-size:10px;text-transform:uppercase}
-.tag{padding:1px 9px;border:1px solid var(--line);border-radius:20px;font-size:11px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line)}
+.p{padding:12px 16px}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 16px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-size:10px;}
+.tag{padding:2px 8px;border:1px solid var(--line);border-radius:6px;font-size:11px}
 .t-open{color:var(--red)}.t-done{color:var(--green)}.t-assigned{color:var(--gold)}
 .bar{height:10px;background:#0d1714;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
 .fill{height:100%;background:var(--green);transition:width .5s}
-pre{margin:0;padding:12px 14px;overflow:auto;max-height:420px;color:var(--dim);font-size:12px}
+pre{margin:0;padding:12px 16px;overflow:auto;max-height:420px;color:var(--dim);font-size:12px}
 button{background:#14261f;color:var(--green);border:1px solid #2c4a3c;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit}
 button:disabled{opacity:.4;cursor:wait}
-input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:110px}
+input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;width:110px}
 #result{white-space:pre-wrap;color:var(--dim)}
-.log div{color:var(--dim);padding:1px 14px;font-size:12px}
+.log div{color:var(--dim);padding:2px 16px;font-size:12px}
 </style>
-<header><h1>&#9670; WORKBOARD — real work, same constitution</h1>
-  <a href="/">Console</a><a href="/agents">Agent Health</a><a href="/leaderboard">Leaderboard</a><a href="/logs">Logs</a>
+<header><h1>Workboard <small style="color:var(--dim);font-size:12px;font-weight:400">real work, same constitution</small></h1>
+  
   <span class=meta>brain: <b id=br>—</b> &middot; the test suite is the oracle</span></header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><h2>The milestone — make the suite green</h2><div class=p>
     <b id=suite>—</b> tests passing &middot; <span id=taskmeta>—</span>
-    <div style="color:var(--dim);font-size:11px;margin-top:4px">&#128274; sandbox: <b id=sbox>—</b> (Article V)</div>
+    <div style="color:var(--dim);font-size:11px;margin-top:4px"><i class="ic ic-lock"></i>sandbox: <b id=sbox>—</b> (Article V)</div>
     <div class=bar><div class=fill id=fill style="width:0%"></div></div></div></div>
   <div class=card><h2>Tasks — derived from failing tests, closed only by the oracle</h2>
     <table><thead><tr><th>Task</th><th>Status</th><th>Solved by</th></tr></thead><tbody id=tasks></tbody></table></div>
@@ -3678,7 +3697,7 @@ input{background:#0d1714;color:var(--ink);border:1px solid var(--line);border-ra
     Agent id <input id=agent value="dev-01">
     <button id=runbtn onclick=runWorker()>Run one work cycle</button>
     <button onclick=resetSandbox() style="color:var(--gold);border-color:#5a4a1a;background:#241f0f">Reset sandbox (reopen tasks)</button>
-    <div style="margin-top:10px" id=result>The worker reads the first open task and its failing test,
+    <div style="margin-top:12px" id=result>The worker reads the first open task and its failing test,
     proposes a fix through the live brain, applies it in the sandbox, and the oracle re-scores.
     A patch that breaks tests is auto-reverted. It cannot edit the tests.</div></div></div>
   <div class="card wide"><h2>The code under work — sandbox/calculator.py</h2><pre id=code></pre></div>
@@ -3735,45 +3754,42 @@ FLOW_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.pad{padding:12px 14px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.pad{padding:12px 16px}
 .body{max-height:420px;overflow:auto}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px}
 .kpi b{display:block;font-size:19px;color:var(--ink);line-height:1.3}
-.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.kpi span{color:var(--dim);font-size:10px;}
 .bar{height:26px;display:flex;border-radius:5px;overflow:hidden;background:#241a0f;margin:2px 0 8px}
 .bar i{display:block;height:100%}
 .rowlab{display:flex;gap:8px;font-size:11px;color:var(--dim);align-items:baseline}
 .rowlab b{color:var(--ink)}
 .rowlab s{margin-left:auto;text-decoration:none;color:var(--dim)}
-table{width:100%;border-collapse:collapse}td,th{padding:7px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-size:10px;text-transform:uppercase}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-size:10px;}
 td.why{color:var(--blue);white-space:normal}
-.alert{padding:10px 14px;border-bottom:1px solid var(--line);color:var(--bad)}
+.alert{padding:12px 16px;border-bottom:1px solid var(--line);color:var(--bad)}
 .ok{color:var(--green)}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.empty{padding:14px;color:var(--dim)}
+.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:16px;color:var(--dim)}
 svg text{font:10px ui-monospace,Menlo,monospace}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 </style>
 <header>
-  <h1>&#9670; DECISION FLOW</h1>
-  <a href="/">Console</a><a href="/network">Network</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/rules">Rules</a><a href="/logs">Logs</a>
+  <h1>Decision flow</h1>
+  
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <main>
   <div class="card wide"><div id=live></div><div class=kpi id=kpi></div></div>
@@ -3858,9 +3874,9 @@ async function tick(){
   $('tn').textContent=N(d.turn); $('br').textContent=d.brain;
 
   const bits=[];
-  if(d.stall)bits.push(`<div class=alert>&#9888; STALLED (Article IX) &mdash; ${esc(d.stall)}</div>`);
+  if(d.stall)bits.push(`<div class=alert><i class="ic ic-warn"></i>Stalled (Article IX) &mdash; ${esc(d.stall)}</div>`);
   if(d.gate){const g=d.gate;
-    bits.push(`<div class=alert>&#9208; AT THE GATE &mdash; ${esc(g.action||g.uid||'a decision')} awaiting a human`+
+    bits.push(`<div class=alert><span class=gatemark>gate</span>At the gate &mdash; ${esc(g.action||g.uid||'a decision')} awaiting a human`+
       (g.waited_turns!==undefined?` &middot; waited ${g.waited_turns} turns`:'')+
       ` &middot; tacit consent after ${Math.round(d.tacit_after_s/60)} min (Article IV.7)</div>`)}
   if(!bits.length)bits.push('<div class="alert ok">&#10003; Nothing waiting at the gate; no stall declared.</div>');
@@ -3895,16 +3911,16 @@ async function tick(){
     $('boardrec').innerHTML='<div class=empty style=padding:0>The board has taken no votes yet.</div>';
   }
   if(br_.votes)$('boardrec').insertAdjacentHTML('beforeend',
-    `<div style="color:var(--dim);font-size:11px;margin-top:6px">Quorum ${d.board.quorum} of
+    `<div style="color:var(--dim);font-size:11px;margin-top:8px">Quorum ${d.board.quorum} of
      ${d.board.governors.length} &middot; ${esc(d.board.governors.join(', '))}.
      A block is not a dead end: Article VIII.4 requires it be reported once, and
      ${N(d.stats.escalated)} escalation${d.stats.escalated===1?' has':'s have'} been raised.</div>`);
   $('boardlog').innerHTML=(br_.recent||[]).map(n=>
-    `<div style="padding:6px 14px;border-bottom:1px solid var(--line);color:${/BLOCKED/.test(n)?C.bad:C.green}">${esc(n)}</div>`).join('')
+    `<div style="padding:8px 16px;border-bottom:1px solid var(--line);color:${/BLOCKED/.test(n)?C.bad:C.green}">${esc(n)}</div>`).join('')
     ||'<div class=empty>No votes on the record.</div>';
 
   const acts=d.actors||[];
-  $('actors').innerHTML=acts.length?acts.map(a=>`<div style="padding:8px 14px;border-bottom:1px solid var(--line)">
+  $('actors').innerHTML=acts.length?acts.map(a=>`<div style="padding:8px 16px;border-bottom:1px solid var(--line)">
       <div class=rowlab><b>${esc(a.actor)}</b><span>${N(a.n)} decisions</span>
         <s>${a.measured_pct}% measured</s></div>
       <div class=bar style="height:6px;margin:4px 0 0"><i style="width:${a.measured_pct}%;background:#a8e086"></i></div>
@@ -3941,47 +3957,47 @@ COMMS_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px}
 .kpi b{display:block;font-size:19px;line-height:1.3}
-.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.empty{padding:14px;color:var(--dim)}
-.filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
+.kpi span{color:var(--dim);font-size:10px;}
+.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:16px;color:var(--dim)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line)}
 .ghost{background:#241a0f;border:1px solid var(--line);color:var(--dim);border-radius:5px;
-  padding:2px 10px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
+  padding:2px 12px;font:11px ui-monospace,Menlo,monospace;cursor:pointer}
 .ghost:hover{border-color:var(--gold);color:var(--gold)}
 .ghost[aria-pressed=true]{border-color:var(--gold);color:var(--gold);background:#2c2013}
 details{border-bottom:1px solid var(--line)}
 details[open]{background:#241a0f55}
-summary{padding:9px 14px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;list-style:none}
+summary{padding:8px 16px;cursor:pointer;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;list-style:none}
 summary::-webkit-details-marker{display:none}
 summary:hover{background:#241a0f}
-.who{color:var(--gold);font-weight:700}
+.who{color:var(--gold);font-weight:500}
 .snip{color:var(--sub);flex:1 1 260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .when{color:var(--dim);font-size:11px}
-.tag{border-radius:4px;padding:0 7px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+.tag{border-radius:4px;padding:0 8px;font-size:10px;
   border:1px solid currentColor;white-space:nowrap}
 .o-unanswered{color:var(--bad)}.o-failed{color:var(--bad)}
 .o-answered{color:var(--green)}.o-acted{color:var(--green)}.o-oneway{color:var(--dim)}
 .hop{color:var(--dim);font-size:11px;white-space:nowrap}
 .hop.deep{color:var(--gold)}
-.turn{padding:7px 14px 7px 30px;border-top:1px dotted var(--line);display:flex;gap:9px;align-items:baseline}
-.turn .i{font-size:10px;text-transform:uppercase;letter-spacing:.5px;width:64px;flex:none;color:var(--dim)}
+.turn{padding:8px 16px 8px 32px;border-top:1px dotted var(--line);display:flex;gap:8px;align-items:baseline}
+.turn .i{font-size:10px;width:64px;flex:none;color:var(--dim)}
 .turn .i.request{color:var(--gold)}.turn .i.response,.turn .i.ack{color:var(--green)}
 .turn .i.error{color:var(--bad)}
 .turn .t{flex:1;min-width:0;overflow-wrap:anywhere}
 .turn .n{color:var(--dim);font-size:11px;white-space:nowrap}
 </style>
-<header><h1>&#9670; CONVERSATIONS</h1>
-  <a href="/">Console</a><a href="/comms">Conversations</a><a href="/mechanic">Mechanic</a><a href="/flow">Decision Flow</a>
-  <a href="/chats">Chats</a><a href="/logs">Logs</a>
+<header><h1>Conversations</h1>
+  
+  
   <span class=meta id=meta>loading&hellip;</span></header>
 <main>
   <div class=card><h2>The exchange, not the stream <em id=ceil></em></h2>
@@ -4067,31 +4083,31 @@ NETWORK_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 ui-monospace,Menlo,Consolas,monospace}
 header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#241a0f}
-h1{font-size:15px;margin:0;letter-spacing:1px}a{color:var(--gold);text-decoration:none}
+h1{font-size:15px;margin:0;}a{color:var(--gold);text-decoration:none}
 .meta{color:var(--dim);font-size:12px;margin-left:auto}
-main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:1fr 1fr}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .wide{grid-column:1/-1}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
-.card h2 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--sub);margin-left:auto;font-size:10px}
-.pad{padding:12px 14px}
+.card h2{font-size:11px;color:var(--dim);margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
+.card h2 em{font-style:normal;text-transform:none;color:var(--sub);margin-left:auto;font-size:10px}
+.pad{padding:12px 16px}
 .body{max-height:400px;overflow:auto}
-.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;background:var(--line)}
-.kpi div{background:var(--panel);padding:10px 14px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:2px;background:var(--line)}
+.kpi div{background:var(--panel);padding:12px 16px}
 .kpi b{display:block;font-size:19px;line-height:1.3}
-.kpi span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.row{padding:8px 14px;border-bottom:1px solid var(--line)}
+.kpi span{color:var(--dim);font-size:10px;}
+.row{padding:8px 16px;border-bottom:1px solid var(--line)}
 .row b{color:var(--gold)}.row .m{color:var(--dim);font-size:11px}
 .bar{height:6px;border-radius:3px;background:#241a0f;overflow:hidden;margin-top:4px}
 .bar i{display:block;height:100%;background:var(--gold)}
-.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.note{padding:10px 14px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
-.empty{padding:14px;color:var(--dim)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.note{padding:12px 16px;color:var(--dim);font-size:11px;border-top:1px solid var(--line)}
+.empty{padding:16px;color:var(--dim)}
 svg text{font:10px ui-monospace,Menlo,monospace}
 #tip{position:fixed;pointer-events:none;background:#241a0f;border:1px solid var(--gold);border-radius:6px;
-  padding:6px 9px;font-size:11px;max-width:330px;display:none;z-index:50}
+  padding:8px 8px;font-size:11px;max-width:330px;display:none;z-index:50}
 .ghost{background:#241a0f;border:1px solid var(--line);color:var(--gold);border-radius:5px;
-  padding:2px 9px;font:11px ui-monospace,Menlo,monospace;cursor:pointer;letter-spacing:0;text-transform:none}
+  padding:2px 8px;font:11px ui-monospace,Menlo,monospace;cursor:pointer;text-transform:none}
 .ghost:hover{border-color:var(--gold)}
 /* Expanded: the graph owns the window. Everything else stays in the DOM, so the
    page keeps working and Escape puts it straight back. */
@@ -4102,16 +4118,13 @@ svg text{font:10px ui-monospace,Menlo,monospace}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 </style>
 <header>
-  <h1>&#9670; COMMUNICATION NETWORK</h1>
-  <a href="/">Console</a><a href="/flow">Decision Flow</a><a href="/agents">Agents</a><a href="/chats">Chats</a><a href="/skills">Skills</a><a href="/logs">Logs</a>
+  <h1>Communication network</h1>
+  
   <span class=meta>turn <span id=tn>&mdash;</span> &middot; brain: <span id=br>&mdash;</span></span>
 </header>
-<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)">
-  <div style="width:36px;height:36px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:ldrsp 1s linear infinite"></div>
-  <div style="color:var(--dim);font:12px ui-monospace,Menlo,monospace;letter-spacing:2px">LOADING PHOENIX&hellip;</div>
+<div id=ldr style="position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg)">
+  <div style="color:var(--dim);font-size:12px">Loading</div>
 </div>
-<style>@keyframes ldrsp{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){#ldr div:first-child{animation:none;border-top-color:var(--gold);opacity:.6}}</style>
 <script>(function(){const of=window.fetch;window.fetch=async(...a)=>{const r=await of(...a);if(r&&r.ok){const l=document.getElementById('ldr');if(l)l.remove();window.fetch=of}return r}})()</script>
 <div id=tip></div>
 <main>
@@ -4479,23 +4492,23 @@ MAP_PAGE = _page("""<!doctype html><html lang=en><meta charset=utf-8>
 /*TOKENS*/
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:linear-gradient(180deg,#241a0f,#1c150d)}
-h1{font-size:15px;margin:0;letter-spacing:1px}
+header{padding:12px 20px;border-bottom:2px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap;background:linear-gradient(180deg,#241a0f,#1c150d)}
+h1{font-size:15px;margin:0;}
 a{color:var(--gold);text-decoration:none}
-.age{font-size:12px;color:var(--gold);border:1px solid var(--gold);padding:2px 10px;border-radius:20px;white-space:nowrap}
-.meta{color:var(--dim);font-size:12px;margin-left:auto;display:flex;gap:14px;flex-wrap:wrap}
+.age{font-size:12px;color:var(--dim);white-space:nowrap}
+.meta{color:var(--dim);font-size:12px;margin-left:auto;display:flex;gap:16px;flex-wrap:wrap}
 .meta b.f{color:var(--food)}.meta b.w{color:var(--wood)}.meta b.g{color:var(--gold)}
 main{max-width:1150px;margin:0 auto;padding:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 canvas{display:block;width:100%;height:auto}
-.legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
-.legend span{display:inline-flex;gap:6px;align-items:center}
+.legend{display:flex;gap:16px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+.legend span{display:inline-flex;gap:8px;align-items:center}
 .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
 .foot{color:var(--dim);font-size:11px;text-align:center;padding:12px}
 </style>
-<header><h1>&#9670; WORLD MAP</h1>
+<header><h1>World map</h1>
   <span class=age id=age>&mdash;</span>
-  <a href="/">Console</a><a href="/map3d">3D World</a><a href="/babylon">Babylon</a><a href="/agents">Agent Health</a><a href="/work">Workboard</a><a href="/logs">Logs</a>
+  
   <span class=meta id=meta></span></header>
 <main>
   <div class=card>
@@ -4653,7 +4666,7 @@ function draw(){
   g.fillStyle='#241a05';g.fillRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
   g.strokeStyle='#e0b23a';g.lineWidth=2;g.strokeRect(tx-T*0.7,ty-T*0.7,T*1.4,T*1.4);
   g.fillStyle='#e0b23a';g.font=`${Math.max(9,T*0.32)}px ui-monospace,Menlo,monospace`;
-  g.textAlign='center';g.fillText('TOWN',tx,ty+T*0.1);
+  g.textAlign='center';g.fillText('Town',tx,ty+T*0.1);
   // placements — one tile per built development, condition shown when worn
   const reg=m.registry||{},
     byLayer=[...m.placements].sort((a,b)=>((reg[a.name]||{}).layer||2)-((reg[b.name]||{}).layer||2)||a.y-b.y);
@@ -4697,13 +4710,13 @@ function draw(){
     let lines=null;
     const p=m.placements.find(q=>q.x===mx&&q.y===my);
     if(p){const e=reg[p.name]||{};
-      lines=[p.name.replace(/_/g,' ').toUpperCase(),e.effect||''];
+      lines=[p.name.replace(/_/g,' '),e.effect||''];
       lines.push('condition '+(p.condition==null?100:p.condition)+'%');
       if(p.near&&m.proximity)lines.push('on its ground\\u2019s ring \\u2014 +'+m.proximity.pct+'% yield');
-    }else if(mx===tc[0]&&my===tc[1]){lines=['TOWN CENTRE','where the settlement grows from'];}
+    }else if(mx===tc[0]&&my===tc[1]){lines=['Town centre','where the settlement grows from'];}
     else{const tl2=(m.terrain||[]).find(q=>q.x===mx&&q.y===my);
-      if(tl2)lines=tl2.cls==='water'?['WATER','never built on']:
-        [tl2.cls.replace(/_/g,' ').toUpperCase(),
+      if(tl2)lines=tl2.cls==='water'?['Water','never built on']:
+        [tl2.cls.replace(/_/g,' '),
          tl2.stock>0?('stock '+tl2.stock+'/'+maxStock):'worked out \\u2014 pays nothing'];}
     if(lines){lines=lines.filter(Boolean);
       g.font=`${Math.max(9,T*0.24)}px ui-monospace,Menlo,monospace`;g.textAlign='left';
