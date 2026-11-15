@@ -53,6 +53,17 @@ def open_pr(repo: str, token: str, branch: str, files: dict, title: str, body: s
     return pr.get("html_url", "")
 
 
+def pr_state(repo: str, token: str, url: str) -> str:
+    """open | merged | closed for a pull request's html URL; "" when it cannot be read."""
+    num = url.rstrip("/").rsplit("/", 1)[-1]
+    if "/pull/" not in url or not num.isdigit():
+        return ""
+    pr = _req(token, "GET", f"/repos/{repo}/pulls/{num}", ok404=True)
+    if not pr:
+        return ""
+    return "merged" if pr.get("merged") else (pr.get("state") or "")
+
+
 def get_file(repo: str, token: str, branch: str, path: str) -> tuple[str | None, str]:
     """(content, sha) of a file on a branch, or (None, '') if it is not there."""
     cur = _req(token, "GET", f"/repos/{repo}/contents/{path}?ref={branch}", ok404=True)

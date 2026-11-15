@@ -379,6 +379,20 @@ check("the queue is bounded — beyond it, 409 with the reason",
       _last[0] == 409 and "queue is full" in _last[2] and len(web._QUEUE) == web.QUEUE_MAX,
       f"{len(web._QUEUE)} queued, cap {web.QUEUE_MAX}")
 web._QUEUE.clear()
+# the hand-over: a URL queued while the runner is busy starts when the runner lets go
+_start0, _started = web._start, []
+web._start = lambda u, n, b: web._LOCK.acquire(blocking=False) and (_started.append(u) or True)
+web._LOCK.acquire()
+try:
+    _q = web.handle_post("/api/mechanic/analyse", {"url": "https://github.com/o/handover"})[0]
+    web.let_go()
+    check("a URL queued while one runs is started by the runner as it finishes — never stranded",
+          _q == 202 and _started == ["https://github.com/o/handover"] and not web._QUEUE, str(_started))
+finally:
+    web._start = _start0
+    if web._LOCK.locked():
+        web._LOCK.release()
+    web._QUEUE.clear()
 _sum = json.loads(web.handle_get("/api/mechanic/summary")[2])
 check("the summary says where the record lives, and MEASURES survival by a boot marker (VII.4)",
       "record" in _sum and {"data_dir", "configured", "boots", "record_since", "persistent"}
@@ -884,6 +898,13 @@ def fake_fetch(url):
 watch.FETCH = fake_fetch
 rid = store.repo_add("https://github.com/o/fixture", name="fixture")
 store.repo_set(rid, watch=1, interval_s=900, last_checked=0)
+web._LOCK.acquire()
+try:
+    r0 = watch.tick(budget_cents=0)
+finally:
+    web._LOCK.release()
+check("the watch waits while a web analysis runs — one analysis at a time, one progress line",
+      r0 == [] and len(store.runs(rid)) == 0, str(r0))
 r1 = watch.tick(budget_cents=0)
 check("a due repository is fetched and analysed by the watch",
       r1 and r1[0]["action"] == "analysed", r1[0]["note"] if r1 else "nothing ran")

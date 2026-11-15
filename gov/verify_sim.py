@@ -514,6 +514,48 @@ check("repeated failing turns declare a stall from the error path",
 check("absence of turns is watched from OUTSIDE the driver (IX.3)",
       "stall:absence" in _src and "the world" in _src)
 
+# Decisions that wait on the human outlive a restart (health audit 2026-11-15: D, E, F, G, H).
+import ideas as _ID0                                # noqa: E402
+_saved_S = {k: SC._S.get(k) for k in ("dev_proposal", "goal_met", "goal_met_ts", "gate_since", "gate_since_ts")}
+_iid = _ID0._add(cycle_id=0, ts=time.time(), age="Stone Age", topic="restart probe %d" % time.time(),
+                 title="probe", source="", fact="", verified=1, knowledge_id=0,
+                 proposal=_json_mod.dumps({"name": "probe"}), research_id=1, status="voting", note="", decided_ts=0)
+try:
+    SC._set_dev_proposal({"name": "probe", "idea_id": _iid, "born_ts": 1.0})
+    check("a pending development proposal is written to the record, so a restart can restore it",
+          _json_mod.loads(A.config_get("dev_proposal"))["idea_id"] == _iid)
+    _ID0.release_voting(keep=_iid)
+    check("at boot the restored proposal's idea stays voting",
+          next(r for r in _ID0.rows(limit=1000) if r["id"] == _iid)["status"] == "voting")
+    _ID0.release_voting(keep=None)
+    check("an idea whose vote a restart lost goes back to the queue, not voting forever",
+          next(r for r in _ID0.rows(limit=1000) if r["id"] == _iid)["status"] == "queued")
+    SC._set_dev_proposal(None)
+    check("a decided proposal is cleared from the record", A.config_get("dev_proposal") == "")
+    _boot = open(os.path.join(HERE, "sim_console.py")).read()
+    check("the boot restores the pending proposal and releases ideas stuck in voting",
+          'json.loads(anchor.config_get("dev_proposal")' in _boot and "release_voting(keep=" in _boot)
+    _turn_src = __import__("inspect").getsource(SC._one_turn)
+    check("a proposal the Board voted against is set aside after the IV.7 wait — it no longer blocks every new development",
+          'not prop.get("board_approved")' in _turn_src and "board rejection stood" in _turn_src)
+    SC._set_gate_clock(123.5)
+    check("the age-up gate's IV.7 clock is kept in the record, so a restart does not reset it",
+          SC._config_float("gate_since_ts") == 123.5 and '_config_float("gate_since_ts") or time.time()' in _boot)
+    SC._set_gate_clock(None)
+    check("a decided gate clears its clock", A.config_get("gate_since_ts") == "" and "gate_since_ts" not in SC._S)
+    SC._set_goal_met(True, 77.0)
+    check("a met vision is kept in the record, so a restart does not announce it again",
+          A.config_get("goal_met") == "1" and SC._config_float("goal_met_ts") == 77.0)
+    SC._set_goal_met(False)
+    check("adopting a new vision clears it", A.config_get("goal_met") == "" and A.config_get("goal_met_ts") == "")
+finally:
+    _ID0.mark(_iid, "rejected", "verify probe")
+    SC._set_dev_proposal(_saved_S["dev_proposal"])
+    SC._set_gate_clock(_saved_S["gate_since_ts"])
+    SC._set_goal_met(bool(_saved_S["goal_met"]), _saved_S["goal_met_ts"])
+    if _saved_S["gate_since"] is not None:
+        SC._S["gate_since"] = _saved_S["gate_since"]
+
 # ── 14. the nightly archive: history survives a reboot AND stops growing ────
 print("\n14. Archive — history kept, space returned")
 import gzip                                         # noqa: E402
@@ -1175,6 +1217,33 @@ try:
     _cc = IMP._conn(); _cc.execute("INSERT INTO improve_cycles(ts, trigger, status, candidates, tried, verified, rejected, note, seconds, baseline, signals, model, charter) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (time.time(), "test", "running", 0, 0, 0, 0, "cut off", 0, "{}", "{}", "", "")); _cc.commit(); _cc.close()
     check("a cycle still marked running at boot is reaped as interrupted — a restart mid-cycle is recorded, not left looking alive",
           IMP.reap() >= 1 and IMP.cycles(limit=1)[0]["status"] == "interrupted" and "restarted" in IMP.cycles(limit=1)[0]["note"])
+    # health audit 2026-11-15: A, B, C
+    _td0 = IMP._tree_digest
+    IMP._tree_digest = lambda: (_ for _ in ()).throw(RuntimeError("simulated store failure"))
+    try:
+        _ra = IMP.cycle("test")
+    finally:
+        IMP._tree_digest = _td0
+    check("a cycle that raises is closed as halted and the runner is free again — never busy until a restart",
+          _ra["status"] == "halted" and IMP._STATE["running"] is False and IMP.cycles(limit=1)[0]["status"] == "halted", str(_ra))
+    _rj = IMP.reject(_p11["id"], "too late", "tester")
+    check("a committed change cannot be rejected — only a proposal waiting at the gate can",
+          not _rj["ok"] and IMP.proposal(_p11["id"])["status"] == "committed", str(_rj))
+    _prs0 = getattr(_GH, "pr_state", None)
+    _GH.pr_state = lambda repo, token, url: "merged" if url.endswith("/pull/42") else ""
+    try:
+        _np = IMP.sync_prs()
+    finally:
+        _GH.pr_state = _prs0
+    check("a draft PR merged on GitHub is read back — the proposal no longer says proposed forever",
+          _np >= 1 and IMP.proposal(_p7["id"])["status"] == "merged", str(_np))
+    _pb0 = IMP.PUSH_BRANCH; IMP.PUSH_BRANCH = ""
+    try:
+        _ra2 = IMP.approve(_p[0]["id"], "tester")
+    finally:
+        IMP.PUSH_BRANCH = _pb0
+    check("a patch approved without a token is published when approved again once a token exists",
+          _ra2["ok"] and IMP.proposal(_p[0]["id"])["status"] == "proposed", str(_ra2))
     check("the research chain is intact after every append, and has no edit or delete anywhere in the module",
           RS.verify_chain()["intact"] and RS.verify_chain()["entries"] >= 4
           and "UPDATE research" not in open(os.path.join(HERE, "research.py")).read()

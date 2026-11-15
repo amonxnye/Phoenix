@@ -72,7 +72,7 @@ def main() -> int:
                                   prop.get("rank", 2), prop.get("source", ""))
             anchor.record(t, "development", f"eval-human adopted '{prop['name']}'"
                           if ok else f"eval adopt failed: {msg}")
-            C._S["dev_proposal"] = None
+            C._set_dev_proposal(None)
         if C._S["goal_met"]:
             nxt = V.MORE_AMBITIOUS.get(C._S["vision_key"])
             if nxt:
