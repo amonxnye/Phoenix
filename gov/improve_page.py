@@ -33,7 +33,7 @@ td:first-child,th:first-child{text-align:left}
 .p{border-bottom:1px solid var(--line);padding:12px 16px}
 .p h3{margin:0 0 4px;font-size:13px}.p h3 small{color:var(--dim);font-weight:400}
 .st{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;border:1px solid var(--line)}
-.st-committed{color:#22c55e;border-color:#22c55e}.st-unresearched{color:#f87171}.st-refused{color:#f87171}.st-reverted{color:var(--dim)}.st-verified{color:#fbbf24;border-color:#fbbf24}.st-unverified{color:#f87171;border-color:#f87171}.st-proposed{color:#22c55e;border-color:#22c55e}.st-approved{color:#22c55e}.st-rejected{color:#f87171}.st-stale{color:var(--dim)}
+.st-committed{color:#22c55e;border-color:#22c55e}.st-unresearched{color:#f87171}.st-refused{color:#f87171}.st-reverted{color:var(--dim)}.st-verified{color:#fbbf24;border-color:#fbbf24}.st-unverified{color:#f87171;border-color:#f87171}.st-proposed{color:#22c55e;border-color:#22c55e}.st-approved{color:#22c55e}.st-rejected{color:#f87171}.st-stale{color:var(--dim)}.st-merged{color:#22c55e}.st-closed{color:var(--dim)}
 pre.diff{background:#0e0a05;border:1px solid var(--line);border-radius:6px;padding:8px 12px;overflow:auto;max-height:320px;font-size:11px;margin:8px 0}
 pre.diff .a{color:#22c55e}pre.diff .d{color:#f87171}pre.diff .h{color:var(--gold)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
@@ -54,7 +54,7 @@ dt{color:var(--dim)}dd{margin:0}
 <div class=card><h2>Ideas from outside <em>topic → source read → citation checked → development proposed → researched → the Board, then you</em></h2><div class=wrap><table id=ideas></table></div></div>
 <div class=card><h2>At the gate <em>verified code improvements waiting for a human — and UNVERIFIED ones the suites cannot judge</em></h2><div id=gate></div></div>
 <div class=card><h2>Cycles <em>newest first</em></h2><div class=wrap><table id=cycles></table></div></div>
-<div class=card><h2>Decided <em>proposed, approved, rejected, stale</em></h2><div id=decided></div></div>
+<div class=card><h2>Decided <em>proposed, merged, closed, rejected, stale</em></h2><div id=decided></div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -88,11 +88,11 @@ async function load(){
   const id=(s.ideas||{}).recent||[];
   $('ideas').innerHTML='<tr><th>when</th><th>age</th><th>topic</th><th>source</th><th>cited</th><th>development</th><th>research</th><th>status</th></tr>'+
     (id.length?id.map(i=>`<tr><td>${ts(i.ts)}</td><td>${esc(i.age)}</td><td style="white-space:normal">${esc(i.topic)}</td><td>${i.source?'<a href="'+esc(i.source)+'" target=_blank>'+esc(i.title||'source')+'</a>':'—'}</td><td class=${i.verified?'good':'bad'}>${i.verified?'verified':'no'}</td><td style="white-space:normal">${i.proposal?esc(i.proposal.name)+' — '+esc(i.proposal.kind)+' '+esc(i.proposal.value)+(i.proposal.resource?' '+esc(i.proposal.resource):'')+' (cost '+esc(JSON.stringify(i.proposal.cost))+')':'—'}</td><td>${i.research_id?'<a href="/research">R'+i.research_id+'</a>':'—'}</td><td class=${['queued','voting','adopted'].includes(i.status)?'good':'warn'} title="${esc(i.note)}">${esc(i.status)}</td></tr>`).join(''):'<tr><td colspan=8 class=empty>no idea considered yet — the next cycle reads about this age</td></tr>');
-  const gate=d.proposals.filter(p=>p.status==='verified'||p.status==='unverified').map(p=>({...p,github:s.github,hours_waiting:((Date.now()/1000-p.ts)/3600).toFixed(1)}));
+  const gate=d.proposals.filter(p=>p.status==='verified'||p.status==='unverified'||(p.status==='approved'&&s.github)).map(p=>({...p,github:s.github,hours_waiting:((Date.now()/1000-p.ts)/3600).toFixed(1)}));
   $('gate').innerHTML=gate.length?gate.map(p=>prop(p,true)).join(''):'<div class=empty>nothing waiting — every verified improvement has been decided</div>';
   $('cycles').innerHTML='<tr><th>when</th><th>trigger</th><th>status</th><th>candidates</th><th>tried</th><th>verified</th><th>rejected</th><th>seconds</th><th>model</th><th>note</th></tr>'+
     (d.cycles.length?d.cycles.map(c=>`<tr><td>${ts(c.ts)}</td><td>${esc(c.trigger)}</td><td class=${c.status==='complete'?'good':c.status==='running'?'warn':'bad'}>${esc(c.status)}</td><td>${c.candidates}</td><td>${c.tried}</td><td>${c.verified}</td><td>${c.rejected}</td><td>${c.seconds}</td><td>${esc(c.model)}</td><td style="white-space:normal;text-align:left">${esc(c.note)}</td></tr>`).join(''):'<tr><td colspan=10 class=empty>no cycle has run yet</td></tr>');
-  const dec=d.proposals.filter(p=>p.status!=='verified'&&p.status!=='unverified');
+  const dec=d.proposals.filter(p=>p.status!=='verified'&&p.status!=='unverified'&&!(p.status==='approved'&&s.github));
   $('decided').innerHTML=dec.length?dec.map(p=>prop(p,false)).join(''):'<div class=empty>nothing decided yet</div>';
 }
 load();setInterval(load,20000);

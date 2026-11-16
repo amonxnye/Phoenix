@@ -209,9 +209,20 @@ def assign(task_id: int, agent: str) -> bool:
     c = _conn()
     try:
         cur = c.execute("UPDATE tasks SET status='assigned', assigned_to=? "
-                        "WHERE id=? AND status='open'", (agent, task_id))
+                        "WHERE id=? AND status IN ('open', 'assigned')", (agent, task_id))
         c.commit()
         return cur.rowcount > 0
+    finally:
+        c.close()
+
+
+def release(task_id: int, agent: str) -> None:
+    """An attempt that solved nothing hands its task back to the board."""
+    c = _conn()
+    try:
+        c.execute("UPDATE tasks SET status='open', assigned_to='' "
+                  "WHERE id=? AND status='assigned' AND assigned_to=?", (task_id, agent))
+        c.commit()
     finally:
         c.close()
 

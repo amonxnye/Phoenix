@@ -283,6 +283,20 @@ def reap_stale(older_than_s: float = 1800) -> int:
         c.close()
 
 
+def release_voting(keep: int | None = None) -> int:
+    """At boot: an idea is `voting` only while its proposal waits at the console. One
+    whose proposal a restart lost goes back to the queue, so the Board hears it again
+    instead of the topic being settled forever. `keep` is the restored proposal's idea."""
+    c = _conn()
+    try:
+        n = c.execute("UPDATE ideas SET status='queued', note=note || ' (back in the queue: a restart "
+                      "lost its vote)' WHERE status='voting' AND id IS NOT ?", (keep,)).rowcount
+        c.commit()
+        return n
+    finally:
+        c.close()
+
+
 def take() -> dict | None:
     """The next queued idea for the console to put to the Board — oldest first. Marked
     `voting`; the console marks the outcome."""

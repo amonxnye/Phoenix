@@ -118,6 +118,40 @@ _S = {"turn": 0, "villagers": [], "heralds": 0, "side_effects": 0, "seq": 0,
       "goal_met": False, "last_vote": None, "vision_key": V.DEFAULT_VISION,
       "orders": {}, "notified": set(), "dev_proposal": None,
       "born": {}, "last_turn_ts": time.time()}
+
+
+# Decisions that wait on the human outlive a restart (a deploy, often one the improvement
+# cycle caused). Kept in the anchor config, restored at boot: the pending development
+# proposal, the age-up gate's IV.7 clock, and a met vision with its IV.7 clock.
+def _set_dev_proposal(prop: dict | None) -> None:
+    _S["dev_proposal"] = prop
+    anchor.config_set("dev_proposal", json.dumps(prop, default=str) if prop else "")
+
+
+def _set_gate_clock(ts: float | None) -> None:
+    if ts:
+        _S["gate_since_ts"] = ts
+    else:
+        _S.pop("gate_since", None)
+        _S.pop("gate_since_ts", None)
+    anchor.config_set("gate_since_ts", repr(ts) if ts else "")
+
+
+def _set_goal_met(met: bool, ts: float | None = None) -> None:
+    _S["goal_met"] = met
+    if met and ts:
+        _S["goal_met_ts"] = ts
+    else:
+        _S.pop("goal_met_ts", None)
+    anchor.config_set("goal_met", "1" if met else "")
+    anchor.config_set("goal_met_ts", repr(ts) if met and ts else "")
+
+
+def _config_float(key: str) -> float:
+    try:
+        return float(anchor.config_get(key) or 0)
+    except ValueError:
+        return 0.0
 # ── Article II: renewal. Defined BEFORE the boot block below, which calls it: on a restart an
 # enlisted agent whose thread ended or went missing is renewed at import time. It used to be
 # defined ~250 lines later, so that restart died with NameError and crash-looped.
@@ -171,6 +205,9 @@ if _FRESH_WORLD:
     anchor.config_set("seq", "0")
     anchor.config_set("heralds", "0")
     anchor.config_set("vision_key", V.DEFAULT_VISION)
+    _set_dev_proposal(None)
+    _set_gate_clock(None)
+    _set_goal_met(False)
     anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
 else:
     # A RESTART (deploy, crash) is not a new world: restore the counters and re-adopt
@@ -197,10 +234,19 @@ else:
     _cand = [r["agent"] for r in economy.roster() if r["agent"].startswith("vil-")]
     _cand += [f"herald-{i:02d}" for i in range(max(1, _S["heralds"] - 2), _S["heralds"] + 1)]
     _threads = {u.unit_id: u for u in G.units(_GRAPH, _CP, only=_cand)}
-    for _u in _threads.values():                  # an inherited gate gets its IV.7 clock
+    for _u in _threads.values():                  # an inherited gate keeps its IV.7 clock
         if _u.pending and _u.pending.get("reversible") is False:
             _S["gate_since"] = _S["turn"]
-            _S["gate_since_ts"] = time.time()
+            _set_gate_clock(_config_float("gate_since_ts") or time.time())
+    try:                                          # a development proposal awaiting the human
+        _dp = json.loads(anchor.config_get("dev_proposal") or "null")
+    except ValueError:
+        _dp = None
+    _S["dev_proposal"] = _dp if isinstance(_dp, dict) else None
+    if anchor.config_get("goal_met"):             # a met vision is not met "again" by a restart
+        _S["goal_met"] = True
+        if _config_float("goal_met_ts"):
+            _S["goal_met_ts"] = _config_float("goal_met_ts")
     _S["villagers"] = []
     for _r in economy.roster():
         if not _r["agent"].startswith("vil-"):
@@ -214,6 +260,8 @@ else:
             _renew(_r["agent"], _u, f"its working thread had "
                                     f"{'ended' if _u else 'gone missing'} across the restart",
                    event="revived")
+    import ideas as _ideas_mod                    # an idea is "voting" only while its proposal waits
+    _ideas_mod.release_voting(keep=(_S["dev_proposal"] or {}).get("idea_id"))
     if anchor.counter_get("token_cap"):           # board rewards / operator cap edits persist
         G.TOKEN_CAP = anchor.counter_get("token_cap")
     for _c in anchor.careers(200):                # rebuild birth turns for burn math
@@ -402,7 +450,7 @@ def _propose_development():
     prop["board"] = bv["tally"]
     prop["board_approved"] = bv["approved"]
     prop["born_ts"] = time.time()                 # IV.7: tacit consent clocks from here
-    _S["dev_proposal"] = prop
+    _set_dev_proposal(prop)
     _narrate_vote(bv, prop.get("why", ""))
     # lineage: the proposal derives from ingested knowledge and the current lessons
     refs = [f"external:{k['id']}" for k in anchor.external(3, verified_only=True)]
@@ -574,7 +622,7 @@ def _adopt_vision(key: str, actor: str = "operator"):
     _S["vision_key"] = key
     _S["_vision_actor"] = actor
     anchor.config_set("vision_key", key)        # the adopted vision survives restarts
-    _S["goal_met"] = False                      # re-open the drive toward the new goal
+    _set_goal_met(False)                        # re-open the drive toward the new goal
     for uid in _S["villagers"]:
         anchor.record(_S["turn"], "rebrief", f"{uid} re-briefed → {V.get(key).name}")
     anchor.record(_S["turn"], "vision-change",
@@ -1347,7 +1395,7 @@ def _one_turn():
             anchor.decision_close(did, gate_ev)
             _S["herald_decision"] = did           # the human's verdict closes it
             _S["gate_since"] = t                  # IV.4: the wait is priced from here
-            _S["gate_since_ts"] = time.time()     # IV.7: tacit consent clocks from here
+            _set_gate_clock(time.time())          # IV.7: tacit consent clocks from here
 
     # Article IX — liveness: inaction is an action, and it is gated too. A turn with
     # no gather, build, spawn, repair or trade is a FAILED turn; ten in a row, or a
@@ -1428,8 +1476,7 @@ def _one_turn():
                         anchor.decision_close(_S["herald_decision"],
                                               outcome=f"tacit-consent vote blocked {bv['tally']}")
         _S["herald_decision"] = None
-        _S.pop("gate_since", None)
-        _S.pop("gate_since_ts", None)
+        _set_gate_clock(None)
         _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
 
     # IV.7 for a board-approved development proposal awaiting the human
@@ -1453,7 +1500,23 @@ def _one_turn():
                         f"board-approved development '{prop['name']}'.")
         if prop.get("idea_id"):
             _ideas().mark(prop["idea_id"], "adopted" if ok2 else "failed", f"tacit consent after {waited_m} min")
-        _S["dev_proposal"] = None
+        _set_dev_proposal(None)
+    elif (prop and prop.get("born_ts") and not prop.get("board_approved")
+            and now_ts - prop["born_ts"] > TACIT_CONSENT_S):
+        # IV.7 the other way: silence lets the Board's verdict stand. A proposal the Board
+        # voted against no longer blocks every new development until a human looks.
+        waited_m = int((now_ts - prop["born_ts"]) / 60)
+        dev_ev = anchor.record(t, "development",
+                               f"'{prop['name']}' set aside — human silent {waited_m} min, the board "
+                               f"had voted against it {prop.get('board', '')} (Article IV.7)")
+        if prop.get("did"):
+            anchor.decision_close(prop["did"], dev_ev, outcome=f"board rejection stood after {waited_m} min")
+        anchor.msg_send("chief", "Chief Governor",
+                        f"Under Article IV.7 (you were silent {waited_m} min) the board's vote against "
+                        f"'{prop['name']}' stands; the Governor may propose again.")
+        if prop.get("idea_id"):
+            _ideas().mark(prop["idea_id"], "rejected", f"board rejection stood after {waited_m} min of silence")
+        _set_dev_proposal(None)
 
     # IV.7 for the next Vision after a goal is met: silence delegates the adoption
     # of the BOARD'S proposed vision (never an invented one)
@@ -1469,7 +1532,8 @@ def _one_turn():
                             f"The vision was met and you were silent {waited_m} min; under "
                             f"Article IV.7 we adopted the board's proposal: {V.get(nxt_key).name}")
             _adopt_vision(nxt_key, actor="tacit consent (board proposal)")
-        _S.pop("goal_met_ts", None)
+        if _S["goal_met"]:                        # no next vision: still met, the IV.7 clock spent
+            _set_goal_met(True)
 
     # Governor's own per-turn line: spend against the cap, and the idle it reclaimed
     views = _fleet_views()
@@ -1494,8 +1558,7 @@ def _one_turn():
             anchor.career_add(uid, t, "vision", "the vision was met — "   # milestone in each
                               "stays on to steward the world")           # life, not a discharge
         anchor.record(t, "goal", f"VISION MET at {sc['progress']}%")
-        _S["goal_met"] = True
-        _S["goal_met_ts"] = time.time()           # IV.7: tacit consent clocks from here
+        _set_goal_met(True, time.time())          # IV.7: tacit consent clocks from here
     if _S["goal_met"] and f"steward:{t // 25}" not in _S["notified"]:
         # IV.4: the queued decision shows its running cost, on a different channel
         # each cycle boundary — never a repeat into the void
@@ -2638,8 +2701,7 @@ class Handler(BaseHTTPRequestHandler):
                                 f"The fleet is accumulating — a new herald will return to your "
                                 f"gate the moment we can pay.")
             if uid.startswith("herald"):
-                _S.pop("gate_since", None)        # the wait is over; stop pricing it
-                _S.pop("gate_since_ts", None)
+                _set_gate_clock(None)             # the wait is over; stop pricing it
                 _S["notified"] = {k for k in _S["notified"] if not k.startswith(("gate:", "gate2:"))}
             if uid.startswith("herald") and _S.get("herald_decision"):
                 anchor.decision_close(_S["herald_decision"],
@@ -2745,7 +2807,7 @@ class Handler(BaseHTTPRequestHandler):
                                               outcome="human adopted" if ok else f"adopt failed: {msg}")
                     if prop.get("idea_id"):
                         _ideas().mark(prop["idea_id"], "adopted" if ok else "failed", "human adopted" if ok else msg)
-                    _S["dev_proposal"] = None
+                    _set_dev_proposal(None)
                 elif action == "reject":
                     ok, msg = True, f"rejected {prop['name']}"
                     dev_ev = anchor.record(_S["turn"], "development", f"human rejected '{prop['name']}'")
@@ -2753,7 +2815,7 @@ class Handler(BaseHTTPRequestHandler):
                         anchor.decision_close(prop["did"], dev_ev, outcome="human rejected")
                     if prop.get("idea_id"):
                         _ideas().mark(prop["idea_id"], "rejected", "human rejected")
-                    _S["dev_proposal"] = None
+                    _set_dev_proposal(None)
                 else:
                     return self._send(400, json.dumps({"error": "action must be adopt|reject"}))
             return self._send(200 if ok else 400, json.dumps({"ok": ok, "detail": msg, **_snapshot()}))

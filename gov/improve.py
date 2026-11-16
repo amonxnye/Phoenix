@@ -364,10 +364,12 @@ def _already_proposed(cand: dict) -> str:
     new patch can change that verdict)."""
     for p in proposals(limit=1000):
         if p["file"] == cand.get("file") and p["title"] == cand.get("title"):
-            if p["status"] in ("verified", "unverified", "proposed", "approved", "committed"):
+            if p["status"] in ("verified", "unverified", "proposed", "approved", "committed", "merged"):
                 return f"already {p['status']} as #{p['id']}"
             if p["status"] == "rejected" and (p.get("note") or "").startswith("rejected by"):
                 return f"rejected by a human as #{p['id']}"
+            if p["status"] == "closed":
+                return f"its pull request was closed unmerged as #{p['id']}"
     return ""
 
 
@@ -389,12 +391,22 @@ def cycle(trigger: str = "scheduled") -> dict:
         if _STATE["running"]:
             return {"status": "busy", "note": _STATE["current"]}
         _STATE["running"] = True
-    if MODE in ("world", "both"):
-        r = _world_cycle(trigger)
-        if MODE == "world":
-            _STATE.update(running=False, current="")
-            return _reflect(r)
-    return _reflect(_code_cycle(trigger))
+    try:
+        if MODE in ("world", "both"):
+            r = _world_cycle(trigger)
+            if MODE == "world":
+                _STATE.update(running=False, current="")
+                return _reflect(r)
+        return _reflect(_code_cycle(trigger))
+    except Exception as e:                        # noqa: BLE001 — closed, not left looking alive
+        note = f"{type(e).__name__}: {str(e)[:200]}"
+        try:
+            _close_running("halted", note)
+        except Exception:                          # noqa: BLE001 — the flag below still clears
+            pass
+        return {"status": "halted", "note": note}
+    finally:
+        _STATE.update(running=False, current="")
 
 
 def _reflect(r: dict) -> dict:
@@ -650,6 +662,11 @@ def _tree_digest() -> str:
 
 # ── the gate ─────────────────────────────────────────────────────────────────
 
+# Waiting for a human: parked by a cycle, or approved without a GITHUB_TOKEN (the patch was
+# handed over; approving again once a token is configured publishes it).
+GATE_STATUSES = ("verified", "unverified", "approved")
+
+
 def approve(pid: int, actor: str = "console") -> dict:
     """A human approves a proposal at the console gate — an unverified one, or a
     verified one that could not be published on its own. With a GITHUB_TOKEN the
@@ -658,7 +675,7 @@ def approve(pid: int, actor: str = "console") -> dict:
     p = proposal(pid)
     if not p:
         return {"ok": False, "error": "no such proposal"}
-    if p["status"] not in ("verified", "unverified"):
+    if p["status"] not in GATE_STATUSES:
         return {"ok": False, "error": f"proposal is {p['status']}, not waiting at the gate"}
     if not os.environ.get("GITHUB_TOKEN", "").strip():
         _set(pid, status="approved", actor=actor, decided_ts=time.time(),
@@ -793,6 +810,8 @@ def reject(pid: int, reason: str = "", actor: str = "console") -> dict:
     p = proposal(pid)
     if not p:
         return {"ok": False, "error": "no such proposal"}
+    if p["status"] not in GATE_STATUSES:
+        return {"ok": False, "error": f"proposal is {p['status']}, not waiting at the gate"}
     _set(pid, status="rejected", note=f"rejected by {actor}: {reason or 'no reason given'}",
          actor=actor, decided_ts=time.time())
     anchor.record(-1, "improve-rejected", f"{p['file']}: {p['title'][:80]} — by {actor}: {reason[:120]}")
@@ -811,15 +830,37 @@ def due(now: float | None = None) -> bool:
     return not last or (now - last[0]["ts"]) >= INTERVAL_S
 
 
+def sync_prs() -> int:
+    """A `proposed` change is a draft PR on GitHub; the human merges or closes it there.
+    Read that outcome back so the record does not say `proposed` forever."""
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return 0
+    import ghpr
+    repo = os.environ.get("IMPROVE_REPO", "amonxnye/Phoenix").strip()
+    n = 0
+    for p in proposals(status="proposed"):
+        state = ghpr.pr_state(repo, token, p.get("pr_url") or "")
+        if state in ("merged", "closed"):
+            _set(p["id"], status=state, note=f"{p['note']} — pull request {state} on GitHub")
+            n += 1
+    return n
+
+
 def _loop():
-    try:
-        republish()
-    except Exception:                              # noqa: BLE001 — a boot chore, never a crash
-        pass
+    for chore in (republish, sync_prs):
+        try:
+            chore()
+        except Exception:                          # noqa: BLE001 — a boot chore, never a crash
+            pass
     while True:
         try:
             _STATE["last_tick"] = time.time()
             if enabled() and due() and not _STATE["running"]:
+                try:
+                    sync_prs()
+                except Exception:                  # noqa: BLE001 — GitHub may be down; the cycle runs
+                    pass
                 cycle("scheduled")
         except Exception:                          # noqa: BLE001 — the loop must outlive one bad cycle
             pass
@@ -829,11 +870,14 @@ def _loop():
 def reap() -> int:
     """A cycle still marked running at boot was cut off by a restart — a deploy, most
     likely one this loop caused. Marked interrupted, never left looking alive."""
+    return _close_running("interrupted", "the process restarted during the cycle (a deploy?)")
+
+
+def _close_running(status: str, why: str) -> int:
     c = _conn()
     try:
-        cur = c.execute("UPDATE improve_cycles SET status='interrupted', "
-                        "note='the process restarted during the cycle (a deploy?) — ' || note "
-                        "WHERE status='running'")
+        cur = c.execute("UPDATE improve_cycles SET status=?, note=? || ' — ' || note "
+                        "WHERE status='running'", (status, why))
         c.commit()
         return cur.rowcount
     finally:

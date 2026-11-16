@@ -113,12 +113,17 @@ def due(now: float | None = None) -> list[dict]:
 
 
 def tick(now: float | None = None, budget_cents: int | None = None) -> list[dict]:
+    from . import web                                 # the runner's lock; web imports this module
     out = []
     for repo in due(now):
+        if not web.try_hold():                        # one analysis at a time: a web run is going,
+            break                                     # so the due repos wait for the next tick
         try:
             out.append(cycle(repo, budget_cents))
         except Exception as e:                        # noqa: BLE001 — a cycle may not kill the watch
             out.append({"repo": repo["name"], "action": "error", "note": f"{type(e).__name__}: {e}"})
+        finally:
+            web.let_go()
     _STATE.update(cycles=_STATE["cycles"] + len(out), last_tick=time.time(), last=out[-6:])
     return out
 

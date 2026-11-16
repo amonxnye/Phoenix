@@ -36,6 +36,9 @@ _ACTIVE = {"status": "idle", "url": "", "name": "", "started": 0.0, "note": "",
 # analysis at a time" no longer means "come back later". 409 only when it is full.
 _QUEUE: list[tuple] = []
 QUEUE_MAX = 6
+# Guards the hand-over between "the runner is busy, queue it" and "the runner is done,
+# start the next": without it a URL queued in that gap waited for some later request.
+_QLOCK = threading.Lock()
 
 
 def _json(code: int, obj) -> tuple:
@@ -207,11 +210,23 @@ def _worker(url: str, name: str, budget_cents: int = -1) -> None:
                                    "note": _ACTIVE["note"], "run_id": _ACTIVE["run_id"],
                                    "at": time.time()})
         _ACTIVE["history"] = _ACTIVE["history"][-8:]
+        let_go()
+
+
+def try_hold() -> bool:
+    """The one-analysis-at-a-time lock, for the watch: it runs its analyses in its own
+    thread, and they must not overlap a web run (shared progress, disk and budget)."""
+    return _LOCK.acquire(blocking=False)
+
+
+def let_go() -> None:
+    """Release the runner and start the next queued URL — the next one waits for no one."""
+    with _QLOCK:
         _LOCK.release()
-        if _QUEUE:                                # the next one waits for no one
+        if _QUEUE:
             nxt = _QUEUE.pop(0)
-            if not _start(*nxt):                  # a request took the lock between release and here
-                _QUEUE.insert(0, nxt)             # (the error-handling analyst found this dropped result)
+            if not _start(*nxt):
+                _QUEUE.insert(0, nxt)
 
 
 def _start(url: str, name: str, budget_cents: int) -> bool:
@@ -324,17 +339,18 @@ def handle_post(path: str, body: dict) -> tuple:
         budget_cents = max(0, min(int(body.get("budget_cents", -1)), 1500))
     except (TypeError, ValueError):
         budget_cents = -1
-    if _start(url, name, budget_cents):
-        return _json(202, {"accepted": name, "active": status()})
-    if url == _ACTIVE.get("url") or any(q[0] == url for q in _QUEUE):
-        return _json(409, {"error": f"{name} is already {'running' if url == _ACTIVE.get('url') else 'queued'}",
-                           "active": status()})
-    if len(_QUEUE) >= QUEUE_MAX:
-        return _json(409, {"error": f"queue is full ({QUEUE_MAX}) — {_ACTIVE['name']} is "
-                                    f"{_ACTIVE['status']}; try again when one finishes",
-                           "active": status()})
-    _QUEUE.append((url, name, budget_cents))
-    return _json(202, {"accepted": name, "queued": len(_QUEUE), "active": status()})
+    with _QLOCK:
+        if _start(url, name, budget_cents):
+            return _json(202, {"accepted": name, "active": status()})
+        if url == _ACTIVE.get("url") or any(q[0] == url for q in _QUEUE):
+            return _json(409, {"error": f"{name} is already {'running' if url == _ACTIVE.get('url') else 'queued'}",
+                               "active": status()})
+        if len(_QUEUE) >= QUEUE_MAX:
+            return _json(409, {"error": f"queue is full ({QUEUE_MAX}) — {_ACTIVE['name']} is "
+                                        f"{_ACTIVE['status']}; try again when one finishes",
+                               "active": status()})
+        _QUEUE.append((url, name, budget_cents))
+        return _json(202, {"accepted": name, "queued": len(_QUEUE), "active": status()})
 
 
 # ── the page ─────────────────────────────────────────────────────────────────

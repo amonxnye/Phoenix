@@ -199,6 +199,25 @@ try:
           any("WORKBOARD STUCK" in e for e in A.event_log(40)))
     for t in tasks:                                # leave the board workable again
         A.config_set(f"attempts:{t['id']}", "0")
+
+    # Health audit 2026-11-15 (I): one task, one agent at a time; an attempt that
+    # solved nothing hands the task back instead of leaving it "assigned" forever.
+    with K._BUSY_LOCK:
+        K._BUSY.update(t["id"] for t in W.tasks() if t["status"] != "done")
+    try:
+        taken = K.work_cycle("dev-other")
+    finally:
+        K._BUSY.clear()
+    check("a task another agent is working on is not taken twice", taken["did"] == "nothing"
+          and "another agent" in taken["reason"], str(taken))
+    t1 = next(t for t in W.tasks() if t["status"] != "done")
+    W.assign(t1["id"], "dev-a")
+    W.assign(t1["id"], "dev-b")
+    check("the task names the agent working on it now",
+          next(t for t in W.tasks() if t["id"] == t1["id"])["assigned_to"] == "dev-b")
+    W.release(t1["id"], "dev-b")
+    check("an attempt that ended hands the task back to the board",
+          next(t for t in W.tasks() if t["id"] == t1["id"])["status"] == "open")
 finally:
     W.apply_patch("calculator.py", pristine)       # always restore the toy repo
 

@@ -15,6 +15,7 @@ Run one cycle by hand:  python3 gov/worker.py --agent dev-01 [--module calculato
 import argparse
 import os
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -25,6 +26,11 @@ import economy
 import workspace as W
 
 CREDIT_PER_TEST = 100        # contribution for each test turned green
+# Tasks an agent in this process is working on right now. Workers run one per console
+# request, so two requests must not take the same task. In memory on purpose: a
+# restart ends every attempt, so nothing can stay taken across one.
+_BUSY: set = set()
+_BUSY_LOCK = threading.Lock()
 MAX_ATTEMPTS = 3             # IX.8: repeated failure on one task is a loop, not effort
 
 
@@ -55,9 +61,24 @@ def work_cycle(agent: str, module: str = "calculator.py") -> dict:
                         f"Work is stalled: {stuck}. Retrying will not help — the task or "
                         f"the model needs to change.")
         return {"agent": agent, "did": "stuck", "reason": stuck, "attempts": MAX_ATTEMPTS}
-    task = open_tasks[0]
+    with _BUSY_LOCK:
+        free = [t for t in open_tasks if t["id"] not in _BUSY]
+        if not free:
+            return {"agent": agent, "did": "nothing",
+                    "reason": "every open task is being worked on by another agent"}
+        task = free[0]
+        _BUSY.add(task["id"])
     W.assign(task["id"], agent)
+    try:
+        res = _attempt(agent, module, task, before)
+    finally:
+        with _BUSY_LOCK:
+            _BUSY.discard(task["id"])
+        W.release(task["id"], agent)              # the attempt ended: solved stays done, else open again
+    return res
 
+
+def _attempt(agent: str, module: str, task: dict, before: dict) -> dict:
     src = W.read_file(module)
     tests_src = W.read_file(os.path.join(W.TESTS_DIR, "test_" + module))
     prompt = (
