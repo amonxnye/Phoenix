@@ -342,8 +342,10 @@ def handle_post(path: str, body: dict) -> tuple:
     with _QLOCK:
         if _start(url, name, budget_cents):
             return _json(202, {"accepted": name, "active": status()})
-        if url == _ACTIVE.get("url") or any(q[0] == url for q in _QUEUE):
-            return _json(409, {"error": f"{name} is already {'running' if url == _ACTIVE.get('url') else 'queued'}",
+        # the watch can hold the runner too, so the last web run's URL may be long finished
+        running = url == _ACTIVE.get("url") and _ACTIVE.get("status") in ("queued", "fetching", "analysing")
+        if running or any(q[0] == url for q in _QUEUE):
+            return _json(409, {"error": f"{name} is already {'running' if running else 'queued'}",
                                "active": status()})
         if len(_QUEUE) >= QUEUE_MAX:
             return _json(409, {"error": f"queue is full ({QUEUE_MAX}) — {_ACTIVE['name']} is "
