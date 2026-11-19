@@ -208,6 +208,8 @@ if _FRESH_WORLD:
     _set_dev_proposal(None)
     _set_gate_clock(None)
     _set_goal_met(False)
+    import ideas as _ideas_mod                    # the dropped proposal's idea goes back to the queue
+    _ideas_mod.release_voting()
     anchor.record(0, "generation", f"world generation {gen} begins — memory carried forward")
 else:
     # A RESTART (deploy, crash) is not a new world: restore the counters and re-adopt

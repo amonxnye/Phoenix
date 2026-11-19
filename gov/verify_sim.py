@@ -535,6 +535,9 @@ try:
     _boot = open(os.path.join(HERE, "sim_console.py")).read()
     check("the boot restores the pending proposal and releases ideas stuck in voting",
           'json.loads(anchor.config_get("dev_proposal")' in _boot and "release_voting(keep=" in _boot)
+    _fresh = _boot.split("\nif _FRESH_WORLD:", 1)[1].split("\nelse:", 1)[0]
+    check("a fresh world, which drops the pending proposal, also sends its voting idea back to the queue",
+          "_set_dev_proposal(None)" in _fresh and "release_voting(" in _fresh)
     _turn_src = __import__("inspect").getsource(SC._one_turn)
     check("a proposal the Board voted against is set aside after the IV.7 wait — it no longer blocks every new development",
           'not prop.get("board_approved")' in _turn_src and "board rejection stood" in _turn_src)

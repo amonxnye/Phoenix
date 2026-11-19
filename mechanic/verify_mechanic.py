@@ -393,6 +393,19 @@ finally:
     if web._LOCK.locked():
         web._LOCK.release()
     web._QUEUE.clear()
+# the watch can hold the runner while the last WEB run is long finished: that run's URL
+# is not "already running", so submitting it again queues it instead of a 409
+_act0 = dict(web._ACTIVE)
+web._ACTIVE.update(status="complete", url="https://github.com/o/done", name="done")
+web._LOCK.acquire()
+try:
+    _again = web.handle_post("/api/mechanic/analyse", {"url": "https://github.com/o/done"})
+finally:
+    web._LOCK.release()
+    web._ACTIVE.update(_act0)
+    web._QUEUE.clear()
+check("a finished run's URL submitted while the watch holds the runner is queued, not refused as running",
+      _again[0] == 202 and '"queued": 1' in _again[2], f"{_again[0]} {_again[2][:120]}")
 _sum = json.loads(web.handle_get("/api/mechanic/summary")[2])
 check("the summary says where the record lives, and MEASURES survival by a boot marker (VII.4)",
       "record" in _sum and {"data_dir", "configured", "boots", "record_since", "persistent"}
